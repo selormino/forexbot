@@ -40,9 +40,10 @@ async function yahooChart(symbol, interval='1h', outputsize=250){
     r=await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}`,{params,headers:{'User-Agent':'Mozilla/5.0'},timeout:12000});
   }catch(first){
     if(![401,403,429].includes(first.response?.status)) throw first;
-    const crumbResponse=await axios.get('https://query2.finance.yahoo.com/v1/test/getcrumb',{headers:{'User-Agent':'Mozilla/5.0'},timeout:12000});
+    const cookieResponse=await axios.get('https://fc.yahoo.com',{headers:{'User-Agent':'Mozilla/5.0'},timeout:12000,validateStatus:s=>s<500});
+    const cookies=(cookieResponse.headers['set-cookie']||[]).map(x=>x.split(';')[0]).join('; ');
+    const crumbResponse=await axios.get('https://query2.finance.yahoo.com/v1/test/getcrumb',{headers:{'User-Agent':'Mozilla/5.0',Cookie:cookies},timeout:12000});
     const crumb=String(crumbResponse.data||'').trim();
-    const cookies=(crumbResponse.headers['set-cookie']||[]).map(x=>x.split(';')[0]).join('; ');
     r=await axios.get(`https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}`,{params:{...params,crumb},headers:{'User-Agent':'Mozilla/5.0',Cookie:cookies},timeout:12000});
   }
   const result=r.data?.chart?.result?.[0];
@@ -104,7 +105,10 @@ async function news(symbol){
   throw new Error(`Unsupported NEWS_PROVIDER: ${provider}`);
 }
 
-const COUNTRY_CURRENCY={USD:'USD',EUR:'EUR',GBP:'GBP',JPY:'JPY',CHF:'CHF',CAD:'CAD',AUD:'AUD',NZD:'NZD',CNY:'CNY',CNH:'CNY'};
+const COUNTRY_CURRENCY={
+  USD:'USD',EUR:'EUR',GBP:'GBP',JPY:'JPY',CHF:'CHF',CAD:'CAD',AUD:'AUD',NZD:'NZD',CNY:'CNY',CNH:'CNY',
+  'United States':'USD','Euro Area':'EUR','United Kingdom':'GBP','Japan':'JPY','Switzerland':'CHF','Canada':'CAD','Australia':'AUD','New Zealand':'NZD','China':'CNY'
+};
 async function finnhubCalendar(){
   const r=await axios.get('https://finnhub.io/api/v1/calendar/economic',{params:{from:new Date().toISOString().slice(0,10),to:new Date(Date.now()+7*864e5).toISOString().slice(0,10),token:process.env.FINNHUB_API_KEY},timeout:12000});
   return (r.data?.economicCalendar||[]).map(e=>({event:e.event,country:e.country,currency:e.currency,time:e.time,impact:String(e.impact||'medium').toLowerCase(),actual:e.actual,estimate:e.estimate,previous:e.prev,provider:'finnhub'}));
