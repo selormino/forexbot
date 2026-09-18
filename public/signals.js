@@ -9,6 +9,10 @@ function renderAccuracy(m){
  <div class="card"><span class="label">Target</span><div class="big">${pct(m.targetAccuracy)}</div><span class="label">minimum observed goal</span></div>
  <div class="card"><span class="label">Broker-validation gate</span><div class="big compact">${m.readyForBrokerValidation?'PASS':'NOT YET'}</div><span class="label">needs ≥50 settled + target accuracy</span></div>`;
 }
+function renderSeries(m){
+ const rows=Object.entries(m.bySeries||{}).sort((a,b)=>a[0].localeCompare(b[0]));
+ $('seriesAccuracy').innerHTML=rows.map(([k,v])=>{const [symbol,tf]=k.split(':');return `<tr><td><b>${esc(symbol)}</b></td><td>${esc(tf)}</td><td>${v.settled}</td><td>${v.wins}</td><td><b>${pct(v.accuracy)}</b></td><td>${v.settled?pct(v.confidence95.lower)+'–'+pct(v.confidence95.upper):'—'}</td></tr>`}).join('')||'<tr><td colspan="6">No qualified signals have settled yet.</td></tr>';
+}
 function renderBoard(rows){
  $('signalBoard').innerHTML=rows.map(s=>{const pa=s.priceAction||{},patterns=(pa.patterns||[]).join(', ')||pa.structure||'neutral';const status=s.direction==='WAIT'?(s.candidateDirection==='WAIT'?'NO SIGNAL':'FILTERED'):'QUALIFIED';
  return `<tr><td><b>${esc(s.symbol)}</b><small>${price(s.price)}</small></td><td>${esc(s.timeframe)}</td><td class="${signalClass(s.candidateDirection)}"><b>${esc(s.candidateDirection)}</b><small>${s.direction!==s.candidateDirection?'execution: '+esc(s.direction):''}</small></td><td><b>${pct(s.directionalProbability)}</b><small>min ${pct(s.minProbability)}</small></td><td>${esc(patterns)}</td><td>${esc(s.regime)}</td><td><span class="pill ${status==='QUALIFIED'?'good':'neutral'}">${status}</span><small>${esc((s.filters||[])[0]||'All gates passed')}</small></td></tr>`}).join('');
@@ -17,5 +21,5 @@ function renderBoard(rows){
 function renderHistory(rows){
  $('signalHistory').innerHTML=rows.map(r=>`<tr><td>${new Date(r.created_at).toLocaleString()}</td><td><b>${esc(r.symbol)}</b></td><td>${esc(r.timeframe)}</td><td class="${signalClass(r.candidate_direction)}"><b>${esc(r.candidate_direction)}</b></td><td>${pct(r.directional_probability)}</td><td>${r.actionable?'ACTIONABLE':r.qualified?'TRACKED':'FILTERED'}</td><td><span class="pill ${r.outcome==='WIN'?'good':r.outcome==='LOSS'?'bad':'neutral'}">${esc(r.outcome||r.status)}</span></td><td>${r.net_return==null?'—':pct(r.net_return)}</td></tr>`).join('')||'<tr><td colspan="8">No signal history yet. Monitoring will populate this after scheduled research cycles.</td></tr>';
 }
-async function load(){try{const [m,b,h]=await Promise.all([get('/api/signals/metrics'),get('/api/signals/board'),get('/api/signals/history?limit=300')]);renderAccuracy(m);renderBoard(b);renderHistory(h);}catch(e){$('signalBoard').innerHTML='<tr><td colspan="7">'+esc(e.message)+'</td></tr>'}}
+async function load(){try{const [m,b,h]=await Promise.all([get('/api/signals/metrics'),get('/api/signals/board'),get('/api/signals/history?limit=300')]);renderAccuracy(m);renderSeries(m);renderBoard(b);renderHistory(h);}catch(e){$('signalBoard').innerHTML='<tr><td colspan="7">'+esc(e.message)+'</td></tr>'}}
 load();setInterval(load,60000);
