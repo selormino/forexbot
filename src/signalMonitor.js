@@ -72,10 +72,9 @@ function settle(limit=2000){
   let settled=0,wins=0;
   const tx=db.transaction(()=>{
     for(const s of pending){
-      const step=tfMs(s.timeframe);
-      const entry=db.prepare('SELECT open FROM candles WHERE symbol=? AND timeframe=? AND ts=?').get(s.symbol,s.timeframe,s.source_ts+step);
-      const exit=db.prepare('SELECT close FROM candles WHERE symbol=? AND timeframe=? AND ts=?').get(s.symbol,s.timeframe,s.source_ts+s.horizon_bars*step);
-      if(!entry||!exit)continue;
+      const bars=db.prepare('SELECT ts,open,close FROM candles WHERE symbol=? AND timeframe=? AND ts>? ORDER BY ts LIMIT ?').all(s.symbol,s.timeframe,s.source_ts,s.horizon_bars);
+      if(bars.length<s.horizon_bars)continue;
+      const entry=bars[0],exit=bars[bars.length-1];
       const raw=exit.close/entry.open-1,side=s.candidate_direction==='LONG'?1:-1;
       const gross=side*raw,net=gross-s.cost_bps/10000,success=net>0?1:0;
       update.run(Date.now(),entry.open,exit.close,gross,net,success,success?'WIN':'LOSS',s.id);
