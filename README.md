@@ -108,3 +108,9 @@ Run `npm test` locally. GitHub CI also runs syntax checks and price-action unit 
 The signal engine records one decision per closed candle for each supported market and monitored timeframe. A candidate is qualified only when its calibrated directional probability is at least `SIGNAL_MIN_PROBABILITY` (default 70%). Qualified candidates are monitored to the model horizon and settled using the next-bar entry and horizon-close exit, net of configured estimated transaction costs.
 
 The dedicated `/signals.html` page shows the current 1H/4H board, price-action context, filters, historical signals, settled wins/losses, observed accuracy, and a 95% Wilson confidence interval. The broker-validation readiness gate requires a minimum settled sample and the configured empirical accuracy target; a model probability is never presented as proof of the same realized win rate.
+
+
+## Broker connectivity
+ForexBot now includes an HTTP client for an external MetaTrader 5 bridge. This is the broker-neutral boundary intended for Exness, XM, or another MT5 broker. Configure `MT5_BRIDGE_URL` and `MT5_BRIDGE_TOKEN` only after a bridge is running on a demo account. `GET /api/broker/status` checks bridge reachability and `POST /api/broker/demo-dispatch/:id` sends an eligible execution intent to the demo bridge.
+
+The current service intentionally supports demo dispatch only. Live-money submission remains disabled while the monitored signal sample is accumulating and until the empirical accuracy/risk gates have been demonstrated.
