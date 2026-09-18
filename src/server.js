@@ -4,11 +4,15 @@ const db=require('./db');const {SYMBOLS,candles,news,calendar,providerStatus}=re
 const research=require('./research');
 const history=require('./history');const {syncMacro,macroStatus}=require('./macro');
 const execution=require('./execution');
+const signalMonitor=require('./signalMonitor');
 const app=express();app.use(helmet({contentSecurityPolicy:false}));app.use(cors());app.use(express.json({limit:'1mb'}));app.use(express.static(path.join(__dirname,'../public')));
 const enabled=()=>process.env.TRADING_ENABLED==='true';
 const admin=(req,res,next)=>{const configured=process.env.ADMIN_API_KEY;if(!configured)return res.status(503).json({error:'ADMIN_API_KEY is not configured'});const supplied=req.get('x-admin-token')||String(req.get('authorization')||'').replace(/^Bearer\s+/i,'');if(supplied!==configured)return res.status(401).json({error:'Invalid admin token'});next();};
 app.use('/api', (req,res,next)=>{if(req.method==='POST')return admin(req,res,next);next();});
 app.get('/api/research/status',(req,res)=>res.json({version:research.VERSION,models:research.status()}));
+app.get('/api/signals/metrics',(req,res)=>res.json(signalMonitor.metrics()));
+app.get('/api/signals/history',(req,res)=>res.json(signalMonitor.history(req.query.limit)));
+app.get('/api/signals/board',async(req,res)=>{try{const e=await calendar().catch(()=>null);const out=[];for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){try{out.push(research.signal(symbol,timeframe,e));}catch(err){out.push({symbol,timeframe,direction:'WAIT',candidateDirection:'WAIT',directionalProbability:0,filters:[err.message],priceAction:null,regime:'unknown'});}}res.json(out);}catch(e){res.status(500).json({error:e.message});}});
 app.get('/api/execution/status',(req,res)=>res.json(execution.status()));
 app.get('/api/execution/intents',(req,res)=>res.json(execution.list(req.query.limit)));
 app.post('/api/execution/evaluate',admin,async(req,res)=>{try{const symbol=String(req.body?.symbol||'EURUSD').toUpperCase();const timeframe=String(req.body?.timeframe||'1h');if(!SYMBOLS.includes(symbol))throw new Error('Unsupported symbol');const e=await calendar().catch(()=>null);const signal=research.signal(symbol,timeframe,e);res.json({signal,intent:execution.createIntent(signal,{riskPct:Number(req.body?.riskPct||0.5),equity:Number(req.body?.equity||10000),maxPositionUnits:Number(req.body?.maxUnits||100000)})});}catch(e){res.status(400).json({error:e.message});}});
@@ -45,12 +49,19 @@ async function scheduledSync(){
     const newsRuns=[];
     for(const symbol of SYMBOLS){try{const articles=await news(symbol);research.recordNews(symbol,articles);newsRuns.push({symbol,articles:articles.length});}catch(e){newsRuns.push({symbol,error:'News collection failed'});}}
     const market=await history.syncHistory();
+    const settledSignals=signalMonitor.settle();
     const learning=[];
     if(process.env.MODEL_AUTO_TRAIN==='true'){
       for(const symbol of SYMBOLS)for(const tf of ['1h','4h']){
         try{learning.push(research.trainSeries(symbol,tf));}catch(e){learning.push({symbol,timeframe:tf,error:e.message});}
         await new Promise(resolve=>setImmediate(resolve));
       }
+    }
+    const recordedSignals=[];
+    const signalEvents=await calendar().catch(()=>null);
+    for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){
+      try{const s=research.signal(symbol,timeframe,signalEvents);recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,directionalProbability:s.directionalProbability});}
+      catch(err){recordedSignals.push({symbol,timeframe,error:err.message});}
     }
     const executionRuns=[];
     if(process.env.AUTO_PAPER_TRADING==='true'&&String(process.env.EXECUTION_MODE||'off').toLowerCase()==='paper'){
@@ -60,7 +71,7 @@ async function scheduledSync(){
         catch(err){executionRuns.push({symbol,error:err.message});}
       }
     }
-    console.log(JSON.stringify({event:'research-sync',macro,newsRuns,market,learning,executionRuns}));
+    console.log(JSON.stringify({event:'research-sync',macro,newsRuns,market,settledSignals,learning,recordedSignals,signalMetrics:signalMonitor.metrics(),executionRuns}));
   }catch(e){console.error('Research sync failed:',e.message);}finally{syncing=false;}
 }
 if(process.env.HISTORY_AUTO_SYNC==='true'){
