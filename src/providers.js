@@ -64,7 +64,10 @@ async function twelveDataCandles(symbol, interval='1h', outputsize=250, options=
   for(let attempt=0;attempt<4;attempt++){
     try{r=await axios.get('https://api.twelvedata.com/time_series',{params,timeout:20000});break;}
     catch(error){
-      if(error.response?.status!==429||attempt===3)throw error;
+      if(error.response?.status!==429||attempt===3){
+        const detail=error.response?.data?.message||error.response?.data?.code||error.message;
+        throw new Error(`Twelve Data ${symbol} ${interval}: ${detail}`);
+      }
       const retryAfter=Number(error.response?.headers?.['retry-after']||0)*1000;
       await sleep(Math.max(retryAfter,15000*Math.pow(2,attempt)));
     }
