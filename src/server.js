@@ -43,6 +43,26 @@ app.get('/api/paper-trades',(req,res)=>res.json(db.prepare('SELECT * FROM paper_
 app.post('/api/paper-trades',(req,res)=>{try{if(enabled())return res.status(403).json({error:'Live execution is not implemented in this release. Keep TRADING_ENABLED=false'});const {symbol,side,entry,stop,target,units}=req.body;if(!symbol||!['LONG','SHORT'].includes(side)||!entry||!units)return res.status(400).json({error:'symbol, side, entry and units are required'});const r=db.prepare('INSERT INTO paper_trades(created_at,symbol,side,entry,stop,target,units) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,side,entry,stop||null,target||null,units);res.json({ok:true,id:r.lastInsertRowid});}catch(e){res.status(400).json({error:e.message});}});
 const port=Number(process.env.PORT||3000);app.listen(port,()=>console.log(`ForexBot AI listening on ${port}`));
 
+async function bootstrapMonitoring(){
+  try{
+    const learning=[];
+    if(process.env.MODEL_AUTO_TRAIN==='true'){
+      for(const symbol of SYMBOLS)for(const tf of ['1h','4h']){
+        try{learning.push(research.trainSeries(symbol,tf));}catch(e){learning.push({symbol,timeframe:tf,error:e.message});}
+        await new Promise(resolve=>setImmediate(resolve));
+      }
+    }
+    const settledSignals=signalMonitor.settle();
+    const e=await calendar().catch(()=>null),recordedSignals=[];
+    for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){
+      try{const s=research.signal(symbol,timeframe,e);recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,directionalProbability:s.directionalProbability});}
+      catch(err){recordedSignals.push({symbol,timeframe,error:err.message});}
+    }
+    console.log(JSON.stringify({event:'signal-bootstrap',learning,settledSignals,recordedSignals,signalMetrics:signalMonitor.metrics()}));
+  }catch(e){console.error('Signal bootstrap failed:',e.message);}
+}
+setTimeout(bootstrapMonitoring,3000);
+
 let syncing=false;
 async function scheduledSync(){
   if(syncing)return;syncing=true;
