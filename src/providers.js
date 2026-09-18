@@ -6,6 +6,7 @@ const YAHOO_SYMBOLS = {EURUSD:'EURUSD=X',GBPUSD:'GBPUSD=X',USDJPY:'USDJPY=X',AUD
 const TD_SYMBOLS = {EURUSD:'EUR/USD',GBPUSD:'GBP/USD',USDJPY:'USD/JPY',AUDUSD:'AUD/USD',USDCAD:'USD/CAD',XAUUSD:'XAU/USD',XAGUSD:'XAG/USD',WTI:'WTI/USD'};
 const cache = new Map();
 const TTL = Math.max(15, Number(process.env.DATA_REFRESH_SECONDS || 120)) * 1000;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function cached(key){
   const x=cache.get(key);
@@ -59,7 +60,15 @@ async function twelveDataCandles(symbol, interval='1h', outputsize=250, options=
   const params={symbol:TD_SYMBOLS[symbol]||symbol,interval,outputsize,apikey:process.env.TWELVE_DATA_API_KEY,format:'JSON',timezone:'UTC'};
   if(options.startTime) params.start_date=new Date(options.startTime).toISOString();
   if(options.endTime) params.end_date=new Date(options.endTime).toISOString();
-  const r=await axios.get('https://api.twelvedata.com/time_series',{params,timeout:20000});
+  let r;
+  for(let attempt=0;attempt<4;attempt++){
+    try{r=await axios.get('https://api.twelvedata.com/time_series',{params,timeout:20000});break;}
+    catch(error){
+      if(error.response?.status!==429||attempt===3)throw error;
+      const retryAfter=Number(error.response?.headers?.['retry-after']||0)*1000;
+      await sleep(Math.max(retryAfter,15000*Math.pow(2,attempt)));
+    }
+  }
   if(r.data?.status==='error' || !Array.isArray(r.data?.values)) throw new Error(r.data?.message||`Twelve Data returned no candles for ${symbol}`);
   return put(key,r.data.values.reverse().map(x=>({time:new Date(x.datetime+'Z').getTime(),open:+x.open,high:+x.high,low:+x.low,close:+x.close,volume:+(x.volume||0),provider:'twelvedata'})));
 }

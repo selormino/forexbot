@@ -6,6 +6,8 @@ const DEFAULT_TIMEFRAMES = (process.env.HISTORICAL_TIMEFRAMES || '1h,4h').split(
 const MAX_BARS = Math.max(250, Math.min(5000, Number(process.env.HISTORICAL_BARS || 1500)));
 const HORIZON = Math.max(1, Number(process.env.LABEL_HORIZON_BARS || 4));
 const MIN_MOVE_BPS = Math.max(0, Number(process.env.LABEL_MIN_MOVE_BPS || 3));
+const REQUEST_DELAY_MS = Math.max(0, Number(process.env.HISTORY_REQUEST_DELAY_MS || 8500));
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function featureVector(candles, index) {
   const window = candles.slice(Math.max(0, index - 119), index + 1);
@@ -54,22 +56,23 @@ async function ingestOne(symbol, timeframe, options = {}) {
     const latest = db.prepare('SELECT MAX(ts) ts FROM candles WHERE symbol=? AND timeframe=?').get(symbol, timeframe)?.ts || null;
     const fetched = await historicalCandles(symbol, timeframe, {
       outputsize: Number(options.outputsize || MAX_BARS),
-      startTime: latest ? latest + 1 : null
+      startTime: latest || null
     });
-    const insert = db.prepare(`INSERT OR IGNORE INTO candles(symbol,timeframe,ts,open,high,low,close,volume,provider,ingested_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?)`);
-    let inserted = 0;
+    const insert = db.prepare(`INSERT INTO candles(symbol,timeframe,ts,open,high,low,close,volume,provider,ingested_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,ts) DO UPDATE SET
+      open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,provider=excluded.provider,ingested_at=excluded.ingested_at`);
+    let upserted = 0;
     const tx = db.transaction(() => {
       for (const c of fetched) {
         const r = insert.run(symbol, timeframe, c.time, c.open, c.high, c.low, c.close, c.volume || 0, c.provider || providerStatus().market, Date.now());
-        inserted += r.changes;
+        upserted += r.changes;
       }
     });
     tx();
     const observations = rebuildObservations(symbol, timeframe, Number(options.horizon || HORIZON));
     db.prepare(`UPDATE ingestion_runs SET finished_at=?,fetched=?,inserted=?,observations=?,status='SUCCESS' WHERE id=?`)
-      .run(Date.now(), fetched.length, inserted, observations, run.lastInsertRowid);
-    return { symbol, timeframe, latestBefore: latest, fetched: fetched.length, inserted, observations, status: 'SUCCESS' };
+      .run(Date.now(), fetched.length, upserted, observations, run.lastInsertRowid);
+    return { symbol, timeframe, latestBefore: latest, fetched: fetched.length, upserted, observations, status: 'SUCCESS' };
   } catch (error) {
     db.prepare(`UPDATE ingestion_runs SET finished_at=?,status='FAILED',error=? WHERE id=?`).run(Date.now(), String(error.message).slice(0, 1000), run.lastInsertRowid);
     throw error;
@@ -78,10 +81,14 @@ async function ingestOne(symbol, timeframe, options = {}) {
 
 async function syncHistory({ symbols = SYMBOLS, timeframes = DEFAULT_TIMEFRAMES, outputsize = MAX_BARS } = {}) {
   const results = [];
+  let requestIndex = 0;
+  const totalRequests = symbols.length * timeframes.length;
   for (const symbol of symbols) {
     for (const timeframe of timeframes) {
       try { results.push(await ingestOne(symbol, timeframe, { outputsize })); }
       catch (error) { results.push({ symbol, timeframe, status: 'FAILED', error: error.message }); }
+      requestIndex++;
+      if (requestIndex < totalRequests && REQUEST_DELAY_MS) await sleep(REQUEST_DELAY_MS);
     }
   }
   return results;
