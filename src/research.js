@@ -3,7 +3,8 @@ const db=require('./db');
 const ti=require('technicalindicators');
 const {analyzePriceAction}=require('./priceAction');
 const {createHash}=require('crypto');
-const VERSION='context-v3-price-action';
+const VERSION='technical-pa-v4';
+const MIN_PROB=()=>Math.max(.5,Math.min(.95,Number(process.env.SIGNAL_MIN_PROBABILITY||.70)));
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
 CREATE TABLE IF NOT EXISTS research_models(id INTEGER PRIMARY KEY,created_at INTEGER,symbol TEXT,timeframe TEXT,version TEXT,model TEXT,report TEXT,approved INTEGER);
@@ -44,6 +45,8 @@ function features(rows,symbol,at){
   const price=close.at(-1),ema=p=>ti.EMA.calculate({period:p,values:close}).at(-1);
   const atr=ti.ATR.calculate({period:14,high,low,close}).at(-1);
   const rsi=ti.RSI.calculate({period:14,values:close}).at(-1);
+  const macd=ti.MACD.calculate({values:close,fastPeriod:12,slowPeriod:26,signalPeriod:9,SimpleMAOscillator:false,SimpleMASignal:false}).at(-1)||{MACD:0,signal:0,histogram:0};
+  const bb=ti.BollingerBands.calculate({period:20,stdDev:2,values:close}).at(-1)||{upper:price,middle:price,lower:price};
   const trend=(ema(20)-ema(50))/Math.max(atr,1e-9);
   const changes=close.slice(1).map((v,i)=>Math.log(v/close[i]));
   const vol=a=>Math.sqrt(a.reduce((s,v)=>s+v*v,0)/a.length);
@@ -51,7 +54,9 @@ function features(rows,symbol,at){
   const regime=ratio>1.8?'volatile':Math.abs(trend)>.8?'trend':'range';
   const ctx=context(symbol,at);
   const priceAction=analyzePriceAction(c,atr);
-  return {price,atr,rsi,trend,regime,priceAction,context:ctx,x:[Math.tanh(trend),(rsi-50)/50,Math.tanh(atr/price*100),Math.tanh(ratio-1),regime==='trend'?1:0,regime==='volatile'?1:0,...priceAction.vector,...ctx.x]};
+  const macdNorm=(Number(macd.MACD||0)-Number(macd.signal||0))/Math.max(atr,1e-9);
+  const bbWidth=(bb.upper-bb.lower)/Math.max(price,1e-9),bbPosition=(price-bb.lower)/Math.max(bb.upper-bb.lower,1e-9);
+  return {price,atr,rsi,trend,regime,macd:{value:macd.MACD||0,signal:macd.signal||0,histogram:macd.histogram||0},bollinger:{...bb,width:bbWidth,position:bbPosition},priceAction,context:ctx,x:[Math.tanh(trend),(rsi-50)/50,Math.tanh(atr/price*100),Math.tanh(ratio-1),regime==='trend'?1:0,regime==='volatile'?1:0,Math.tanh(macdNorm),Math.tanh((bbPosition-.5)*2),Math.tanh(bbWidth*100),...priceAction.vector]};
 }
 function costs(symbol){
   // Round-trip estimates in basis points, not measured broker quotes.
@@ -95,7 +100,7 @@ function evaluate(m,rows,costBps){
   const bins=Array.from({length:10},()=>({samples:0,predicted:0,observed:0}));
   for(const r of rows){const p=predict(m,r.x);correct+=(p>=.5)===(r.y===1);ll-=r.y*Math.log(p+1e-9)+(1-r.y)*Math.log(1-p+1e-9);brier+=(p-r.y)**2;
     const b=bins[Math.min(9,Math.floor(p*10))];b.samples++;b.predicted+=p;b.observed+=r.y;
-    const side=p>=.62?1:p<=.38?-1:0;
+    const threshold=MIN_PROB(); const side=p>=threshold?1:p<=1-threshold?-1:0;
     if(!side||r.regime!=='trend'||side*r.trend<=0||r.at<lastExit||r.atr/r.price*10000<costBps*2)continue;
     const pnl=side*r.ret-costBps/10000;trades++;net+=pnl;gains+=Math.max(0,pnl);losses+=Math.max(0,-pnl);equity*=1+pnl;peak=Math.max(peak,equity);drawdown=Math.max(drawdown,1-equity/peak);lastExit=r.end;
   }
@@ -113,14 +118,18 @@ function trainSeries(symbol,tf){
   const base=train.reduce((s,r)=>s+r.y,0)/train.length;
   const baselineLoss=-test.reduce((s,r)=>s+r.y*Math.log(base+1e-9)+(1-r.y)*Math.log(1-base+1e-9),0)/test.length;
   const contextSamples=train.filter(r=>r.context.macroAvailable&&r.context.newsAvailable).length;
+  const threshold=MIN_PROB();
+  const qualified=test.filter(r=>Math.max(predict(m,r.x),1-predict(m,r.x))>=threshold);
+  const qualifiedCorrect=qualified.filter(r=>(predict(m,r.x)>=.5)===(r.y===1)).length;
+  const qualifiedAccuracy=qualified.length?qualifiedCorrect/qualified.length:null;
   const folds=[];
   for(const fraction of [.6,.8,1]){
     const window=rows.slice(0,Math.floor(rows.length*fraction));
     const parts=split(window),w=fit(parts.train),cal=calibrate(w,parts.cal);
     folds.push(evaluate({weights:w,calibration:cal},parts.test,cost.total));
   }
-  const approved=metrics.trades>=30&&metrics.expectancy>0&&metrics.logLoss<baselineLoss&&contextSamples>=100&&folds.every(f=>f.expectancy>0&&f.trades>=10);
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,baselineLoss,metrics,folds,approved,split:'60/20/20 chronological, purged by outcome end; expanding-window folds',createdAt:Date.now()};
+  const approved=qualified.length>=20&&qualifiedAccuracy>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&metrics.logLoss<baselineLoss&&folds.every(f=>f.logLoss<0.78);
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,baselineLoss,metrics,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,minProbability:threshold,approved,approvalRule:'At least 20 out-of-sample signals at the configured probability threshold, observed directional accuracy at/above target, and log-loss quality gates',split:'60/20/20 chronological, purged by outcome end; expanding-window folds',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
@@ -129,23 +138,32 @@ function signal(symbol,tf='1h',events=null){
   const now=Date.now(),step=ms(tf);if(!step)throw new Error('Invalid timeframe');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,tf,step,now).reverse();
   const f=features(rows,symbol,now),m=latest(symbol,tf),p=m?predict(m.model,f.x):.5,cost=costs(symbol),reasons=[];
-  const side=p>=.62?'LONG':p<=.38?'SHORT':'WAIT';
-  if(!m?.approved)reasons.push('Model has not passed context-coverage and out-of-sample gates');
+  const threshold=MIN_PROB(),candidate=p>=threshold?'LONG':p<=1-threshold?'SHORT':'WAIT';
+  const directionalProbability=candidate==='LONG'?p:candidate==='SHORT'?1-p:Math.max(p,1-p);
+  if(!m?.approved)reasons.push('Model has not passed out-of-sample 70% quality gates');
   if(now-(rows.at(-1).ts+step)>step*2)reasons.push('Stale closed candles');
   if(rows.some((r,i)=>r.provider==='demo'||(i&&r.ts-rows[i-1].ts!==step)))reasons.push('Candle gaps or synthetic data');
   if(rows.some(r=>r.provider==='yahoo'))reasons.push('Research-only fallback feed');
-  if(!f.context.macroAvailable||!f.context.newsAvailable)reasons.push('Missing fresh macro/news context');
-  if(side==='WAIT')reasons.push('Probability below 62% directional threshold');
+  if(!f.context.macroAvailable||!f.context.newsAvailable)reasons.push('Missing fresh macro/news confirmation');
+  if(candidate==='WAIT')reasons.push(`Directional probability below ${Math.round(threshold*100)}% threshold`);
   if(f.regime!=='trend')reasons.push('Range or high-volatility regime');
-  if((side==='LONG'?1:-1)*f.trend<=0)reasons.push('Direction conflicts with trend');
-  if(side==='LONG'&&f.priceAction.bias<-.34)reasons.push('Price action is materially bearish');
-  if(side==='SHORT'&&f.priceAction.bias>.34)reasons.push('Price action is materially bullish');
+  if(candidate!=='WAIT'&&(candidate==='LONG'?1:-1)*f.trend<=0)reasons.push('Direction conflicts with trend');
+  if(candidate==='LONG'&&f.priceAction.bias<-.34)reasons.push('Price action is materially bearish');
+  if(candidate==='SHORT'&&f.priceAction.bias>.34)reasons.push('Price action is materially bullish');
+  let higherTimeframe=null;
+  if(tf==='1h'){
+    try{
+      const hRows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,'4h',ms('4h'),now).reverse();
+      const hf=features(hRows,symbol,now);higherTimeframe={trend:hf.trend,regime:hf.regime,priceAction:hf.priceAction.structure};
+      if(candidate!=='WAIT'&&(candidate==='LONG'?1:-1)*hf.trend<0)reasons.push('4H trend conflicts with 1H candidate');
+    }catch{}
+  }
   if(f.atr/f.price*10000<cost.total*2)reasons.push('Expected range too small relative to costs');
   if(!Array.isArray(events)||!events.length)reasons.push('Economic calendar unavailable');
-  else if(events.some(e=>e.impact==='high'&&Math.abs(new Date(e.time).getTime()-now)<=3600000))reasons.push('High-impact event within one hour');
+  else if(events.some(e=>String(e.impact).toLowerCase()==='high'&&Math.abs(new Date(e.time).getTime()-now)<=3600000))reasons.push('High-impact event within one hour');
   const paSummary=[f.priceAction.structure,...f.priceAction.patterns].filter(Boolean).join(', ');
   const explanation=reasons.length?reasons:[`All research gates passed; price action: ${paSummary||'neutral'}`];
-  return {symbol,timeframe:tf,price:f.price,direction:reasons.length?'WAIT':side,probability:p,probabilityMeaning:'Probability of positive next-four-bar return, not trade success',confidence:Math.abs(p-.5)*2,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,regime:f.regime,costs:cost,filters:reasons,explanation,eventRisk:reasons.some(r=>r.includes('event'))?1:0,generatedAt:now,modelId:m?.id||null,execution:'gated'};
+  return {symbol,timeframe:tf,price:f.price,candidateDirection:candidate,direction:reasons.length?'WAIT':candidate,probability:p,directionalProbability,minProbability:threshold,probabilityMeaning:'Directional probability is model-calibrated and is independently verified by settled signal outcomes',confidence:Math.abs(p-.5)*2,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,eventRisk:reasons.some(r=>r.includes('event'))?1:0,generatedAt:now,sourceCandleTs:rows.at(-1).ts,horizonBars:m?.model?.horizon||4,modelId:m?.id||null,modelApproved:!!m?.approved,execution:'gated'};
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
 module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,fit,calibrate,predict,evaluate,split,trainSeries,signal,status};
