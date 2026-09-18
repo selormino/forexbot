@@ -7,7 +7,7 @@ This project is an analytical and paper-trading system. Predictions are probabil
 
 ## Core features
 - FX and commodity watchlists
-- Technical indicators: EMA, RSI, MACD, ATR, Bollinger Bands
+- Technical indicators plus price action: EMA/RSI/ATR regimes, candlestick anatomy, engulfing and pin bars, inside/outside bars, 20-bar breakouts, swing structure, and support/resistance distance
 - Economic calendar/event-risk layer
 - News ingestion and sentiment context
 - Explainable multi-factor signal scoring
@@ -16,7 +16,7 @@ This project is an analytical and paper-trading system. Predictions are probabil
 - Incremental, idempotent 1H/4H historical candle ingestion
 - FRED macro-history ingestion
 - Automatic forward-return labeling and walk-forward validation
-- Paper trading ledger
+- Automatic paper-trading evaluation and broker-neutral execution-intent ledger
 - Optional OANDA execution adapter (disabled by default)
 - Responsive dashboard
 - Railway-ready Node.js deployment
@@ -49,6 +49,9 @@ HISTORY_REQUEST_DELAY_MS=8500
 MODEL_AUTO_TRAIN=true
 MODEL_MIN_NEW_OBSERVATIONS=50
 TRADING_ENABLED=false
+EXECUTION_MODE=off
+AUTO_PAPER_TRADING=false
+BROKER_BRIDGE=none
 ```
 
 ## Run
@@ -83,3 +86,19 @@ The ingestion engine stores candles with a unique `(symbol, timeframe, timestamp
 On Railway, SQLite must be placed on a persistent Volume (for example, mounted at `/data`) and `DB_PATH` set to `/data/forexbot.db`; otherwise redeployments can erase collected history. Keep `TRADING_ENABLED=false` during data collection, backtesting and demo validation.
 
 Exness and XM commonly expose trading through MetaTrader 5 rather than a general-purpose cloud REST API. The planned execution adapter should therefore use a separately authenticated MT5 bridge/EA, with paper and demo validation, symbol mapping, stop-loss enforcement, drawdown limits and a kill switch before any live-money rollout.
+
+
+## Execution architecture
+Signals pass through research, event-risk, price-action and cost gates before a risk plan can create an execution intent. Supported modes are:
+- `off` — analysis only.
+- `paper` — broker-free paper ledger; when `AUTO_PAPER_TRADING=true`, eligible signals can be filled automatically in the paper ledger.
+- `demo` — creates normalized intents for a future authenticated demo-broker bridge.
+- `bridge` — creates broker-ready intents, but live submission is not performed by this service. Bridge intents require an explicit approval state before an external MT5 bridge may consume them.
+
+The broker adapter is intentionally separate from the research engine so Exness, XM, or another MT5 broker can be mapped without changing signal generation. Keep live-money automation disabled until broker-demo validation and strategy approval gates are met.
+
+## Price-action research
+The current model version includes price-action features in every training row and live signal: candle body/wicks, bullish/bearish engulfing, pin bars, inside/outside bars, 20-bar breakouts, higher-high/lower-high/higher-low/lower-low structure, support/resistance distance in ATR units, and compression. Material price-action disagreement can block an otherwise directional signal.
+
+## Quality gates
+Run `npm test` locally. GitHub CI also runs syntax checks and price-action unit tests on pushes and pull requests.
