@@ -48,7 +48,7 @@ function record(signal){
   const directionalProbability=Number(signal.directionalProbability||0);
   const qualified=['LONG','SHORT'].includes(candidate)&&directionalProbability>=threshold;
   const actionable=['LONG','SHORT'].includes(signal.direction);
-  const key=[signal.symbol,signal.timeframe,signal.sourceCandleTs,signal.modelId||0].join(':');
+  const key=[signal.symbol,signal.timeframe,signal.sourceCandleTs].join(':');
   const status=qualified?'MONITORING':'FILTERED';
   const row={
     key,createdAt:Date.now(),sourceTs:signal.sourceCandleTs,sourceCloseAt:signal.sourceCandleTs+step,
@@ -108,7 +108,7 @@ function metrics(){
     qualified:aggregate(qualified),
     actionable:aggregate(actionable),
     bySeries:Object.fromEntries(Object.entries(groups).map(([k,v])=>[k,aggregate(v)])),
-    readyForBrokerValidation:aggregate(qualified).settled>=30&&(aggregate(qualified).accuracy||0)>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)
+    readyForBrokerValidation:aggregate(qualified).settled>=Number(process.env.SIGNAL_MIN_SETTLED||50)&&(aggregate(qualified).accuracy||0)>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&aggregate(qualified).confidence95.lower>=Number(process.env.SIGNAL_MIN_CONFIDENCE_LOWER||.60)
   };
 }
 function history(limit=250){
