@@ -1,8 +1,9 @@
 // Versioned research engine. Legacy models never participate in v2 predictions.
 const db=require('./db');
 const ti=require('technicalindicators');
+const {analyzePriceAction}=require('./priceAction');
 const {createHash}=require('crypto');
-const VERSION='context-v2';
+const VERSION='context-v3-price-action';
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
 CREATE TABLE IF NOT EXISTS research_models(id INTEGER PRIMARY KEY,created_at INTEGER,symbol TEXT,timeframe TEXT,version TEXT,model TEXT,report TEXT,approved INTEGER);
@@ -49,7 +50,8 @@ function features(rows,symbol,at){
   const ratio=vol(changes.slice(-14))/Math.max(vol(changes),1e-9);
   const regime=ratio>1.8?'volatile':Math.abs(trend)>.8?'trend':'range';
   const ctx=context(symbol,at);
-  return {price,atr,rsi,trend,regime,context:ctx,x:[Math.tanh(trend), (rsi-50)/50,Math.tanh(atr/price*100),Math.tanh(ratio-1),regime==='trend'?1:0,regime==='volatile'?1:0,...ctx.x]};
+  const priceAction=analyzePriceAction(c,atr);
+  return {price,atr,rsi,trend,regime,priceAction,context:ctx,x:[Math.tanh(trend),(rsi-50)/50,Math.tanh(atr/price*100),Math.tanh(ratio-1),regime==='trend'?1:0,regime==='volatile'?1:0,...priceAction.vector,...ctx.x]};
 }
 function costs(symbol){
   // Round-trip estimates in basis points, not measured broker quotes.
@@ -136,10 +138,14 @@ function signal(symbol,tf='1h',events=null){
   if(side==='WAIT')reasons.push('Probability below 62% directional threshold');
   if(f.regime!=='trend')reasons.push('Range or high-volatility regime');
   if((side==='LONG'?1:-1)*f.trend<=0)reasons.push('Direction conflicts with trend');
+  if(side==='LONG'&&f.priceAction.bias<-.34)reasons.push('Price action is materially bearish');
+  if(side==='SHORT'&&f.priceAction.bias>.34)reasons.push('Price action is materially bullish');
   if(f.atr/f.price*10000<cost.total*2)reasons.push('Expected range too small relative to costs');
   if(!Array.isArray(events)||!events.length)reasons.push('Economic calendar unavailable');
   else if(events.some(e=>e.impact==='high'&&Math.abs(new Date(e.time).getTime()-now)<=3600000))reasons.push('High-impact event within one hour');
-  return {symbol,timeframe:tf,price:f.price,direction:reasons.length?'WAIT':side,probability:p,probabilityMeaning:'Probability of positive next-four-bar return, not trade success',confidence:Math.abs(p-.5)*2,features:{...f,context:undefined,x:undefined},regime:f.regime,costs:cost,filters:reasons,explanation:reasons.length?reasons:['All research gates passed'],eventRisk:reasons.some(r=>r.includes('event'))?1:0,generatedAt:now,modelId:m?.id||null,execution:'disabled'};
+  const paSummary=[f.priceAction.structure,...f.priceAction.patterns].filter(Boolean).join(', ');
+  const explanation=reasons.length?reasons:[`All research gates passed; price action: ${paSummary||'neutral'}`];
+  return {symbol,timeframe:tf,price:f.price,direction:reasons.length?'WAIT':side,probability:p,probabilityMeaning:'Probability of positive next-four-bar return, not trade success',confidence:Math.abs(p-.5)*2,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,regime:f.regime,costs:cost,filters:reasons,explanation,eventRisk:reasons.some(r=>r.includes('event'))?1:0,generatedAt:now,modelId:m?.id||null,execution:'gated'};
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
 module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,fit,calibrate,predict,evaluate,split,trainSeries,signal,status};
