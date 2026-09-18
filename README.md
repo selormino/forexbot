@@ -102,3 +102,9 @@ The current model version includes price-action features in every training row a
 
 ## Quality gates
 Run `npm test` locally. GitHub CI also runs syntax checks and price-action unit tests on pushes and pull requests.
+
+
+## Signal monitoring and accuracy
+The signal engine records one decision per closed candle for each supported market and monitored timeframe. A candidate is qualified only when its calibrated directional probability is at least `SIGNAL_MIN_PROBABILITY` (default 70%). Qualified candidates are monitored to the model horizon and settled using the next-bar entry and horizon-close exit, net of configured estimated transaction costs.
+
+The dedicated `/signals.html` page shows the current 1H/4H board, price-action context, filters, historical signals, settled wins/losses, observed accuracy, and a 95% Wilson confidence interval. The broker-validation readiness gate requires a minimum settled sample and the configured empirical accuracy target; a model probability is never presented as proof of the same realized win rate.
