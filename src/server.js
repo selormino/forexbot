@@ -3,11 +3,16 @@ const path=require('path');const express=require('express');const cors=require('
 const db=require('./db');const {SYMBOLS,candles,news,calendar,providerStatus}=require('./providers');const {makeSignal}=require('./analysis');const model=require('./model');const {planTrade}=require('./risk');
 const research=require('./research');
 const history=require('./history');const {syncMacro,macroStatus}=require('./macro');
+const execution=require('./execution');
 const app=express();app.use(helmet({contentSecurityPolicy:false}));app.use(cors());app.use(express.json({limit:'1mb'}));app.use(express.static(path.join(__dirname,'../public')));
 const enabled=()=>process.env.TRADING_ENABLED==='true';
 const admin=(req,res,next)=>{const configured=process.env.ADMIN_API_KEY;if(!configured)return res.status(503).json({error:'ADMIN_API_KEY is not configured'});const supplied=req.get('x-admin-token')||String(req.get('authorization')||'').replace(/^Bearer\s+/i,'');if(supplied!==configured)return res.status(401).json({error:'Invalid admin token'});next();};
 app.use('/api', (req,res,next)=>{if(req.method==='POST')return admin(req,res,next);next();});
 app.get('/api/research/status',(req,res)=>res.json({version:research.VERSION,models:research.status()}));
+app.get('/api/execution/status',(req,res)=>res.json(execution.status()));
+app.get('/api/execution/intents',(req,res)=>res.json(execution.list(req.query.limit)));
+app.post('/api/execution/evaluate',admin,async(req,res)=>{try{const symbol=String(req.body?.symbol||'EURUSD').toUpperCase();const timeframe=String(req.body?.timeframe||'1h');if(!SYMBOLS.includes(symbol))throw new Error('Unsupported symbol');const e=await calendar().catch(()=>null);const signal=research.signal(symbol,timeframe,e);res.json({signal,intent:execution.createIntent(signal,{riskPct:Number(req.body?.riskPct||0.5),equity:Number(req.body?.equity||10000),maxPositionUnits:Number(req.body?.maxUnits||100000)})});}catch(e){res.status(400).json({error:e.message});}});
+app.post('/api/execution/intents/:id/approve',admin,(req,res)=>{try{res.json(execution.approve(Number(req.params.id)));}catch(e){res.status(400).json({error:e.message});}});
 app.get('/api/news/history',(req,res)=>res.json(db.prepare('SELECT symbol,published_at,known_at,headline,score,provider FROM news_history WHERE symbol=? ORDER BY known_at DESC LIMIT 100').all(String(req.query.symbol||'EURUSD').toUpperCase())));
 app.post('/api/research/train',(req,res)=>{try{const symbol=String(req.body.symbol||'EURUSD').toUpperCase();if(!SYMBOLS.includes(symbol))throw new Error('Unsupported symbol');res.json(research.trainSeries(symbol,req.body.timeframe||'1h'));}catch(e){res.status(400).json({error:e.message});}});
 app.get('/health',(req,res)=>res.json({ok:true,time:new Date().toISOString(),tradingEnabled:enabled(),providers:providerStatus()}));
@@ -47,7 +52,15 @@ async function scheduledSync(){
         await new Promise(resolve=>setImmediate(resolve));
       }
     }
-    console.log(JSON.stringify({event:'research-sync',macro,newsRuns,market,learning}));
+    const executionRuns=[];
+    if(process.env.AUTO_PAPER_TRADING==='true'&&String(process.env.EXECUTION_MODE||'off').toLowerCase()==='paper'){
+      const e=await calendar().catch(()=>null);
+      for(const symbol of SYMBOLS){
+        try{const signal=research.signal(symbol,'1h',e);executionRuns.push({symbol,...execution.createIntent(signal,{riskPct:Number(process.env.RISK_PER_TRADE_PCT||0.5),equity:Number(process.env.PAPER_EQUITY||10000),maxPositionUnits:Number(process.env.MAX_POSITION_UNITS||100000)})});}
+        catch(err){executionRuns.push({symbol,error:err.message});}
+      }
+    }
+    console.log(JSON.stringify({event:'research-sync',macro,newsRuns,market,learning,executionRuns}));
   }catch(e){console.error('Research sync failed:',e.message);}finally{syncing=false;}
 }
 if(process.env.HISTORY_AUTO_SYNC==='true'){
