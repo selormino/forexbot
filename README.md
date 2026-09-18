@@ -35,6 +35,7 @@ Copy `.env.example` to `.env` and configure only the providers you use.
 Important variables:
 ```text
 MARKET_PROVIDER=auto
+MARKET_FALLBACK_SYMBOLS=XAGUSD,WTI
 NEWS_PROVIDER=auto
 CALENDAR_PROVIDER=auto
 DATA_REFRESH_SECONDS=120

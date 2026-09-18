@@ -4,6 +4,8 @@ const SYMBOLS = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','XAUUSD','XAGUSD',
 const BASE = {EURUSD:1.171,GBPUSD:1.352,USDJPY:147.8,AUDUSD:0.665,USDCAD:1.381,XAUUSD:3665,XAGUSD:42.1,WTI:64.2};
 const YAHOO_SYMBOLS = {EURUSD:'EURUSD=X',GBPUSD:'GBPUSD=X',USDJPY:'USDJPY=X',AUDUSD:'AUDUSD=X',USDCAD:'USDCAD=X',XAUUSD:'GC=F',XAGUSD:'SI=F',WTI:'CL=F'};
 const TD_SYMBOLS = {EURUSD:'EUR/USD',GBPUSD:'GBP/USD',USDJPY:'USD/JPY',AUDUSD:'AUD/USD',USDCAD:'USD/CAD',XAUUSD:'XAU/USD',XAGUSD:'XAG/USD',WTI:'WTI/USD'};
+const FALLBACK_SYMBOLS = (process.env.MARKET_FALLBACK_SYMBOLS || 'XAGUSD,WTI').split(',').map(x => x.trim().toUpperCase()).filter(Boolean);
+const usesYahooFallback = symbol => FALLBACK_SYMBOLS.includes(symbol);
 const cache = new Map();
 const TTL = Math.max(15, Number(process.env.DATA_REFRESH_SECONDS || 120)) * 1000;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -80,7 +82,7 @@ async function historicalCandles(symbol, interval='1h', options={}){
   const outputsize=Math.max(1,Math.min(5000,Number(options.outputsize||1500)));
   const provider=(process.env.MARKET_PROVIDER||'auto').toLowerCase();
   if(provider==='demo') return demoCandles(symbol,outputsize).filter(x=>!options.startTime||x.time>=options.startTime).map(x=>({...x,provider:'demo'}));
-  if((provider==='twelvedata'||provider==='auto') && process.env.TWELVE_DATA_API_KEY){
+  if(!usesYahooFallback(symbol) && (provider==='twelvedata'||provider==='auto') && process.env.TWELVE_DATA_API_KEY){
     try{return await twelveDataCandles(symbol,interval,outputsize,options);}catch(e){if(provider==='twelvedata')throw e;}
   }
   const rows=interval==='4h'?aggregateCandles(await yahooChart(symbol,'1h',Math.min(5000,outputsize*4)),4):await yahooChart(symbol,interval,outputsize);
@@ -100,7 +102,7 @@ function aggregateCandles(rows, hours){
 async function candles(symbol, interval='1h', outputsize=250){
   const provider=(process.env.MARKET_PROVIDER||'auto').toLowerCase();
   if(provider==='demo') return demoCandles(symbol,outputsize);
-  if((provider==='twelvedata'||provider==='auto') && process.env.TWELVE_DATA_API_KEY){
+  if(!usesYahooFallback(symbol) && (provider==='twelvedata'||provider==='auto') && process.env.TWELVE_DATA_API_KEY){
     try{return await twelveDataCandles(symbol,interval,outputsize);}catch(e){ if(provider==='twelvedata') throw e; }
   }
   if(provider==='yahoo' || provider==='auto' || provider==='twelvedata') return yahooChart(symbol,interval,outputsize);
@@ -164,6 +166,6 @@ async function calendar(){
 }
 
 function providerStatus(){
-  return {market:(process.env.MARKET_PROVIDER||'auto'),news:(process.env.NEWS_PROVIDER||'auto'),calendar:(process.env.CALENDAR_PROVIDER||'auto'),twelveDataConfigured:!!process.env.TWELVE_DATA_API_KEY,finnhubConfigured:!!process.env.FINNHUB_API_KEY,fredConfigured:!!process.env.FRED_API_KEY,realData:true};
+  return {market:(process.env.MARKET_PROVIDER||'auto'),marketFallbackSymbols:FALLBACK_SYMBOLS,news:(process.env.NEWS_PROVIDER||'auto'),calendar:(process.env.CALENDAR_PROVIDER||'auto'),twelveDataConfigured:!!process.env.TWELVE_DATA_API_KEY,finnhubConfigured:!!process.env.FINNHUB_API_KEY,fredConfigured:!!process.env.FRED_API_KEY,realData:true};
 }
 module.exports={SYMBOLS,candles,historicalCandles,news,calendar,providerStatus};

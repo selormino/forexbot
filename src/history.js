@@ -60,7 +60,9 @@ async function ingestOne(symbol, timeframe, options = {}) {
   try {
     const latestRow = db.prepare('SELECT ts,provider FROM candles WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT 1').get(symbol, timeframe);
     const strictProvider = String(process.env.MARKET_PROVIDER || 'auto').toLowerCase();
-    const resetProvider = strictProvider === 'twelvedata' && latestRow && latestRow.provider !== 'twelvedata';
+    const fallbackSymbols = String(process.env.MARKET_FALLBACK_SYMBOLS || 'XAGUSD,WTI').split(',').map(x => x.trim().toUpperCase());
+    const expectedProvider = fallbackSymbols.includes(symbol) ? 'yahoo' : strictProvider;
+    const resetProvider = ['twelvedata','yahoo'].includes(expectedProvider) && latestRow && latestRow.provider !== expectedProvider;
     const latest = resetProvider ? null : (latestRow?.ts || null);
     const fetched = await historicalCandles(symbol, timeframe, {
       outputsize: Number(options.outputsize || MAX_BARS),
