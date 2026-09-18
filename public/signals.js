@@ -7,7 +7,7 @@ function renderAccuracy(m){
  $('accuracyCards').innerHTML=`<div class="card"><span class="label">Qualified accuracy</span><div class="big">${pct(q.accuracy)}</div><span class="label">${q.wins} wins / ${q.settled} settled</span></div>
  <div class="card"><span class="label">95% confidence range</span><div class="big compact">${q.settled?pct(q.confidence95.lower)+'–'+pct(q.confidence95.upper):'—'}</div><span class="label">statistical uncertainty</span></div>
  <div class="card"><span class="label">Target</span><div class="big">${pct(m.targetAccuracy)}</div><span class="label">minimum observed goal</span></div>
- <div class="card"><span class="label">Broker-validation gate</span><div class="big compact">${m.readyForBrokerValidation?'PASS':'NOT YET'}</div><span class="label">needs ≥30 settled + target accuracy</span></div>`;
+ <div class="card"><span class="label">Broker-validation gate</span><div class="big compact">${m.readyForBrokerValidation?'PASS':'NOT YET'}</div><span class="label">needs ≥50 settled + target accuracy</span></div>`;
 }
 function renderBoard(rows){
  $('signalBoard').innerHTML=rows.map(s=>{const pa=s.priceAction||{},patterns=(pa.patterns||[]).join(', ')||pa.structure||'neutral';const status=s.direction==='WAIT'?(s.candidateDirection==='WAIT'?'NO SIGNAL':'FILTERED'):'QUALIFIED';
