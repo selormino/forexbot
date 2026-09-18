@@ -119,7 +119,7 @@ function sentimentScore(text=''){
 
 async function finnhubNews(symbol){
   const to=new Date().toISOString().slice(0,10), from=new Date(Date.now()-3*864e5).toISOString().slice(0,10);
-  const r=await axios.get('https://finnhub.io/api/v1/company-news',{params:{symbol,from,to,token:process.env.FINNHUB_API_KEY},timeout:12000});
+  const r=await axios.get('https://finnhub.io/api/v1/news',{params:{category:'forex',token:process.env.FINNHUB_API_KEY},timeout:12000});
   return (r.data||[]).slice(0,30).map(n=>({headline:n.headline,summary:n.summary,url:n.url,source:n.source,time:n.datetime*1000,sentiment:sentimentScore(`${n.headline} ${n.summary||''}`),provider:'finnhub'}));
 }
 

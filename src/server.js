@@ -1,33 +1,55 @@
 require('dotenv').config();
 const path=require('path');const express=require('express');const cors=require('cors');const helmet=require('helmet');
 const db=require('./db');const {SYMBOLS,candles,news,calendar,providerStatus}=require('./providers');const {makeSignal}=require('./analysis');const model=require('./model');const {planTrade}=require('./risk');
+const research=require('./research');
 const history=require('./history');const {syncMacro,macroStatus}=require('./macro');
 const app=express();app.use(helmet({contentSecurityPolicy:false}));app.use(cors());app.use(express.json({limit:'1mb'}));app.use(express.static(path.join(__dirname,'../public')));
 const enabled=()=>process.env.TRADING_ENABLED==='true';
 const admin=(req,res,next)=>{const configured=process.env.ADMIN_API_KEY;if(!configured)return res.status(503).json({error:'ADMIN_API_KEY is not configured'});const supplied=req.get('x-admin-token')||String(req.get('authorization')||'').replace(/^Bearer\s+/i,'');if(supplied!==configured)return res.status(401).json({error:'Invalid admin token'});next();};
+app.use('/api', (req,res,next)=>{if(req.method==='POST')return admin(req,res,next);next();});
+app.get('/api/research/status',(req,res)=>res.json({version:research.VERSION,models:research.status()}));
+app.get('/api/news/history',(req,res)=>res.json(db.prepare('SELECT symbol,published_at,known_at,headline,score,provider FROM news_history WHERE symbol=? ORDER BY known_at DESC LIMIT 100').all(String(req.query.symbol||'EURUSD').toUpperCase())));
+app.post('/api/research/train',(req,res)=>{try{const symbol=String(req.body.symbol||'EURUSD').toUpperCase();if(!SYMBOLS.includes(symbol))throw new Error('Unsupported symbol');res.json(research.trainSeries(symbol,req.body.timeframe||'1h'));}catch(e){res.status(400).json({error:e.message});}});
 app.get('/health',(req,res)=>res.json({ok:true,time:new Date().toISOString(),tradingEnabled:enabled(),providers:providerStatus()}));
 app.get('/api/providers',(req,res)=>res.json(providerStatus()));
 app.get('/api/market',async(req,res)=>{try{const symbol=(req.query.symbol||'EURUSD').toUpperCase();if(!SYMBOLS.includes(symbol))return res.status(400).json({error:'Unsupported symbol'});res.json({symbol,provider:providerStatus().market,candles:await candles(symbol,req.query.interval||'1h',250)});}catch(e){res.status(500).json({error:e.message});}});
 app.get('/api/calendar',async(req,res)=>{try{res.json(await calendar());}catch(e){res.status(500).json({error:e.message});}});
 app.get('/api/news',async(req,res)=>{try{res.json(await news((req.query.symbol||'EURUSD').toUpperCase()));}catch(e){res.status(500).json({error:e.message});}});
-app.get('/api/signal',async(req,res)=>{try{const symbol=(req.query.symbol||'EURUSD').toUpperCase();const [c,e,n]=await Promise.all([candles(symbol,'1h',250),calendar(),news(symbol)]);res.json(makeSignal(symbol,c,e,n));}catch(e){res.status(500).json({error:e.message});}});
-app.get('/api/signals',async(req,res)=>{try{const e=await calendar();const out=[];for(const symbol of SYMBOLS){const [c,n]=await Promise.all([candles(symbol,'1h',250),news(symbol)]);out.push(makeSignal(symbol,c,e,n));}res.json(out);}catch(e){res.status(500).json({error:e.message});}});
-app.get('/api/risk-plan',async(req,res)=>{try{const symbol=(req.query.symbol||'EURUSD').toUpperCase();const [c,e,n]=await Promise.all([candles(symbol,'1h',250),calendar(),news(symbol)]);const signal=makeSignal(symbol,c,e,n);res.json({signal,risk:planTrade(signal,{riskPct:Number(req.query.riskPct||0.5),equity:Number(req.query.equity||10000),maxPositionUnits:Number(req.query.maxUnits||100000)})});}catch(e){res.status(500).json({error:e.message});}});
+app.get('/api/signal',async(req,res)=>{try{const symbol=(req.query.symbol||'EURUSD').toUpperCase();const [c,e,n]=await Promise.all([candles(symbol,'1h',250),calendar(),news(symbol)]);res.json(research.signal(symbol,req.query.timeframe||'1h',e));}catch(e){res.status(500).json({error:e.message});}});
+app.get('/api/signals',async(req,res)=>{try{const e=await calendar();const out=[];for(const symbol of SYMBOLS){const [c,n]=await Promise.all([candles(symbol,'1h',250),news(symbol)]);out.push(research.signal(symbol,'1h',e));}res.json(out);}catch(e){res.status(500).json({error:e.message});}});
+app.get('/api/risk-plan',async(req,res)=>{try{const symbol=(req.query.symbol||'EURUSD').toUpperCase();const [c,e,n]=await Promise.all([candles(symbol,'1h',250),calendar(),news(symbol)]);const signal=research.signal(symbol,req.query.timeframe||'1h',e);res.json({signal,risk:planTrade(signal,{riskPct:Number(req.query.riskPct||0.5),equity:Number(req.query.equity||10000),maxPositionUnits:Number(req.query.maxUnits||100000)})});}catch(e){res.status(500).json({error:e.message});}});
 app.get('/api/history/status',(req,res)=>res.json({...history.status(),macro:macroStatus()}));
 app.get('/api/history/candles',(req,res)=>{const symbol=(req.query.symbol||'EURUSD').toUpperCase(),timeframe=String(req.query.timeframe||'1h'),limit=Math.max(1,Math.min(5000,Number(req.query.limit||500)));if(!SYMBOLS.includes(symbol))return res.status(400).json({error:'Unsupported symbol'});res.json(db.prepare('SELECT ts,open,high,low,close,volume,provider FROM candles WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT ?').all(symbol,timeframe,limit).reverse());});
 app.post('/api/history/sync',admin,async(req,res)=>{try{const symbols=Array.isArray(req.body?.symbols)?req.body.symbols.map(x=>String(x).toUpperCase()):SYMBOLS;const invalid=symbols.filter(x=>!SYMBOLS.includes(x));if(invalid.length)return res.status(400).json({error:`Unsupported symbols: ${invalid.join(', ')}`});const timeframes=Array.isArray(req.body?.timeframes)?req.body.timeframes:history.DEFAULT_TIMEFRAMES;res.json({results:await history.syncHistory({symbols,timeframes,outputsize:req.body?.outputsize})});}catch(e){res.status(500).json({error:e.message});}});
 app.post('/api/macro/sync',admin,async(req,res)=>{try{res.json({results:await syncMacro(req.body?.seriesIds)});}catch(e){res.status(500).json({error:e.message});}});
 app.post('/api/backtest/walk-forward',admin,(req,res)=>{try{const config=req.body||{};const result=model.walkForwardFromDb(config);const id=model.saveBacktest(result,config);res.json({id,...result});}catch(e){res.status(400).json({error:e.message});}});
 app.get('/api/backtests/latest',(req,res)=>res.json(model.latestBacktest()||{}));
-app.post('/api/training/observations',(req,res)=>{try{const rows=Array.isArray(req.body)?req.body:req.body.rows;if(!Array.isArray(rows)||!rows.length)return res.status(400).json({error:'rows array required'});const ins=db.prepare('INSERT INTO observations(symbol,ts,features,label,price) VALUES(?,?,?,?,?)');const tx=db.transaction(r=>{for(const x of r){if(!x.symbol||!Array.isArray(x.features)||!Number.isFinite(Number(x.label)))continue;ins.run(x.symbol,x.ts||Date.now(),JSON.stringify(x.features),Number(x.label),x.price||null);}});tx(rows);res.json({ok:true,count:rows.length});}catch(e){res.status(400).json({error:e.message});}});
-app.post('/api/model/train',(req,res)=>{try{res.json(model.trainFromDb());}catch(e){res.status(400).json({error:e.message});}});
-app.get('/api/model/status',(req,res)=>{const m=model.latest();const count=db.prepare('SELECT COUNT(*) n FROM observations WHERE label IS NOT NULL').get().n;const last=db.prepare('SELECT created_at,metrics_json FROM models ORDER BY id DESC LIMIT 1').get();res.json({trained:!!m,observations:count,lastModel:last?{createdAt:last.created_at,metrics:JSON.parse(last.metrics_json)}:null});});
+app.post('/api/training/observations',(req,res)=>{return res.status(410).json({error:'Manual labels disabled; v2 trains from closed candles'});try{const rows=Array.isArray(req.body)?req.body:req.body.rows;if(!Array.isArray(rows)||!rows.length)return res.status(400).json({error:'rows array required'});const ins=db.prepare('INSERT INTO observations(symbol,ts,features,label,price) VALUES(?,?,?,?,?)');const tx=db.transaction(r=>{for(const x of r){if(!x.symbol||!Array.isArray(x.features)||!Number.isFinite(Number(x.label)))continue;ins.run(x.symbol,x.ts||Date.now(),JSON.stringify(x.features),Number(x.label),x.price||null);}});tx(rows);res.json({ok:true,count:rows.length});}catch(e){res.status(400).json({error:e.message});}});
+app.post('/api/model/train',(req,res)=>{try{res.json(research.trainSeries(String(req.body?.symbol||'EURUSD').toUpperCase(),req.body?.timeframe||'1h'));}catch(e){res.status(400).json({error:e.message});}});
+app.get('/api/model/status',(req,res)=>{const models=research.status();res.json({version:research.VERSION,trained:models.length>0,models,legacyModelNotUsed:true});});
 app.get('/api/paper-trades',(req,res)=>res.json(db.prepare('SELECT * FROM paper_trades ORDER BY id DESC LIMIT 100').all()));
 app.post('/api/paper-trades',(req,res)=>{try{if(enabled())return res.status(403).json({error:'Live execution is not implemented in this release. Keep TRADING_ENABLED=false'});const {symbol,side,entry,stop,target,units}=req.body;if(!symbol||!['LONG','SHORT'].includes(side)||!entry||!units)return res.status(400).json({error:'symbol, side, entry and units are required'});const r=db.prepare('INSERT INTO paper_trades(created_at,symbol,side,entry,stop,target,units) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,side,entry,stop||null,target||null,units);res.json({ok:true,id:r.lastInsertRowid});}catch(e){res.status(400).json({error:e.message});}});
 const port=Number(process.env.PORT||3000);app.listen(port,()=>console.log(`ForexBot AI listening on ${port}`));
 
 let syncing=false;
-async function scheduledSync(){if(syncing)return;syncing=true;try{const market=await history.syncHistory();const macro=process.env.FRED_API_KEY?await syncMacro():[];let learning=null;if(process.env.MODEL_AUTO_TRAIN==='true'){const count=db.prepare('SELECT COUNT(*) n FROM observations WHERE label IS NOT NULL').get().n;const previous=db.prepare('SELECT metrics_json FROM models ORDER BY id DESC LIMIT 1').get();const metrics=previous?JSON.parse(previous.metrics_json):null;const trainedSamples=(metrics?.train?.samples||0)+(metrics?.test?.samples||0);const minimumNew=Math.max(1,Number(process.env.MODEL_MIN_NEW_OBSERVATIONS||50));if(!previous||count-trainedSamples>=minimumNew){const training=model.trainFromDb();const backtest=model.walkForwardFromDb();const backtestId=model.saveBacktest(backtest,{trigger:'scheduled',observations:count});learning={training,backtestId,backtest:backtest.aggregate};}}console.log(JSON.stringify({event:'historical-sync',market,macro,learning}));}catch(error){console.error('Historical sync failed:',error.message);}finally{syncing=false;}}
+async function scheduledSync(){
+  if(syncing)return;syncing=true;
+  try{
+    const macro=process.env.FRED_API_KEY?await syncMacro():[];
+    research.captureMacro();
+    const newsRuns=[];
+    for(const symbol of SYMBOLS){try{const articles=await news(symbol);research.recordNews(symbol,articles);newsRuns.push({symbol,articles:articles.length});}catch(e){newsRuns.push({symbol,error:'News collection failed'});}}
+    const market=await history.syncHistory();
+    const learning=[];
+    if(process.env.MODEL_AUTO_TRAIN==='true'){
+      for(const symbol of SYMBOLS)for(const tf of ['1h','4h']){
+        try{learning.push(research.trainSeries(symbol,tf));}catch(e){learning.push({symbol,timeframe:tf,error:e.message});}
+        await new Promise(resolve=>setImmediate(resolve));
+      }
+    }
+    console.log(JSON.stringify({event:'research-sync',macro,newsRuns,market,learning}));
+  }catch(e){console.error('Research sync failed:',e.message);}finally{syncing=false;}
+}
 if(process.env.HISTORY_AUTO_SYNC==='true'){
   const minutes=Math.max(15,Number(process.env.HISTORY_SYNC_MINUTES||60));
   setTimeout(scheduledSync,15000);
