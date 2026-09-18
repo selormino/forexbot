@@ -37,4 +37,6 @@ function walkForwardFromDb({folds=5,minTrain=200}={}){
   const weighted=results.reduce((a,x)=>({samples:a.samples+x.samples,correct:a.correct+x.accuracy*x.samples,loss:a.loss+x.logLoss*x.samples}),{samples:0,correct:0,loss:0});
   return {method:'expanding-window walk-forward',folds:results,aggregate:{samples:weighted.samples,accuracy:weighted.correct/weighted.samples,logLoss:weighted.loss/weighted.samples}};
 }
-module.exports={sigmoid,dot,train,evaluate,latest,save,trainFromDb,walkForwardFromDb};
+function saveBacktest(result,config={}){const r=db.prepare('INSERT INTO backtests(created_at,method,config_json,metrics_json) VALUES(?,?,?,?)').run(Date.now(),result.method,JSON.stringify(config),JSON.stringify(result));return Number(r.lastInsertRowid);}
+function latestBacktest(){const row=db.prepare('SELECT * FROM backtests ORDER BY id DESC LIMIT 1').get();return row?{id:row.id,createdAt:row.created_at,method:row.method,config:JSON.parse(row.config_json),result:JSON.parse(row.metrics_json)}:null;}
+module.exports={sigmoid,dot,train,evaluate,latest,save,trainFromDb,walkForwardFromDb,saveBacktest,latestBacktest};

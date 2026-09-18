@@ -46,6 +46,8 @@ ADMIN_API_KEY=<generate-a-long-random-value>
 HISTORY_AUTO_SYNC=true
 HISTORY_SYNC_MINUTES=60
 HISTORY_REQUEST_DELAY_MS=8500
+MODEL_AUTO_TRAIN=true
+MODEL_MIN_NEW_OBSERVATIONS=50
 TRADING_ENABLED=false
 ```
 
@@ -73,6 +75,7 @@ Connect this repository to Railway and deploy the `main` branch. Railway can aut
 - `POST /api/history/sync` — incremental sync (requires `x-admin-token`)
 - `POST /api/macro/sync` — incremental FRED sync (requires `x-admin-token`)
 - `POST /api/backtest/walk-forward` — expanding-window validation (requires `x-admin-token`)
+- `GET /api/backtests/latest` — latest persisted walk-forward result
 
 ## Model training
 The ingestion engine stores candles with a unique `(symbol, timeframe, timestamp)` key, resumes from the newest stored timestamp and safely upserts data. It generates normalized technical feature vectors and labels completed observations from forward returns after a configurable minimum-move threshold. `/api/model/train` uses a time-ordered 80/20 split, while `/api/backtest/walk-forward` runs expanding-window validation without random shuffling.

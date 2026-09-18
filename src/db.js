@@ -67,6 +67,13 @@ CREATE TABLE IF NOT EXISTS macro_observations (
   ingested_at INTEGER NOT NULL,
   PRIMARY KEY(series_id, observation_date)
 );
+CREATE TABLE IF NOT EXISTS backtests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at INTEGER NOT NULL,
+  method TEXT NOT NULL,
+  config_json TEXT NOT NULL,
+  metrics_json TEXT NOT NULL
+);
 `);
 
 function addColumn(table, definition) {
@@ -86,6 +93,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS observations_unique
 CREATE INDEX IF NOT EXISTS candles_lookup ON candles(symbol, timeframe, ts);
 CREATE INDEX IF NOT EXISTS ingestion_runs_recent ON ingestion_runs(started_at DESC);
 CREATE INDEX IF NOT EXISTS macro_series_date ON macro_observations(series_id, observation_date);
+CREATE INDEX IF NOT EXISTS backtests_recent ON backtests(created_at DESC);
 `);
 
 module.exports = db;
