@@ -54,11 +54,35 @@ async function yahooChart(symbol, interval='1h', outputsize=250){
   return put(key,rows.slice(-outputsize));
 }
 
-async function twelveDataCandles(symbol, interval='1h', outputsize=250){
-  const key=`td:${symbol}:${interval}:${outputsize}`; const hit=cached(key); if(hit) return hit;
-  const r=await axios.get('https://api.twelvedata.com/time_series',{params:{symbol:TD_SYMBOLS[symbol]||symbol,interval,outputsize,apikey:process.env.TWELVE_DATA_API_KEY,format:'JSON'},timeout:12000});
+async function twelveDataCandles(symbol, interval='1h', outputsize=250, options={}){
+  const key=`td:${symbol}:${interval}:${outputsize}:${options.startTime||''}:${options.endTime||''}`; const hit=cached(key); if(hit) return hit;
+  const params={symbol:TD_SYMBOLS[symbol]||symbol,interval,outputsize,apikey:process.env.TWELVE_DATA_API_KEY,format:'JSON',timezone:'UTC'};
+  if(options.startTime) params.start_date=new Date(options.startTime).toISOString();
+  if(options.endTime) params.end_date=new Date(options.endTime).toISOString();
+  const r=await axios.get('https://api.twelvedata.com/time_series',{params,timeout:20000});
   if(r.data?.status==='error' || !Array.isArray(r.data?.values)) throw new Error(r.data?.message||`Twelve Data returned no candles for ${symbol}`);
-  return put(key,r.data.values.reverse().map(x=>({time:new Date(x.datetime).getTime(),open:+x.open,high:+x.high,low:+x.low,close:+x.close,volume:+(x.volume||0)})));
+  return put(key,r.data.values.reverse().map(x=>({time:new Date(x.datetime+'Z').getTime(),open:+x.open,high:+x.high,low:+x.low,close:+x.close,volume:+(x.volume||0),provider:'twelvedata'})));
+}
+
+async function historicalCandles(symbol, interval='1h', options={}){
+  const outputsize=Math.max(1,Math.min(5000,Number(options.outputsize||1500)));
+  const provider=(process.env.MARKET_PROVIDER||'auto').toLowerCase();
+  if(provider==='demo') return demoCandles(symbol,outputsize).filter(x=>!options.startTime||x.time>=options.startTime).map(x=>({...x,provider:'demo'}));
+  if((provider==='twelvedata'||provider==='auto') && process.env.TWELVE_DATA_API_KEY){
+    try{return await twelveDataCandles(symbol,interval,outputsize,options);}catch(e){if(provider==='twelvedata')throw e;}
+  }
+  const rows=interval==='4h'?aggregateCandles(await yahooChart(symbol,'1h',Math.min(5000,outputsize*4)),4):await yahooChart(symbol,interval,outputsize);
+  return rows.filter(x=>!options.startTime||x.time>=options.startTime).map(x=>({...x,provider:'yahoo'}));
+}
+
+function aggregateCandles(rows, hours){
+  const bucket=hours*3600000,out=[];
+  for(const row of rows){
+    const ts=Math.floor(row.time/bucket)*bucket;let x=out.at(-1);
+    if(!x||x.time!==ts){x={time:ts,open:row.open,high:row.high,low:row.low,close:row.close,volume:row.volume||0};out.push(x);}
+    else{x.high=Math.max(x.high,row.high);x.low=Math.min(x.low,row.low);x.close=row.close;x.volume+=(row.volume||0);}
+  }
+  return out;
 }
 
 async function candles(symbol, interval='1h', outputsize=250){
@@ -128,6 +152,6 @@ async function calendar(){
 }
 
 function providerStatus(){
-  return {market:(process.env.MARKET_PROVIDER||'auto'),news:(process.env.NEWS_PROVIDER||'auto'),calendar:(process.env.CALENDAR_PROVIDER||'auto'),twelveDataConfigured:!!process.env.TWELVE_DATA_API_KEY,finnhubConfigured:!!process.env.FINNHUB_API_KEY,realData:true};
+  return {market:(process.env.MARKET_PROVIDER||'auto'),news:(process.env.NEWS_PROVIDER||'auto'),calendar:(process.env.CALENDAR_PROVIDER||'auto'),twelveDataConfigured:!!process.env.TWELVE_DATA_API_KEY,finnhubConfigured:!!process.env.FINNHUB_API_KEY,fredConfigured:!!process.env.FRED_API_KEY,realData:true};
 }
-module.exports={SYMBOLS,candles,news,calendar,providerStatus};
+module.exports={SYMBOLS,candles,historicalCandles,news,calendar,providerStatus};

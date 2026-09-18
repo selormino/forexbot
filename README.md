@@ -13,6 +13,9 @@ This project is an analytical and paper-trading system. Predictions are probabil
 - Explainable multi-factor signal scoring
 - Trainable logistic model with time-ordered out-of-sample evaluation
 - SQLite feature/trade/model store
+- Incremental, idempotent 1H/4H historical candle ingestion
+- FRED macro-history ingestion
+- Automatic forward-return labeling and walk-forward validation
 - Paper trading ledger
 - Optional OANDA execution adapter (disabled by default)
 - Responsive dashboard
@@ -37,6 +40,10 @@ CALENDAR_PROVIDER=auto
 DATA_REFRESH_SECONDS=120
 TWELVE_DATA_API_KEY=
 FINNHUB_API_KEY=
+FRED_API_KEY=
+ADMIN_API_KEY=<generate-a-long-random-value>
+HISTORY_AUTO_SYNC=true
+HISTORY_SYNC_MINUTES=60
 TRADING_ENABLED=false
 ```
 
@@ -59,6 +66,15 @@ Connect this repository to Railway and deploy the `main` branch. Railway can aut
 - `GET /api/signal?symbol=EURUSD` — synthesized probabilistic signal
 - `GET /api/risk-plan?symbol=EURUSD` — risk-managed paper-trade plan
 - `POST /api/model/train` — train the stored model
+- `GET /api/history/status` — candle, label, run and macro coverage
+- `GET /api/history/candles?symbol=EURUSD&timeframe=1h` — stored candles
+- `POST /api/history/sync` — incremental sync (requires `x-admin-token`)
+- `POST /api/macro/sync` — incremental FRED sync (requires `x-admin-token`)
+- `POST /api/backtest/walk-forward` — expanding-window validation (requires `x-admin-token`)
 
 ## Model training
-The `/api/model/train` endpoint trains on stored feature/label rows using a time-ordered 80/20 evaluation split. The model is only promoted when its out-of-sample metrics remain within the configured tolerance of the previous model. A future phase will add rolling walk-forward validation, richer labels, transaction-cost assumptions and model calibration.
+The ingestion engine stores candles with a unique `(symbol, timeframe, timestamp)` key, resumes from the newest stored timestamp and safely upserts data. It generates normalized technical feature vectors and labels completed observations from forward returns after a configurable minimum-move threshold. `/api/model/train` uses a time-ordered 80/20 split, while `/api/backtest/walk-forward` runs expanding-window validation without random shuffling.
+
+On Railway, SQLite must be placed on a persistent Volume (for example, mounted at `/data`) and `DB_PATH` set to `/data/forexbot.db`; otherwise redeployments can erase collected history. Keep `TRADING_ENABLED=false` during data collection, backtesting and demo validation.
+
+Exness and XM commonly expose trading through MetaTrader 5 rather than a general-purpose cloud REST API. The planned execution adapter should therefore use a separately authenticated MT5 bridge/EA, with paper and demo validation, symbol mapping, stop-loss enforcement, drawdown limits and a kill switch before any live-money rollout.
