@@ -2,8 +2,9 @@
 const db=require('./db');
 const ti=require('technicalindicators');
 const {analyzePriceAction}=require('./priceAction');
+const {buildTradePlan}=require('./tradePlan');
 const {createHash}=require('crypto');
-const VERSION='technical-pa-v4';
+const VERSION='technical-pa-v5-trade-plans';
 const MIN_PROB=()=>Math.max(.5,Math.min(.95,Number(process.env.SIGNAL_MIN_PROBABILITY||.70)));
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -33,11 +34,16 @@ function context(symbol,at){
   const macro=row&&at-row.known_at<7*864e5?JSON.parse(row.payload):{};
   const news=db.prepare('SELECT score FROM news_history WHERE symbol=? AND known_at<=? AND known_at>=? AND published_at>=?').all(symbol,at,at-864e5,at-864e5);
   const orientation=symbol.startsWith('USD')?1:-1;
-  return {macroAvailable:Object.keys(macro).length===5,newsAvailable:news.length>0,x:[
+  const newsSentiment=news.length?news.reduce((s,n)=>s+n.score,0)/news.length:0;
+  const rateBias=((macro.DGS10?.change||0)*2+(macro.FEDFUNDS?.change||0))*orientation;
+  const growthBias=((macro.GDPC1?.change||0)-(macro.UNRATE?.change||0))*orientation;
+  const inflationBias=(macro.CPIAUCSL?.change||0)*orientation;
+  const macroBias=Math.tanh((rateBias+growthBias+inflationBias)*50);
+  return {macroAvailable:Object.keys(macro).length===5,newsAvailable:news.length>0,newsSentiment,newsCount:news.length,macroBias,macro,
+    x:[
     ...['FEDFUNDS','CPIAUCSL','UNRATE','GDPC1','DGS10'].map(id=>Math.tanh((macro[id]?.change||0)*100)*orientation),
     macro.FEDFUNDS?Math.tanh(macro.FEDFUNDS.level/10)*orientation:0,
-    news.length?news.reduce((s,n)=>s+n.score,0)/news.length:0,
-    Math.min(news.length/20,1),Object.keys(macro).length/5]};
+    newsSentiment,Math.min(news.length/20,1),Object.keys(macro).length/5]};
 }
 function features(rows,symbol,at){
   const c=rows.slice(-120),close=c.map(r=>r.close),high=c.map(r=>r.high),low=c.map(r=>r.low);
@@ -138,8 +144,8 @@ function signal(symbol,tf='1h',events=null){
   const now=Date.now(),step=ms(tf);if(!step)throw new Error('Invalid timeframe');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,tf,step,now).reverse();
   const f=features(rows,symbol,now),m=latest(symbol,tf),p=m?predict(m.model,f.x):.5,cost=costs(symbol),reasons=[];
-  const threshold=MIN_PROB(),candidate=p>=threshold?'LONG':p<=1-threshold?'SHORT':'WAIT';
-  const directionalProbability=candidate==='LONG'?p:candidate==='SHORT'?1-p:Math.max(p,1-p);
+  const threshold=MIN_PROB(),lean=p>=.5?'LONG':'SHORT',directionalProbability=Math.max(p,1-p);
+  const candidate=directionalProbability>=threshold?lean:'WAIT';
   if(!m?.approved)reasons.push('Model has not passed out-of-sample 70% quality gates');
   if(now-(rows.at(-1).ts+step)>step*2)reasons.push('Stale closed candles');
   if(rows.some((r,i)=>r.provider==='demo'||(i&&r.ts-rows[i-1].ts!==step)))reasons.push('Candle gaps or synthetic data');
@@ -147,23 +153,54 @@ function signal(symbol,tf='1h',events=null){
   if(!f.context.macroAvailable||!f.context.newsAvailable)reasons.push('Missing fresh macro/news confirmation');
   if(candidate==='WAIT')reasons.push(`Directional probability below ${Math.round(threshold*100)}% threshold`);
   if(f.regime!=='trend')reasons.push('Range or high-volatility regime');
-  if(candidate!=='WAIT'&&(candidate==='LONG'?1:-1)*f.trend<=0)reasons.push('Direction conflicts with trend');
-  if(candidate==='LONG'&&f.priceAction.bias<-.34)reasons.push('Price action is materially bearish');
-  if(candidate==='SHORT'&&f.priceAction.bias>.34)reasons.push('Price action is materially bullish');
+  if((lean==='LONG'?1:-1)*f.trend<=0)reasons.push('Direction conflicts with trend');
+  if(lean==='LONG'&&f.priceAction.bias<-.34)reasons.push('Price action is materially bearish');
+  if(lean==='SHORT'&&f.priceAction.bias>.34)reasons.push('Price action is materially bullish');
+  if(lean==='LONG'&&f.context.newsSentiment<-.25)reasons.push('Recent news sentiment conflicts with LONG bias');
+  if(lean==='SHORT'&&f.context.newsSentiment>.25)reasons.push('Recent news sentiment conflicts with SHORT bias');
+  if(lean==='LONG'&&f.context.macroBias<-.35)reasons.push('Macro backdrop conflicts with LONG bias');
+  if(lean==='SHORT'&&f.context.macroBias>.35)reasons.push('Macro backdrop conflicts with SHORT bias');
   let higherTimeframe=null;
   if(tf==='1h'){
     try{
       const hRows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,'4h',ms('4h'),now).reverse();
       const hf=features(hRows,symbol,now);higherTimeframe={trend:hf.trend,regime:hf.regime,priceAction:hf.priceAction.structure};
-      if(candidate!=='WAIT'&&(candidate==='LONG'?1:-1)*hf.trend<0)reasons.push('4H trend conflicts with 1H candidate');
+      if((lean==='LONG'?1:-1)*hf.trend<0)reasons.push('4H trend conflicts with 1H directional lean');
     }catch{}
   }
-  if(f.atr/f.price*10000<cost.total*2)reasons.push('Expected range too small relative to costs');
+  if(f.atr/f.price*10000<cost.total*2)reasons.push('Expected range too small relative to estimated costs');
+  const relevantEvents=Array.isArray(events)?events.filter(e=>{
+    const t=new Date(e.time).getTime();return Number.isFinite(t)&&t>=now-3600000&&t<=now+24*3600000;
+  }).sort((a,b)=>new Date(a.time)-new Date(b.time)).slice(0,5):[];
   if(!Array.isArray(events)||!events.length)reasons.push('Economic calendar unavailable');
-  else if(events.some(e=>String(e.impact).toLowerCase()==='high'&&Math.abs(new Date(e.time).getTime()-now)<=3600000))reasons.push('High-impact event within one hour');
+  else if(relevantEvents.some(e=>String(e.impact).toLowerCase()==='high'&&Math.abs(new Date(e.time).getTime()-now)<=3600000))reasons.push('High-impact event within one hour');
   const paSummary=[f.priceAction.structure,...f.priceAction.patterns].filter(Boolean).join(', ');
-  const explanation=reasons.length?reasons:[`All research gates passed; price action: ${paSummary||'neutral'}`];
-  return {symbol,timeframe:tf,price:f.price,candidateDirection:candidate,direction:reasons.length?'WAIT':candidate,probability:p,directionalProbability,minProbability:threshold,probabilityMeaning:'Directional probability is model-calibrated and is independently verified by settled signal outcomes',confidence:Math.abs(p-.5)*2,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,eventRisk:reasons.some(r=>r.includes('event'))?1:0,generatedAt:now,sourceCandleTs:rows.at(-1).ts,horizonBars:m?.model?.horizon||4,modelId:m?.id||null,modelApproved:!!m?.approved,execution:'gated'};
+  const technicalReasons=[
+    `EMA trend score ${f.trend.toFixed(2)} ATR (${f.trend>0?'bullish':'bearish'})`,
+    `RSI(14) ${f.rsi.toFixed(1)}`,
+    `MACD histogram ${Number(f.macd.histogram||0).toFixed(5)}`,
+    `Bollinger position ${(f.bollinger.position*100).toFixed(0)}% of band`,
+    `Volatility regime: ${f.regime}`
+  ];
+  const confirmations=[];
+  if((lean==='LONG'?1:-1)*f.trend>0)confirmations.push('Primary EMA trend aligns with direction');
+  if((lean==='LONG'&&f.priceAction.bias>0)||(lean==='SHORT'&&f.priceAction.bias<0))confirmations.push('Price action bias confirms direction');
+  if((lean==='LONG'&&f.context.newsSentiment>0)||(lean==='SHORT'&&f.context.newsSentiment<0))confirmations.push('Recent news sentiment confirms direction');
+  if((lean==='LONG'&&f.context.macroBias>0)||(lean==='SHORT'&&f.context.macroBias<0))confirmations.push('Macro backdrop confirms direction');
+  if(higherTimeframe&&(lean==='LONG'?1:-1)*higherTimeframe.trend>0)confirmations.push('4H trend confirms 1H direction');
+  const risks=[...reasons];
+  const explanation=reasons.length?reasons:[`All strict gates passed; price action: ${paSummary||'neutral'}`];
+  const base={symbol,timeframe:tf,price:f.price,leanDirection:lean,candidateDirection:candidate,direction:reasons.length?'WAIT':candidate,probability:p,directionalProbability,minProbability:threshold,
+    probabilityMeaning:'Directional probability is model-calibrated and is independently verified by triggered signal outcomes',
+    confidence:Math.abs(p-.5)*2,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,
+    analysis:{thesis:`${lean} lean from calibrated model with ${(directionalProbability*100).toFixed(1)}% directional probability; strict execution requires all confirmation gates.`,
+      technical:technicalReasons,priceAction:{structure:f.priceAction.structure,patterns:f.priceAction.patterns,bias:f.priceAction.bias},
+      news:{available:f.context.newsAvailable,count:f.context.newsCount,sentiment:f.context.newsSentiment},
+      macro:{available:f.context.macroAvailable,bias:f.context.macroBias,series:f.context.macro},
+      calendar:relevantEvents.map(e=>({time:e.time,event:e.event,currency:e.currency||e.country,impact:e.impact,actual:e.actual,forecast:e.forecast,previous:e.previous})),
+      confirmations,risks},
+    eventRisk:reasons.some(r=>r.includes('event'))?1:0,generatedAt:now,sourceCandleTs:rows.at(-1).ts,horizonBars:m?.model?.horizon||4,modelId:m?.id||null,modelApproved:!!m?.approved,execution:'gated'};
+  return {...base,tradePlan:buildTradePlan(base,{side:lean})};
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
 module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,fit,calibrate,predict,evaluate,split,trainSeries,signal,status};
