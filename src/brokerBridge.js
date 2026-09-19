@@ -60,7 +60,7 @@ async function dispatchDemo(id){
   if(!intent)throw new Error('Execution intent not found');
   if(!['demo','bridge'].includes(intent.mode))throw new Error('Intent is not broker-bridge eligible');
   if(!['PENDING','APPROVED'].includes(intent.status))throw new Error('Intent is not dispatchable');
-  const payload={clientOrderId:`forexbot-${intent.id}`,symbol:intent.symbol,timeframe:intent.timeframe,side:intent.side,entry:intent.entry,stop:intent.stop,target:intent.target,units:intent.units,probability:intent.probability,mode:'demo'};
+  const payload=payloadForIntent(intent,'demo');
   const r=await axios.post(String(process.env.MT5_BRIDGE_URL).replace(/\/$/,'')+'/orders',payload,{headers:{authorization:`Bearer ${process.env.MT5_BRIDGE_TOKEN}`,'content-type':'application/json'},timeout:12000});
   const brokerId=String(r.data?.orderId||r.data?.ticket||'');
   db.prepare("UPDATE execution_intents SET status='DEMO_SENT',broker_order_id=?,reason='Sent to configured MT5 demo bridge',updated_at=? WHERE id=?").run(brokerId,Date.now(),id);
