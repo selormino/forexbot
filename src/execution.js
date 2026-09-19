@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS execution_intents(
 );
 CREATE INDEX IF NOT EXISTS execution_intents_recent ON execution_intents(created_at DESC);
 `);
+function addExecColumn(name,def){const cols=db.prepare('PRAGMA table_info(execution_intents)').all().map(x=>x.name);if(!cols.includes(name))db.exec(`ALTER TABLE execution_intents ADD COLUMN ${name} ${def}`);}
+addExecColumn('risk_pct','REAL');
+addExecColumn('sizing_mode',"TEXT");
+addExecColumn('manual','INTEGER NOT NULL DEFAULT 0');
 
 const mode=()=>String(process.env.EXECUTION_MODE||'off').toLowerCase();
 function status(){
@@ -68,11 +72,10 @@ function createManualIntent(signal,{side,equity=10000,riskPct=.5,maxPositionUnit
   const target=chosen===plan.side?Number(plan.target):entry+(chosen==='LONG'?1:-1)*Math.abs(Number(plan.target)-entry);
   const stopDistance=Math.abs(entry-stop);
   if(![entry,stop,target,equity,riskPct,maxPositionUnits].every(Number.isFinite)||stopDistance<=0||equity<=0||riskPct<=0||riskPct>2)throw new Error('Invalid manual trade parameters');
-  const riskCash=equity*(riskPct/100),units=Math.min(maxPositionUnits,Math.max(1,Math.floor(riskCash/stopDistance)));
   const m=mode();
   if(!['paper','demo','bridge'].includes(m))throw new Error('Execution mode is off');
-  const r=db.prepare(`INSERT INTO execution_intents(created_at,symbol,timeframe,side,entry,stop,target,units,probability,model_id,mode,status,reason,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(Date.now(),signal.symbol,signal.timeframe||'1h',chosen,entry,stop,target,units,signal.directionalProbability,signal.modelId||null,m,'PENDING','Manual user-selected signal; probability threshold may be below automated gate',Date.now());
-  return {created:true,id:r.lastInsertRowid,status:'PENDING',manual:true,plan:{side:chosen,entry,stop,target,units,riskCash,riskReward:Math.abs(target-entry)/stopDistance}};
+  const r=db.prepare(`INSERT INTO execution_intents(created_at,symbol,timeframe,side,entry,stop,target,units,probability,model_id,mode,status,reason,updated_at,risk_pct,sizing_mode,manual)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(Date.now(),signal.symbol,signal.timeframe||'1h',chosen,entry,stop,target,0,signal.directionalProbability,signal.modelId||null,m,'PENDING','Manual user-selected signal; probability threshold may be below automated gate',Date.now(),riskPct,'BROKER_RISK_PERCENT',1);
+  return {created:true,id:r.lastInsertRowid,status:'PENDING',manual:true,plan:{side:chosen,entry,stop,target,riskPct,sizingMode:'BROKER_RISK_PERCENT',riskReward:Math.abs(target-entry)/stopDistance}};
 }
 module.exports={status,createIntent,createManualIntent,list,approve};
