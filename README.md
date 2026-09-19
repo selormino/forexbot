@@ -114,3 +114,12 @@ The dedicated `/signals.html` page shows the current 1H/4H board, price-action c
 ForexBot now includes an HTTP client for an external MetaTrader 5 bridge. This is the broker-neutral boundary intended for Exness, XM, or another MT5 broker. Configure `MT5_BRIDGE_URL` and `MT5_BRIDGE_TOKEN` only after a bridge is running on a demo account. `GET /api/broker/status` checks bridge reachability and `POST /api/broker/demo-dispatch/:id` sends an eligible execution intent to the demo bridge.
 
 The current service intentionally supports demo dispatch only. Live-money submission remains disabled while the monitored signal sample is accumulating and until the empirical accuracy/risk gates have been demonstrated.
+
+
+## Triggered trade-plan monitoring
+Current research signals now include a concrete confirmation entry, ATR-adjusted stop loss, TP1, final target, expected pips/points/ticks, and risk/reward ratio. Monitoring does not assume a trade exists immediately: a setup moves from `PENDING_ENTRY` to `ACTIVE` only after a subsequent candle reaches the predicted entry price. The engine then checks candle highs/lows against SL and TP. Setups that never reach entry expire and do not count as wins or losses.
+
+Settled records include realized pips/points, realized R, maximum favorable excursion (MFE), and maximum adverse excursion (MAE). If both SL and TP fall inside the same candle, the monitor conservatively records SL because intrabar ordering is unknown.
+
+## Manual broker action
+The Signals page allows an explicit manual trade intent from any displayed setup, even below the automated 70% probability gate. Manual actions are tagged separately and do not change strict-signal statistics. Broker submission uses the MT5 bridge. Demo mode can be used once the bridge URL/token are configured. Live manual dispatch is additionally gated by `ALLOW_MANUAL_LIVE=true`, broker mode `live`, an admin token, and an explicit per-order confirmation. Autonomous live-money dispatch remains disabled.
