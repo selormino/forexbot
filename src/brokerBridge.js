@@ -29,8 +29,8 @@ async function dispatchManual(id,{confirm}={}){
   if(!intent)throw new Error('Execution intent not found');
   if(intent.status!=='PENDING')throw new Error('Intent is not pending');
   if(!String(intent.reason||'').startsWith('Manual user-selected'))throw new Error('Only explicit manual intents can use this endpoint');
-  const payload={clientOrderId:`forexbot-${intent.id}`,symbol:intent.symbol,timeframe:intent.timeframe,side:intent.side,entry:intent.entry,stop:intent.stop,target:intent.target,units:intent.units,probability:intent.probability,mode:bridgeMode};
-  const r=await axios.post(String(process.env.MT5_BRIDGE_URL).replace(/\/$/,'')+'/orders',payload,{headers:{authorization:`Bearer ${process.env.MT5_BRIDGE_TOKEN}`,'content-type':'application/json'},timeout:12000});
+  const payload={clientOrderId:`forexbot-${intent.id}`,symbol:intent.symbol,timeframe:intent.timeframe,side:intent.side,entry:intent.entry,entryType:'STOP_CONFIRMATION',stop:intent.stop,target:intent.target,riskPct:intent.risk_pct||Number(process.env.RISK_PER_TRADE_PCT||0.5),sizingMode:intent.sizing_mode||'BROKER_RISK_PERCENT',probability:intent.probability,mode:bridgeMode};
+  const r=await axios.post(String(process.env.MT5_BRIDGE_URL).replace(/\/$/,'')+'/orders',payload,{headers:{authorization:`Bearer ${process.env.MT5_BRIDGE_TOKEN}`,'content-type':'application/json',...(bridgeMode==='live'?{'x-live-confirm':'CONFIRM_LIVE_TRADE'}:{})},timeout:12000});
   const brokerId=String(r.data?.orderId||r.data?.ticket||'');
   db.prepare("UPDATE execution_intents SET status=?,broker_order_id=?,reason=?,updated_at=? WHERE id=?")
     .run(bridgeMode==='live'?'LIVE_SENT':'DEMO_SENT',brokerId,`Manual ${bridgeMode} trade sent to configured MT5 bridge`,Date.now(),id);
