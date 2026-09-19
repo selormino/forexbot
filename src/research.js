@@ -32,14 +32,14 @@ function recordNews(symbol,articles,now=Date.now()){
 function context(symbol,at){
   const row=db.prepare("SELECT * FROM context_snapshots WHERE kind='macro' AND symbol='USD' AND known_at<=? ORDER BY known_at DESC LIMIT 1").get(at);
   const macro=row&&at-row.known_at<7*864e5?JSON.parse(row.payload):{};
-  const news=db.prepare('SELECT score FROM news_history WHERE symbol=? AND known_at<=? AND known_at>=? AND published_at>=?').all(symbol,at,at-864e5,at-864e5);
+  const news=db.prepare('SELECT score,headline,provider,published_at FROM news_history WHERE symbol=? AND known_at<=? AND known_at>=? AND published_at>=? ORDER BY known_at DESC LIMIT 20').all(symbol,at,at-864e5,at-864e5);
   const orientation=symbol.startsWith('USD')?1:-1;
   const newsSentiment=news.length?news.reduce((s,n)=>s+n.score,0)/news.length:0;
   const rateBias=((macro.DGS10?.change||0)*2+(macro.FEDFUNDS?.change||0))*orientation;
   const growthBias=((macro.GDPC1?.change||0)-(macro.UNRATE?.change||0))*orientation;
   const inflationBias=(macro.CPIAUCSL?.change||0)*orientation;
   const macroBias=Math.tanh((rateBias+growthBias+inflationBias)*50);
-  return {macroAvailable:Object.keys(macro).length===5,newsAvailable:news.length>0,newsSentiment,newsCount:news.length,macroBias,macro,
+  return {macroAvailable:Object.keys(macro).length===5,newsAvailable:news.length>0,newsSentiment,newsCount:news.length,newsHeadlines:news.slice(0,5).map(n=>({headline:n.headline,provider:n.provider,time:n.published_at,score:n.score})),macroBias,macro,
     x:[
     ...['FEDFUNDS','CPIAUCSL','UNRATE','GDPC1','DGS10'].map(id=>Math.tanh((macro[id]?.change||0)*100)*orientation),
     macro.FEDFUNDS?Math.tanh(macro.FEDFUNDS.level/10)*orientation:0,
@@ -227,7 +227,7 @@ function signal(symbol,tf='1h',events=null){
     confidence:Math.abs(p-.5)*2,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,
     analysis:{thesis:`${lean} lean from calibrated model with ${(directionalProbability*100).toFixed(1)}% directional probability; strict execution requires all confirmation gates.`,
       technical:technicalReasons,priceAction:{structure:f.priceAction.structure,patterns:f.priceAction.patterns,bias:f.priceAction.bias},
-      news:{available:f.context.newsAvailable,count:f.context.newsCount,sentiment:f.context.newsSentiment},
+      news:{available:f.context.newsAvailable,count:f.context.newsCount,sentiment:f.context.newsSentiment,headlines:f.context.newsHeadlines},
       macro:{available:f.context.macroAvailable,bias:f.context.macroBias,series:f.context.macro},
       calendar:relevantEvents.map(e=>({time:e.time,event:e.event,currency:e.currency||e.country,impact:e.impact,actual:e.actual,forecast:e.forecast,previous:e.previous})),
       confirmations,risks},
