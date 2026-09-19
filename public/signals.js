@@ -38,7 +38,7 @@ window.showDetail=i=>{const s=board[i],a=s.analysis||{},p=s.tradePlan||{},pa=a.p
  ${lines('Confirmations',a.confirmations)}
  ${lines('Risks / blockers',a.risks)}
  <section><h3>Price action</h3><p>Structure: <b>${esc(pa.structure||'—')}</b></p><p>Patterns: ${esc((pa.patterns||[]).join(', ')||'none detected')}</p><p>Bias score: ${pa.bias==null?'—':Number(pa.bias).toFixed(2)}</p></section>
- <section><h3>News context</h3><p>${n.available?'Available':'Unavailable'} · ${n.count||0} recent items</p><p>Sentiment: ${n.sentiment==null?'—':Number(n.sentiment).toFixed(2)} (-1 bearish to +1 bullish)</p></section>
+ <section><h3>News context</h3><p>${n.available?'Available':'Unavailable'} · ${n.count||0} recent items</p><p>Sentiment: ${n.sentiment==null?'—':Number(n.sentiment).toFixed(2)} (-1 bearish to +1 bullish)</p>${(n.headlines||[]).map(h=>`<p><b>${esc(h.provider||'news')}</b> · ${esc(h.headline||'')}<br><small>${h.time?new Date(h.time).toLocaleString():''} · score ${h.score==null?'—':Number(h.score).toFixed(2)}</small></p>`).join('')}</section>
  <section><h3>Macro context</h3><p>${m.available?'Available':'Unavailable'} · bias ${m.bias==null?'—':Number(m.bias).toFixed(2)}</p><p>Uses Fed funds, CPI, unemployment, real GDP and US 10Y yield context.</p></section>
  <section><h3>Economic calendar</h3>${(a.calendar||[]).map(e=>`<p><b>${esc(e.impact||'')}</b> ${esc(e.currency||'')} · ${esc(e.event||'')}<br><small>${e.time?new Date(e.time).toLocaleString():''} · actual ${esc(e.actual??'—')} · forecast ${esc(e.forecast??'—')} · previous ${esc(e.previous??'—')}</small></p>`).join('')||'<p>No near-term events returned.</p>'}</section></div>`;
 };
