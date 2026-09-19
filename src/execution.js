@@ -59,4 +59,20 @@ function approve(id){
   db.prepare("UPDATE execution_intents SET status='APPROVED',reason='Explicitly approved for broker bridge',updated_at=? WHERE id=?").run(Date.now(),id);
   return db.prepare('SELECT * FROM execution_intents WHERE id=?').get(id);
 }
-module.exports={status,createIntent,list,approve};
+
+function createManualIntent(signal,{side,equity=10000,riskPct=.5,maxPositionUnits=100000}={}){
+  const plan=signal.tradePlan;
+  const chosen=side||signal.leanDirection;
+  if(!plan||!['LONG','SHORT'].includes(chosen))throw new Error('Signal has no manual trade plan');
+  const entry=Number(plan.entry),stop=chosen===plan.side?Number(plan.stop):entry+(chosen==='LONG'?-1:1)*Math.abs(Number(plan.stop)-entry);
+  const target=chosen===plan.side?Number(plan.target):entry+(chosen==='LONG'?1:-1)*Math.abs(Number(plan.target)-entry);
+  const stopDistance=Math.abs(entry-stop);
+  if(![entry,stop,target,equity,riskPct,maxPositionUnits].every(Number.isFinite)||stopDistance<=0||equity<=0||riskPct<=0||riskPct>2)throw new Error('Invalid manual trade parameters');
+  const riskCash=equity*(riskPct/100),units=Math.min(maxPositionUnits,Math.max(1,Math.floor(riskCash/stopDistance)));
+  const m=mode();
+  if(!['paper','demo','bridge'].includes(m))throw new Error('Execution mode is off');
+  const r=db.prepare(`INSERT INTO execution_intents(created_at,symbol,timeframe,side,entry,stop,target,units,probability,model_id,mode,status,reason,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(Date.now(),signal.symbol,signal.timeframe||'1h',chosen,entry,stop,target,units,signal.directionalProbability,signal.modelId||null,m,'PENDING','Manual user-selected signal; probability threshold may be below automated gate',Date.now());
+  return {created:true,id:r.lastInsertRowid,status:'PENDING',manual:true,plan:{side:chosen,entry,stop,target,units,riskCash,riskReward:Math.abs(target-entry)/stopDistance}};
+}
+module.exports={status,createIntent,createManualIntent,list,approve};
