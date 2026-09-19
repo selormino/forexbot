@@ -1,4 +1,5 @@
 const db=require('./db');
+const {distanceUnits}=require('./tradePlan');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS signal_records(
@@ -36,84 +37,149 @@ CREATE INDEX IF NOT EXISTS signal_records_recent ON signal_records(created_at DE
 CREATE INDEX IF NOT EXISTS signal_records_pending ON signal_records(status,due_at);
 CREATE INDEX IF NOT EXISTS signal_records_symbol ON signal_records(symbol,timeframe,created_at DESC);
 `);
+function addColumn(name,def){const cols=db.prepare('PRAGMA table_info(signal_records)').all().map(x=>x.name);if(!cols.includes(name))db.exec(`ALTER TABLE signal_records ADD COLUMN ${name} ${def}`);}
+addColumn('lean_direction',"TEXT");
+addColumn('plan_json',"TEXT");
+addColumn('analysis_json',"TEXT");
+addColumn('entry_triggered_at',"INTEGER");
+addColumn('entry_expiry_bars',"INTEGER NOT NULL DEFAULT 4");
+addColumn('hold_bars',"INTEGER NOT NULL DEFAULT 6");
+addColumn('stop_price',"REAL");
+addColumn('target_price',"REAL");
+addColumn('tp1_price',"REAL");
+addColumn('stop_pips',"REAL");
+addColumn('target_pips',"REAL");
+addColumn('unit_label',"TEXT");
+addColumn('outcome_pips',"REAL");
+addColumn('realized_r',"REAL");
+addColumn('mfe_pips',"REAL");
+addColumn('mae_pips',"REAL");
 
 const tfMs=tf=>({'1h':3600000,'4h':14400000}[tf]||0);
 const minProbability=()=>Math.max(.5,Math.min(.95,Number(process.env.SIGNAL_MIN_PROBABILITY||.70)));
 
 function record(signal){
-  const step=tfMs(signal.timeframe); if(!step||!Number.isFinite(signal.sourceCandleTs))throw new Error('Signal is missing source candle metadata');
-  const horizon=Math.max(1,Number(signal.horizonBars||4));
-  const threshold=Number(signal.minProbability||minProbability());
-  const candidate=signal.candidateDirection||'WAIT';
-  const directionalProbability=Number(signal.directionalProbability||0);
-  const qualified=['LONG','SHORT'].includes(candidate)&&directionalProbability>=threshold;
+  const step=tfMs(signal.timeframe);if(!step||!Number.isFinite(signal.sourceCandleTs))throw new Error('Signal is missing source candle metadata');
+  const plan=signal.tradePlan;if(!plan)throw new Error('Signal is missing trade plan');
+  const threshold=Number(signal.minProbability||minProbability()),directionalProbability=Number(signal.directionalProbability||0);
+  const lean=signal.leanDirection||signal.candidateDirection||'WAIT';
+  const qualified=['LONG','SHORT'].includes(lean)&&directionalProbability>=threshold;
   const actionable=['LONG','SHORT'].includes(signal.direction);
   const key=[signal.symbol,signal.timeframe,signal.sourceCandleTs].join(':');
-  const status=qualified?'MONITORING':'FILTERED';
+  const status=qualified?'PENDING_ENTRY':'FILTERED';
+  const dueAt=signal.sourceCandleTs+(1+plan.entryExpiryBars+plan.holdBars)*step;
   const row={
-    key,createdAt:Date.now(),sourceTs:signal.sourceCandleTs,sourceCloseAt:signal.sourceCandleTs+step,
-    dueAt:signal.sourceCandleTs+(horizon+1)*step,symbol:signal.symbol,timeframe:signal.timeframe,
-    candidate,direction:signal.direction,probability:Number(signal.probability),directionalProbability,
-    threshold,price:Number(signal.price),modelId:signal.modelId||null,horizon,costBps:Number(signal.costs?.total||0),
-    qualified:+qualified,actionable:+actionable,status,filters:JSON.stringify(signal.filters||[]),
-    priceAction:JSON.stringify(signal.priceAction||null)
+    key,createdAt:Date.now(),sourceTs:signal.sourceCandleTs,sourceCloseAt:signal.sourceCandleTs+step,dueAt,
+    symbol:signal.symbol,timeframe:signal.timeframe,candidate:signal.candidateDirection||'WAIT',direction:signal.direction,
+    lean,probability:Number(signal.probability),directionalProbability,threshold,price:Number(signal.price),modelId:signal.modelId||null,
+    horizon:Number(signal.horizonBars||4),costBps:Number(signal.costs?.total||0),qualified:+qualified,actionable:+actionable,status,
+    filters:JSON.stringify(signal.filters||[]),priceAction:JSON.stringify(signal.priceAction||null),plan:JSON.stringify(plan),analysis:JSON.stringify(signal.analysis||null),
+    entry:plan.entry,stop:plan.stop,target:plan.target,tp1:plan.tp1,stopPips:plan.stopPips,targetPips:plan.targetPips,unitLabel:plan.unitLabel,
+    entryExpiryBars:plan.entryExpiryBars,holdBars:plan.holdBars
   };
   db.prepare(`INSERT OR IGNORE INTO signal_records(
-    signal_key,created_at,source_ts,source_close_at,due_at,symbol,timeframe,candidate_direction,direction,
-    probability,directional_probability,threshold,price,model_id,horizon_bars,cost_bps,qualified,actionable,status,filters_json,price_action_json
-  ) VALUES(@key,@createdAt,@sourceTs,@sourceCloseAt,@dueAt,@symbol,@timeframe,@candidate,@direction,
-    @probability,@directionalProbability,@threshold,@price,@modelId,@horizon,@costBps,@qualified,@actionable,@status,@filters,@priceAction)`).run(row);
+    signal_key,created_at,source_ts,source_close_at,due_at,symbol,timeframe,candidate_direction,direction,lean_direction,
+    probability,directional_probability,threshold,price,model_id,horizon_bars,cost_bps,qualified,actionable,status,filters_json,price_action_json,
+    plan_json,analysis_json,entry_price,stop_price,target_price,tp1_price,stop_pips,target_pips,unit_label,entry_expiry_bars,hold_bars
+  ) VALUES(@key,@createdAt,@sourceTs,@sourceCloseAt,@dueAt,@symbol,@timeframe,@candidate,@direction,@lean,
+    @probability,@directionalProbability,@threshold,@price,@modelId,@horizon,@costBps,@qualified,@actionable,@status,@filters,@priceAction,
+    @plan,@analysis,@entry,@stop,@target,@tp1,@stopPips,@targetPips,@unitLabel,@entryExpiryBars,@holdBars)`).run(row);
   return db.prepare('SELECT * FROM signal_records WHERE signal_key=?').get(key);
 }
 
-function settle(limit=2000){
-  const pending=db.prepare("SELECT * FROM signal_records WHERE status='MONITORING' AND due_at<=? ORDER BY due_at LIMIT ?").all(Date.now(),Math.max(1,Math.min(10000,Number(limit)||2000)));
-  const update=db.prepare(`UPDATE signal_records SET settled_at=?,status='SETTLED',entry_price=?,exit_price=?,gross_return=?,net_return=?,success=?,outcome=? WHERE id=?`);
-  let settled=0,wins=0;
+function hit(row,bar){
+  const long=row.lean_direction==='LONG';
+  const entryHit=long?bar.high>=row.entry_price:bar.low<=row.entry_price;
+  const stopHit=long?bar.low<=row.stop_price:bar.high>=row.stop_price;
+  const targetHit=long?bar.high>=row.target_price:bar.low<=row.target_price;
+  return {entryHit,stopHit,targetHit};
+}
+function updateMfeMae(row,bars){
+  const side=row.lean_direction==='LONG'?1:-1,entry=row.entry_price;
+  let mfe=0,mae=0;
+  for(const b of bars){
+    const favorable=side===1?b.high-entry:entry-b.low;
+    const adverse=side===1?entry-b.low:b.high-entry;
+    mfe=Math.max(mfe,favorable);mae=Math.max(mae,adverse);
+  }
+  return {mfePips:distanceUnits(row.symbol,entry,entry+side*mfe),maePips:distanceUnits(row.symbol,entry,entry-side*mae)};
+}
+function finalize(row,outcome,exitPrice,settledAt,bars){
+  const side=row.lean_direction==='LONG'?1:-1,raw=side*(exitPrice/row.entry_price-1),net=raw-row.cost_bps/10000;
+  const success=['TP','TIMEOUT_WIN'].includes(outcome)?1:0;
+  const outcomePips=side*distanceUnits(row.symbol,row.entry_price,exitPrice)*(exitPrice>=row.entry_price?1:-1);
+  const realizedR=(side*(exitPrice-row.entry_price))/Math.max(Math.abs(row.entry_price-row.stop_price),1e-12);
+  const mm=updateMfeMae(row,bars);
+  db.prepare(`UPDATE signal_records SET settled_at=?,status='SETTLED',exit_price=?,gross_return=?,net_return=?,success=?,outcome=?,outcome_pips=?,realized_r=?,mfe_pips=?,mae_pips=? WHERE id=?`)
+    .run(settledAt,exitPrice,raw,net,success,outcome,outcomePips,realizedR,mm.mfePips,mm.maePips,row.id);
+  return success;
+}
+function advance(limit=3000){
+  const rows=db.prepare("SELECT * FROM signal_records WHERE status IN ('PENDING_ENTRY','ACTIVE') ORDER BY id LIMIT ?").all(Math.max(1,Math.min(10000,Number(limit)||3000)));
+  let triggered=0,expired=0,settled=0,wins=0;
   const tx=db.transaction(()=>{
-    for(const s of pending){
-      const bars=db.prepare('SELECT ts,open,close FROM candles WHERE symbol=? AND timeframe=? AND ts>? ORDER BY ts LIMIT ?').all(s.symbol,s.timeframe,s.source_ts,s.horizon_bars);
-      if(bars.length<s.horizon_bars)continue;
-      const entry=bars[0],exit=bars[bars.length-1];
-      const raw=exit.close/entry.open-1,side=s.candidate_direction==='LONG'?1:-1;
-      const gross=side*raw,net=gross-s.cost_bps/10000,success=net>0?1:0;
-      update.run(Date.now(),entry.open,exit.close,gross,net,success,success?'WIN':'LOSS',s.id);
-      settled++;wins+=success;
+    for(let row of rows){
+      const after=db.prepare('SELECT ts,open,high,low,close FROM candles WHERE symbol=? AND timeframe=? AND ts>? ORDER BY ts LIMIT ?')
+        .all(row.symbol,row.timeframe,row.source_ts,row.entry_expiry_bars+row.hold_bars+2);
+      if(!after.length)continue;
+      if(row.status==='PENDING_ENTRY'){
+        const expirySlice=after.slice(0,row.entry_expiry_bars);
+        let triggerIndex=-1;
+        for(let i=0;i<expirySlice.length;i++){if(hit(row,expirySlice[i]).entryHit){triggerIndex=i;break;}}
+        if(triggerIndex<0){
+          if(after.length>=row.entry_expiry_bars){
+            db.prepare("UPDATE signal_records SET status='EXPIRED',settled_at=?,outcome='NO_ENTRY' WHERE id=?").run(Date.now(),row.id);expired++;
+          }
+          continue;
+        }
+        const triggerBar=after[triggerIndex];
+        db.prepare("UPDATE signal_records SET status='ACTIVE',entry_triggered_at=? WHERE id=?").run(triggerBar.ts,row.id);
+        row={...row,status:'ACTIVE',entry_triggered_at:triggerBar.ts};triggered++;
+      }
+      const all=db.prepare('SELECT ts,open,high,low,close FROM candles WHERE symbol=? AND timeframe=? AND ts>=? ORDER BY ts LIMIT ?')
+        .all(row.symbol,row.timeframe,row.entry_triggered_at,row.hold_bars);
+      if(!all.length)continue;
+      let outcome=null,exitPrice=null,endIndex=-1;
+      for(let i=0;i<all.length;i++){
+        const h=hit(row,all[i]);
+        if(h.stopHit&&h.targetHit){outcome='SL';exitPrice=row.stop_price;endIndex=i;break;}
+        if(h.stopHit){outcome='SL';exitPrice=row.stop_price;endIndex=i;break;}
+        if(h.targetHit){outcome='TP';exitPrice=row.target_price;endIndex=i;break;}
+      }
+      if(!outcome&&all.length>=row.hold_bars){
+        const last=all[all.length-1],side=row.lean_direction==='LONG'?1:-1;
+        const net=side*(last.close/row.entry_price-1)-row.cost_bps/10000;
+        outcome=net>0?'TIMEOUT_WIN':'TIMEOUT_LOSS';exitPrice=last.close;endIndex=all.length-1;
+      }
+      if(outcome){const success=finalize(row,outcome,exitPrice,all[endIndex].ts,all.slice(0,endIndex+1));settled++;wins+=success;}
     }
-  }); tx();
-  return {settled,wins};
+  });tx();
+  return {triggered,expired,settled,wins};
 }
+function settle(limit=3000){return advance(limit);}
 
-function wilson(wins,n,z=1.96){
-  if(!n)return {lower:0,upper:0};
-  const p=wins/n,z2=z*z,den=1+z2/n,center=(p+z2/(2*n))/den,margin=z*Math.sqrt((p*(1-p)+z2/(4*n))/n)/den;
-  return {lower:Math.max(0,center-margin),upper:Math.min(1,center+margin)};
-}
+function wilson(wins,n,z=1.96){if(!n)return {lower:0,upper:0};const p=wins/n,z2=z*z,den=1+z2/n,center=(p+z2/(2*n))/den,margin=z*Math.sqrt((p*(1-p)+z2/(4*n))/n)/den;return {lower:Math.max(0,center-margin),upper:Math.min(1,center+margin)};}
 function aggregate(rows){
-  const settled=rows.filter(r=>r.status==='SETTLED'),wins=settled.filter(r=>r.success===1).length;
-  const ci=wilson(wins,settled.length);
-  return {total:rows.length,settled:settled.length,pending:rows.filter(r=>r.status==='MONITORING').length,wins,losses:settled.length-wins,
+  const settled=rows.filter(r=>r.status==='SETTLED'),wins=settled.filter(r=>r.success===1).length,ci=wilson(wins,settled.length);
+  const tp=settled.filter(r=>r.outcome==='TP').length,sl=settled.filter(r=>r.outcome==='SL').length;
+  return {total:rows.length,pendingEntry:rows.filter(r=>r.status==='PENDING_ENTRY').length,active:rows.filter(r=>r.status==='ACTIVE').length,
+    expired:rows.filter(r=>r.status==='EXPIRED').length,settled:settled.length,wins,losses:settled.length-wins,tp,sl,
     accuracy:settled.length?wins/settled.length:null,confidence95:ci,
-    averageProbability:settled.length?settled.reduce((s,r)=>s+r.directional_probability,0)/settled.length:null};
+    averageProbability:settled.length?settled.reduce((s,r)=>s+r.directional_probability,0)/settled.length:null,
+    averageR:settled.length?settled.reduce((s,r)=>s+Number(r.realized_r||0),0)/settled.length:null};
 }
 function metrics(){
-  const qualified=db.prepare('SELECT * FROM signal_records WHERE qualified=1 ORDER BY created_at').all();
-  const actionable=qualified.filter(r=>r.actionable===1);
-  const groups={};
+  const qualified=db.prepare('SELECT * FROM signal_records WHERE qualified=1 ORDER BY created_at').all(),actionable=qualified.filter(r=>r.actionable===1),groups={};
   for(const r of qualified){const k=r.symbol+':'+r.timeframe;(groups[k]||(groups[k]=[])).push(r);}
-  return {
-    targetAccuracy:Number(process.env.SIGNAL_TARGET_ACCURACY||.70),
-    minProbability:minProbability(),
-    qualified:aggregate(qualified),
-    actionable:aggregate(actionable),
+  const q=aggregate(qualified);
+  return {targetAccuracy:Number(process.env.SIGNAL_TARGET_ACCURACY||.70),minProbability:minProbability(),qualified:q,actionable:aggregate(actionable),
     bySeries:Object.fromEntries(Object.entries(groups).map(([k,v])=>[k,aggregate(v)])),
-    readyForBrokerValidation:aggregate(qualified).settled>=Number(process.env.SIGNAL_MIN_SETTLED||50)&&(aggregate(qualified).accuracy||0)>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&aggregate(qualified).confidence95.lower>=Number(process.env.SIGNAL_MIN_CONFIDENCE_LOWER||.60)
-  };
+    readyForBrokerValidation:q.settled>=Number(process.env.SIGNAL_MIN_SETTLED||50)&&(q.accuracy||0)>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&q.confidence95.lower>=Number(process.env.SIGNAL_MIN_CONFIDENCE_LOWER||.60)};
 }
-function history(limit=250){
-  return db.prepare(`SELECT id,created_at,source_close_at,due_at,settled_at,symbol,timeframe,candidate_direction,direction,
-    directional_probability,threshold,price,model_id,qualified,actionable,status,entry_price,exit_price,net_return,success,outcome,
-    filters_json,price_action_json FROM signal_records ORDER BY id DESC LIMIT ?`).all(Math.max(1,Math.min(2000,Number(limit)||250)))
-    .map(r=>({...r,filters:JSON.parse(r.filters_json||'[]'),priceAction:JSON.parse(r.price_action_json||'null'),filters_json:undefined,price_action_json:undefined}));
+function history(limit=300){
+  return db.prepare('SELECT * FROM signal_records ORDER BY id DESC LIMIT ?').all(Math.max(1,Math.min(2000,Number(limit)||300))).map(r=>({
+    ...r,filters:JSON.parse(r.filters_json||'[]'),priceAction:JSON.parse(r.price_action_json||'null'),plan:JSON.parse(r.plan_json||'null'),analysis:JSON.parse(r.analysis_json||'null'),
+    filters_json:undefined,price_action_json:undefined,plan_json:undefined,analysis_json:undefined
+  }));
 }
-module.exports={record,settle,metrics,history,minProbability,wilson};
+module.exports={record,advance,settle,metrics,history,minProbability,wilson};
