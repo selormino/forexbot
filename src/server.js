@@ -6,10 +6,13 @@ const history=require('./history');const {syncMacro,macroStatus}=require('./macr
 const execution=require('./execution');
 const signalMonitor=require('./signalMonitor');
 const brokerBridge=require('./brokerBridge');
+const settings=require('./settings');
 const app=express();app.use(helmet({contentSecurityPolicy:false}));app.use(cors());app.use(express.json({limit:'1mb'}));app.use(express.static(path.join(__dirname,'../public')));
 const enabled=()=>process.env.TRADING_ENABLED==='true';
 const admin=(req,res,next)=>{const configured=process.env.ADMIN_API_KEY;if(!configured)return res.status(503).json({error:'ADMIN_API_KEY is not configured'});const supplied=req.get('x-admin-token')||String(req.get('authorization')||'').replace(/^Bearer\s+/i,'');if(supplied!==configured)return res.status(401).json({error:'Invalid admin token'});next();};
 app.use('/api', (req,res,next)=>{if(req.method==='POST')return admin(req,res,next);next();});
+app.get('/api/settings',(req,res)=>res.json(settings.status()));
+app.post('/api/settings/signal-threshold',(req,res)=>{try{const value=Number(req.body?.value);res.json({...settings.status(),signalMinProbability:settings.setSignalMinProbability(value),source:'database',updatedAt:Date.now()});}catch(e){res.status(400).json({error:e.message});}});
 app.get('/api/research/status',(req,res)=>res.json({version:research.VERSION,models:research.status()}));
 app.get('/api/research/edge',(req,res)=>{const models=research.status();res.json({version:research.VERSION,target:Number(process.env.SIGNAL_TARGET_ACCURACY||.70),series:models.map(m=>({symbol:m.symbol,timeframe:m.timeframe,approved:m.approved,samples:m.samples,setupBacktest:m.setupBacktest,thresholdSweep:m.thresholdSweep||[],contextSamples:m.contextSamples||0}))});});
 app.get('/api/signals/metrics',(req,res)=>res.json(signalMonitor.metrics()));
@@ -18,7 +21,9 @@ app.get('/api/signals/board',async(req,res)=>{try{const e=await calendar().catch
 app.get('/api/execution/status',(req,res)=>res.json(execution.status()));
 app.get('/api/broker/status',async(req,res)=>res.json(await brokerBridge.health()));
 app.post('/api/broker/demo-dispatch/:id',admin,async(req,res)=>{try{res.json(await brokerBridge.dispatchDemo(Number(req.params.id)));}catch(e){res.status(400).json({error:e.message});}});
-app.post('/api/broker/manual-dispatch/:id',admin,async(req,res)=>{try{res.json(await brokerBridge.dispatchManual(Number(req.params.id),{confirm:req.body?.confirm}));}catch(e){res.status(400).json({error:e.message});}});
+app.post('/api/broker/manual-preview/:id',admin,async(req,res)=>{try{res.json(await brokerBridge.previewManual(Number(req.params.id)));}catch(e){res.status(400).json({error:e.response?.data?.detail||e.message});}});
+app.post('/api/broker/symbols',admin,async(req,res)=>{try{res.json(await brokerBridge.symbols(String(req.body?.query||'')));}catch(e){res.status(400).json({error:e.response?.data?.detail||e.message});}});
+app.post('/api/broker/manual-dispatch/:id',admin,async(req,res)=>{try{res.json(await brokerBridge.dispatchManual(Number(req.params.id),{confirm:req.body?.confirm}));}catch(e){res.status(400).json({error:e.response?.data?.detail||e.message});}});
 app.get('/api/execution/intents',(req,res)=>res.json(execution.list(req.query.limit)));
 app.post('/api/execution/evaluate',admin,async(req,res)=>{try{const symbol=String(req.body?.symbol||'EURUSD').toUpperCase();const timeframe=String(req.body?.timeframe||'1h');if(!SYMBOLS.includes(symbol))throw new Error('Unsupported symbol');const e=await calendar().catch(()=>null);const signal=research.signal(symbol,timeframe,e);res.json({signal,intent:execution.createIntent(signal,{riskPct:Number(req.body?.riskPct||0.5),equity:Number(req.body?.equity||10000),maxPositionUnits:Number(req.body?.maxUnits||100000)})});}catch(e){res.status(400).json({error:e.message});}});
 app.post('/api/execution/manual',admin,async(req,res)=>{try{const symbol=String(req.body?.symbol||'').toUpperCase(),timeframe=String(req.body?.timeframe||'1h'),side=String(req.body?.side||'').toUpperCase();if(!SYMBOLS.includes(symbol))throw new Error('Unsupported symbol');if(!['LONG','SHORT'].includes(side))throw new Error('side must be LONG or SHORT');const e=await calendar().catch(()=>null);const signal=research.signal(symbol,timeframe,e);const intent=execution.createManualIntent(signal,{side,equity:Number(req.body?.equity||process.env.PAPER_EQUITY||10000),riskPct:Number(req.body?.riskPct||process.env.RISK_PER_TRADE_PCT||0.5),maxPositionUnits:Number(req.body?.maxUnits||process.env.MAX_POSITION_UNITS||100000)});res.json({signal,intent,broker:brokerBridge.status()});}catch(e){res.status(400).json({error:e.message});}});
