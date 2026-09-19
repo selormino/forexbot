@@ -3,9 +3,10 @@ const db=require('./db');
 const ti=require('technicalindicators');
 const {analyzePriceAction}=require('./priceAction');
 const {buildTradePlan}=require('./tradePlan');
+const {signalMinProbability}=require('./settings');
 const {createHash}=require('crypto');
 const VERSION='technical-pa-v5-trade-plans';
-const MIN_PROB=()=>Math.max(.5,Math.min(.95,Number(process.env.SIGNAL_MIN_PROBABILITY||.70)));
+const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
 CREATE TABLE IF NOT EXISTS research_models(id INTEGER PRIMARY KEY,created_at INTEGER,symbol TEXT,timeframe TEXT,version TEXT,model TEXT,report TEXT,approved INTEGER);
@@ -66,7 +67,7 @@ function features(rows,symbol,at){
 }
 function costs(symbol){
   // Round-trip estimates in basis points, not measured broker quotes.
-  const defaults={EURUSD:2,GBPUSD:3,USDJPY:3,AUDUSD:3,USDCAD:3,XAUUSD:5,XAGUSD:12,WTI:10};
+  const defaults={EURUSD:2,GBPUSD:3,USDJPY:3,AUDUSD:3,USDCAD:3,XAUUSD:5,XAGUSD:12,WTI:10,BTCUSD:12,ETHUSD:14,SOLUSD:18,XRPUSD:20,LTCUSD:18};
   const spread=Number(process.env['SPREAD_BPS_'+symbol]??defaults[symbol]??5);
   const slippage=Number(process.env.SLIPPAGE_BPS??1),commission=Number(process.env.COMMISSION_BPS??.5);
   if(![spread,slippage,commission].every(v=>Number.isFinite(v)&&v>=0))throw new Error('Invalid transaction costs');
@@ -145,7 +146,7 @@ function evaluateTradePlans(m,rows,symbol,costBps,threshold=MIN_PROB()){
     assumption:'Entry must trigger within four bars; then ATR stop/target is monitored for six bars. If SL and TP both occur in one candle, SL is assumed first (conservative). Estimated costs are deducted from R.'};
 }
 function thresholdDiagnostics(m,rows,symbol,costBps){
-  return [.55,.60,.65,.70,.75,.80].map(threshold=>{
+  return [...new Set([.55,.60,.65,.70,.75,.80,MIN_PROB()].map(x=>Number(x.toFixed(2))))].sort((a,b)=>a-b).map(threshold=>{
     const directional=rows.filter(r=>Math.max(predict(m,r.x),1-predict(m,r.x))>=threshold);
     const correct=directional.filter(r=>(predict(m,r.x)>=.5)===(r.y===1)).length;
     const setup=evaluateTradePlans(m,rows,symbol,costBps,threshold);
