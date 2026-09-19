@@ -1,5 +1,6 @@
 const db=require('./db');
 const {distanceUnits}=require('./tradePlan');
+const {signalMinProbability}=require('./settings');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS signal_records(
@@ -56,7 +57,7 @@ addColumn('mfe_pips',"REAL");
 addColumn('mae_pips',"REAL");
 
 const tfMs=tf=>({'1h':3600000,'4h':14400000}[tf]||0);
-const minProbability=()=>Math.max(.5,Math.min(.95,Number(process.env.SIGNAL_MIN_PROBABILITY||.70)));
+const minProbability=()=>signalMinProbability();
 
 function record(signal){
   const step=tfMs(signal.timeframe);if(!step||!Number.isFinite(signal.sourceCandleTs))throw new Error('Signal is missing source candle metadata');
