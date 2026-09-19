@@ -75,14 +75,14 @@ function costs(symbol){
 function dataset(symbol,tf){
   if(!ms(tf))throw new Error('Timeframe must be 1h or 4h');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts').all(symbol,tf,ms(tf),Date.now());
-  const out=[],horizon=4;
-  for(let i=59;i+horizon<rows.length;i++){
+  const out=[],horizon=4,lookahead=10;
+  for(let i=59;i+lookahead<rows.length;i++){
     const at=rows[i].ts+ms(tf),f=features(rows.slice(Math.max(0,i-119),i+1),symbol,at);
     // Enter next open, exit horizon close. Reject gaps/provider mixing inside outcome window.
-    const segment=rows.slice(i,i+horizon+1);
+    const segment=rows.slice(i,i+lookahead+1);
     if(segment.some((r,j)=>r.provider!==rows[i].provider||(j&&r.ts-segment[j-1].ts!==ms(tf))))continue;
     const ret=rows[i+horizon].close/rows[i+1].open-1;
-    out.push({...f,at,end:rows[i+horizon].ts+ms(tf),ret,y:ret>0?1:0});
+    out.push({...f,at,end:rows[i+horizon].ts+ms(tf),ret,y:ret>0?1:0,futureBars:rows.slice(i+1,i+lookahead+1).map(r=>({ts:r.ts,open:r.open,high:r.high,low:r.low,close:r.close}))});
   }
   return out;
 }
@@ -112,6 +112,38 @@ function evaluate(m,rows,costBps){
   }
   return {samples:rows.length,accuracy:correct/rows.length,logLoss:ll/rows.length,brier:brier/rows.length,trades,netReturn:equity-1,expectancy:trades?net/trades:0,profitFactor:losses?gains/losses:null,maxDrawdown:drawdown,costBps,bins:bins.map(b=>({...b,predicted:b.samples?b.predicted/b.samples:null,observed:b.samples?b.observed/b.samples:null})),assumption:'Unlevered fixed-horizon, non-overlapping trades; excludes financing and intrabar stops'};
 }
+function evaluateTradePlans(m,rows,symbol,costBps){
+  const threshold=MIN_PROB();let candidates=0,triggered=0,expired=0,wins=0,losses=0,tp=0,sl=0,timeout=0,sumR=0,gainR=0,lossR=0;
+  for(const r of rows){
+    const p=predict(m,r.x),directionalProbability=Math.max(p,1-p);if(directionalProbability<threshold)continue;
+    const side=p>=.5?'LONG':'SHORT',sgn=side==='LONG'?1:-1;
+    if(r.regime!=='trend'||sgn*r.trend<=0)continue;
+    if(side==='LONG'&&r.priceAction.bias<-.34)continue;if(side==='SHORT'&&r.priceAction.bias>.34)continue;
+    if(r.atr/r.price*10000<costBps*2)continue;
+    if(r.context?.newsAvailable&&((side==='LONG'&&r.context.newsSentiment<-.25)||(side==='SHORT'&&r.context.newsSentiment>.25)))continue;
+    if(r.context?.macroAvailable&&((side==='LONG'&&r.context.macroBias<-.35)||(side==='SHORT'&&r.context.macroBias>.35)))continue;
+    candidates++;
+    const pseudo={symbol,price:r.price,leanDirection:side,candidateDirection:side,directionalProbability,features:r,priceAction:r.priceAction};
+    const plan=buildTradePlan(pseudo,{side}),future=r.futureBars||[];let trigger=-1;
+    for(let i=0;i<Math.min(plan.entryExpiryBars,future.length);i++){if(side==='LONG'?future[i].high>=plan.entry:future[i].low<=plan.entry){trigger=i;break;}}
+    if(trigger<0){expired++;continue;}triggered++;
+    const active=future.slice(trigger,trigger+plan.holdBars);let exit=null,outcome=null;
+    for(const b of active){
+      const stopHit=side==='LONG'?b.low<=plan.stop:b.high>=plan.stop,targetHit=side==='LONG'?b.high>=plan.target:b.low<=plan.target;
+      if(stopHit&&targetHit){exit=plan.stop;outcome='SL';break;}
+      if(stopHit){exit=plan.stop;outcome='SL';break;}
+      if(targetHit){exit=plan.target;outcome='TP';break;}
+    }
+    if(!outcome&&active.length>=plan.holdBars){exit=active.at(-1).close;const net=sgn*(exit/plan.entry-1)-costBps/10000;outcome=net>0?'TIMEOUT_WIN':'TIMEOUT_LOSS';}
+    if(!outcome)continue;
+    const rr=sgn*(exit-plan.entry)/Math.max(Math.abs(plan.entry-plan.stop),1e-12)-costBps/10000/(Math.abs(plan.entry-plan.stop)/plan.entry);
+    sumR+=rr;if(rr>0)gainR+=rr;else lossR+=-rr;
+    const success=outcome==='TP'||outcome==='TIMEOUT_WIN';wins+=success?1:0;losses+=success?0:1;
+    tp+=outcome==='TP'?1:0;sl+=outcome==='SL'?1:0;timeout+=outcome.startsWith('TIMEOUT')?1:0;
+  }
+  return {candidates,triggered,expired,wins,losses,tp,sl,timeout,accuracy:triggered?wins/triggered:null,averageR:triggered?sumR/triggered:null,profitFactorR:lossR?gainR/lossR:null,
+    assumption:'Entry must trigger within four bars; then ATR stop/target is monitored for six bars. If SL and TP both occur in one candle, SL is assumed first (conservative). Estimated costs are deducted from R.'};
+}
 function split(rows){
   const calStart=Math.floor(rows.length*.6),testStart=Math.floor(rows.length*.8);
   return {train:rows.slice(0,calStart).filter(r=>r.end<rows[calStart].at),cal:rows.slice(calStart,testStart).filter(r=>r.end<rows[testStart].at),test:rows.slice(testStart)};
@@ -120,7 +152,7 @@ function trainSeries(symbol,tf){
   const rows=dataset(symbol,tf);if(rows.length<500)return {symbol,timeframe:tf,status:'insufficient-data',samples:rows.length};
   const {train,cal,test}=split(rows),weights=fit(train),calibration=calibrate(weights,cal);
   const m={version:VERSION,weights,calibration,horizon:4};
-  const cost=costs(symbol),metrics=evaluate(m,test,cost.total);
+  const cost=costs(symbol),metrics=evaluate(m,test,cost.total),setupBacktest=evaluateTradePlans(m,test,symbol,cost.total);
   const base=train.reduce((s,r)=>s+r.y,0)/train.length;
   const baselineLoss=-test.reduce((s,r)=>s+r.y*Math.log(base+1e-9)+(1-r.y)*Math.log(1-base+1e-9),0)/test.length;
   const contextSamples=train.filter(r=>r.context.macroAvailable&&r.context.newsAvailable).length;
@@ -132,10 +164,10 @@ function trainSeries(symbol,tf){
   for(const fraction of [.6,.8,1]){
     const window=rows.slice(0,Math.floor(rows.length*fraction));
     const parts=split(window),w=fit(parts.train),cal=calibrate(w,parts.cal);
-    folds.push(evaluate({weights:w,calibration:cal},parts.test,cost.total));
+    const foldModel={weights:w,calibration:cal};folds.push({...evaluate(foldModel,parts.test,cost.total),setup:evaluateTradePlans(foldModel,parts.test,symbol,cost.total)});
   }
-  const approved=qualified.length>=20&&qualifiedAccuracy>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&metrics.logLoss<baselineLoss&&folds.every(f=>f.logLoss<0.78);
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,baselineLoss,metrics,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,minProbability:threshold,approved,approvalRule:'At least 20 out-of-sample signals at the configured probability threshold, observed directional accuracy at/above target, and log-loss quality gates',split:'60/20/20 chronological, purged by outcome end; expanding-window folds',createdAt:Date.now()};
+  const approved=setupBacktest.triggered>=20&&setupBacktest.accuracy>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&(setupBacktest.averageR||0)>0&&metrics.logLoss<baselineLoss&&folds.every(f=>f.logLoss<0.78&&(f.setup.triggered<5||(f.setup.averageR||0)>0));
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,baselineLoss,metrics,setupBacktest,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,minProbability:threshold,approved,approvalRule:'At least 20 triggered out-of-sample trade plans at the configured probability threshold, observed setup accuracy at/above target, positive average R, and log-loss/fold stability gates',split:'60/20/20 chronological, purged by outcome end; expanding-window folds',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
@@ -203,4 +235,4 @@ function signal(symbol,tf='1h',events=null){
   return {...base,tradePlan:buildTradePlan(base,{side:lean})};
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
-module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,fit,calibrate,predict,evaluate,split,trainSeries,signal,status};
+module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,fit,calibrate,predict,evaluate,evaluateTradePlans,split,trainSeries,signal,status};
