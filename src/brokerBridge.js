@@ -17,6 +17,23 @@ async function health(){
     return {...status(),reachable:true,bridge:r.data};
   }catch(e){return {...status(),reachable:false,reason:e.response?.data?.error||e.message};}
 }
+function payloadForIntent(intent,bridgeMode){
+  return {clientOrderId:`forexbot-${intent.id}`,symbol:intent.symbol,timeframe:intent.timeframe,side:intent.side,entry:intent.entry,entryType:'STOP_CONFIRMATION',stop:intent.stop,target:intent.target,riskPct:intent.risk_pct||Number(process.env.RISK_PER_TRADE_PCT||0.5),sizingMode:intent.sizing_mode||'BROKER_RISK_PERCENT',probability:intent.probability,mode:bridgeMode};
+}
+async function previewManual(id){
+  const bridgeMode=String(process.env.BROKER_BRIDGE_MODE||'demo').toLowerCase();
+  if(!process.env.MT5_BRIDGE_URL||!process.env.MT5_BRIDGE_TOKEN)throw new Error('MT5 bridge is not configured');
+  const intent=db.prepare('SELECT * FROM execution_intents WHERE id=?').get(id);
+  if(!intent)throw new Error('Execution intent not found');
+  if(intent.status!=='PENDING')throw new Error('Intent is not pending');
+  const r=await axios.post(String(process.env.MT5_BRIDGE_URL).replace(/\/$/,'')+'/preview',payloadForIntent(intent,bridgeMode),{headers:{authorization:`Bearer ${process.env.MT5_BRIDGE_TOKEN}`,'content-type':'application/json'},timeout:12000});
+  return {intentId:id,...r.data};
+}
+async function symbols(query=''){
+  if(!process.env.MT5_BRIDGE_URL||!process.env.MT5_BRIDGE_TOKEN)throw new Error('MT5 bridge is not configured');
+  const r=await axios.get(String(process.env.MT5_BRIDGE_URL).replace(/\/$/,'')+'/symbols',{params:{q:query},headers:{authorization:`Bearer ${process.env.MT5_BRIDGE_TOKEN}`},timeout:12000});
+  return r.data;
+}
 async function dispatchManual(id,{confirm}={}){
   const bridgeMode=String(process.env.BROKER_BRIDGE_MODE||'demo').toLowerCase();
   if(!['demo','live'].includes(bridgeMode))throw new Error('Broker bridge mode must be demo or live');
@@ -29,7 +46,7 @@ async function dispatchManual(id,{confirm}={}){
   if(!intent)throw new Error('Execution intent not found');
   if(intent.status!=='PENDING')throw new Error('Intent is not pending');
   if(!String(intent.reason||'').startsWith('Manual user-selected'))throw new Error('Only explicit manual intents can use this endpoint');
-  const payload={clientOrderId:`forexbot-${intent.id}`,symbol:intent.symbol,timeframe:intent.timeframe,side:intent.side,entry:intent.entry,entryType:'STOP_CONFIRMATION',stop:intent.stop,target:intent.target,riskPct:intent.risk_pct||Number(process.env.RISK_PER_TRADE_PCT||0.5),sizingMode:intent.sizing_mode||'BROKER_RISK_PERCENT',probability:intent.probability,mode:bridgeMode};
+  const payload=payloadForIntent(intent,bridgeMode);
   const r=await axios.post(String(process.env.MT5_BRIDGE_URL).replace(/\/$/,'')+'/orders',payload,{headers:{authorization:`Bearer ${process.env.MT5_BRIDGE_TOKEN}`,'content-type':'application/json',...(bridgeMode==='live'?{'x-live-confirm':'CONFIRM_LIVE_TRADE'}:{})},timeout:12000});
   const brokerId=String(r.data?.orderId||r.data?.ticket||'');
   db.prepare("UPDATE execution_intents SET status=?,broker_order_id=?,reason=?,updated_at=? WHERE id=?")
@@ -49,4 +66,4 @@ async function dispatchDemo(id){
   db.prepare("UPDATE execution_intents SET status='DEMO_SENT',broker_order_id=?,reason='Sent to configured MT5 demo bridge',updated_at=? WHERE id=?").run(brokerId,Date.now(),id);
   return {intentId:id,brokerOrderId:brokerId,response:r.data};
 }
-module.exports={status,health,dispatchDemo,dispatchManual};
+module.exports={status,health,previewManual,symbols,dispatchDemo,dispatchManual};
