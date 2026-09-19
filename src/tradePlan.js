@@ -2,7 +2,8 @@ const PIPS={
   EURUSD:{size:.0001,label:'pips',decimals:1},GBPUSD:{size:.0001,label:'pips',decimals:1},
   USDJPY:{size:.01,label:'pips',decimals:1},AUDUSD:{size:.0001,label:'pips',decimals:1},
   USDCAD:{size:.0001,label:'pips',decimals:1},XAUUSD:{size:.01,label:'points',decimals:0},
-  XAGUSD:{size:.001,label:'points',decimals:0},WTI:{size:.01,label:'ticks',decimals:0}
+  XAGUSD:{size:.001,label:'points',decimals:0},WTI:{size:.01,label:'ticks',decimals:0},
+  BTCUSD:{size:1,label:'USD',decimals:2},ETHUSD:{size:1,label:'USD',decimals:2},SOLUSD:{size:1,label:'USD',decimals:2},XRPUSD:{size:1,label:'USD',decimals:3},LTCUSD:{size:1,label:'USD',decimals:2}
 };
 function spec(symbol){return PIPS[symbol]||{size:.0001,label:'pips',decimals:1};}
 function distanceUnits(symbol,a,b){const s=spec(symbol);return Math.abs(Number(a)-Number(b))/s.size;}
