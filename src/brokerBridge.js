@@ -14,7 +14,7 @@ async function health(){
   if(!process.env.MT5_BRIDGE_URL)return {...status(),reachable:false,reason:'MT5_BRIDGE_URL not configured'};
   try{
     const r=await axios.get(String(process.env.MT5_BRIDGE_URL).replace(/\/$/,'')+'/health',{headers:{authorization:`Bearer ${process.env.MT5_BRIDGE_TOKEN||''}`},timeout:8000});
-    return {...status(),reachable:true,bridge:r.data};
+    const b=r.data||{};return {...status(),reachable:true,bridge:{ok:b.ok,mode:b.mode,accountConnected:b.accountConnected,server:b.server,currency:b.currency,tradeAllowed:b.tradeAllowed}};
   }catch(e){return {...status(),reachable:false,reason:e.response?.data?.error||e.message};}
 }
 function payloadForIntent(intent,bridgeMode){
