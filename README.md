@@ -123,3 +123,13 @@ Settled records include realized pips/points, realized R, maximum favorable excu
 
 ## Manual broker action
 The Signals page allows an explicit manual trade intent from any displayed setup, even below the automated 70% probability gate. Manual actions are tagged separately and do not change strict-signal statistics. Broker submission uses the MT5 bridge. Demo mode can be used once the bridge URL/token are configured. Live manual dispatch is additionally gated by `ALLOW_MANUAL_LIVE=true`, broker mode `live`, an admin token, and an explicit per-order confirmation. Autonomous live-money dispatch remains disabled.
+
+
+## Crypto analysis
+ForexBot now analyzes `BTCUSD`, `ETHUSD`, `SOLUSD`, `XRPUSD`, and `LTCUSD` alongside forex, metals, and WTI. Crypto uses the same 1H/4H technical, price-action, news, macro-context, trade-plan, monitoring, and backtest pipeline. Expected crypto movement is displayed in USD price movement rather than using a broker-specific pip convention.
+
+## Adjustable strict probability threshold
+The Signals page includes an admin-protected strict probability control from 50% to 95%. The value is stored in the persistent SQLite database, so it survives deploys and can be changed without editing Railway variables. A threshold change applies to newly generated/recorded signals and future research diagnostics; existing signal records preserve the threshold used when they were created.
+
+## XM MT5 demo testing
+The Windows MT5 bridge supports private XM credentials through `bridge/mt5/.env`, broker symbol discovery, and a preview-before-send workflow. The XM login/password/server remain on the Windows/VPS host. ForexBot only stores the HTTPS bridge URL/token. Use demo mode first. A manual signal creates an execution intent, calls MT5 `order_check` through `/preview`, shows broker symbol/lot size/risk/entry/SL/TP, and sends the pending order only after explicit confirmation.
