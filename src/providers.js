@@ -1,9 +1,9 @@
 const axios = require('axios');
 
-const SYMBOLS = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','XAUUSD','XAGUSD','WTI'];
-const BASE = {EURUSD:1.171,GBPUSD:1.352,USDJPY:147.8,AUDUSD:0.665,USDCAD:1.381,XAUUSD:3665,XAGUSD:42.1,WTI:64.2};
-const YAHOO_SYMBOLS = {EURUSD:'EURUSD=X',GBPUSD:'GBPUSD=X',USDJPY:'USDJPY=X',AUDUSD:'AUDUSD=X',USDCAD:'USDCAD=X',XAUUSD:'GC=F',XAGUSD:'SI=F',WTI:'CL=F'};
-const TD_SYMBOLS = {EURUSD:'EUR/USD',GBPUSD:'GBP/USD',USDJPY:'USD/JPY',AUDUSD:'AUD/USD',USDCAD:'USD/CAD',XAUUSD:'XAU/USD',XAGUSD:'XAG/USD',WTI:'WTI/USD'};
+const SYMBOLS = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','XAUUSD','XAGUSD','WTI','BTCUSD','ETHUSD','SOLUSD','XRPUSD','LTCUSD'];
+const BASE = {EURUSD:1.171,GBPUSD:1.352,USDJPY:147.8,AUDUSD:0.665,USDCAD:1.381,XAUUSD:3665,XAGUSD:42.1,WTI:64.2,BTCUSD:115000,ETHUSD:4500,SOLUSD:240,XRPUSD:3.0,LTCUSD:120};
+const YAHOO_SYMBOLS = {EURUSD:'EURUSD=X',GBPUSD:'GBPUSD=X',USDJPY:'USDJPY=X',AUDUSD:'AUDUSD=X',USDCAD:'USDCAD=X',XAUUSD:'GC=F',XAGUSD:'SI=F',WTI:'CL=F',BTCUSD:'BTC-USD',ETHUSD:'ETH-USD',SOLUSD:'SOL-USD',XRPUSD:'XRP-USD',LTCUSD:'LTC-USD'};
+const TD_SYMBOLS = {EURUSD:'EUR/USD',GBPUSD:'GBP/USD',USDJPY:'USD/JPY',AUDUSD:'AUD/USD',USDCAD:'USD/CAD',XAUUSD:'XAU/USD',XAGUSD:'XAG/USD',WTI:'WTI/USD',BTCUSD:'BTC/USD',ETHUSD:'ETH/USD',SOLUSD:'SOL/USD',XRPUSD:'XRP/USD',LTCUSD:'LTC/USD'};
 const FALLBACK_SYMBOLS = (process.env.MARKET_FALLBACK_SYMBOLS || 'XAGUSD,WTI').split(',').map(x => x.trim().toUpperCase()).filter(Boolean);
 const usesYahooFallback = symbol => FALLBACK_SYMBOLS.includes(symbol);
 const cache = new Map();
@@ -124,7 +124,7 @@ async function finnhubNews(symbol){
 }
 
 async function gdeltNews(symbol){
-  const terms={EURUSD:'EUR USD euro ECB',GBPUSD:'GBP USD pound Bank of England',USDJPY:'USD JPY yen Bank of Japan',AUDUSD:'AUD USD Australia RBA',USDCAD:'USD CAD Canada Bank of Canada',XAUUSD:'gold XAU USD bullion',XAGUSD:'silver XAG USD',WTI:'WTI crude oil'}[symbol]||symbol;
+  const terms={EURUSD:'EUR USD euro ECB',GBPUSD:'GBP USD pound Bank of England',USDJPY:'USD JPY yen Bank of Japan',AUDUSD:'AUD USD Australia RBA',USDCAD:'USD CAD Canada Bank of Canada',XAUUSD:'gold XAU USD bullion',XAGUSD:'silver XAG USD',WTI:'WTI crude oil',BTCUSD:'Bitcoin BTC crypto',ETHUSD:'Ethereum ETH crypto',SOLUSD:'Solana SOL crypto',XRPUSD:'XRP Ripple crypto',LTCUSD:'Litecoin LTC crypto'}[symbol]||symbol;
   const key=`gdelt:${symbol}`; const hit=cached(key); if(hit) return hit;
   const r=await axios.get('https://api.gdeltproject.org/api/v2/doc/doc',{params:{query:`${terms} sourcelang:english`,mode:'artlist',maxrecords:30,format:'json',sort:'datedesc',timespan:'3d'},timeout:15000});
   const articles=r.data?.articles||[];
@@ -166,6 +166,6 @@ async function calendar(){
 }
 
 function providerStatus(){
-  return {market:(process.env.MARKET_PROVIDER||'auto'),marketFallbackSymbols:FALLBACK_SYMBOLS,news:(process.env.NEWS_PROVIDER||'auto'),calendar:(process.env.CALENDAR_PROVIDER||'auto'),twelveDataConfigured:!!process.env.TWELVE_DATA_API_KEY,finnhubConfigured:!!process.env.FINNHUB_API_KEY,fredConfigured:!!process.env.FRED_API_KEY,realData:true};
+  return {market:(process.env.MARKET_PROVIDER||'auto'),marketFallbackSymbols:FALLBACK_SYMBOLS,news:(process.env.NEWS_PROVIDER||'auto'),calendar:(process.env.CALENDAR_PROVIDER||'auto'),symbols:SYMBOLS,assetClasses:{forex:['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD'],metals:['XAUUSD','XAGUSD'],energy:['WTI'],crypto:['BTCUSD','ETHUSD','SOLUSD','XRPUSD','LTCUSD']},twelveDataConfigured:!!process.env.TWELVE_DATA_API_KEY,finnhubConfigured:!!process.env.FINNHUB_API_KEY,fredConfigured:!!process.env.FRED_API_KEY,realData:true};
 }
 module.exports={SYMBOLS,candles,historicalCandles,news,calendar,providerStatus};
