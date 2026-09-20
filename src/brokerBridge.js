@@ -27,7 +27,12 @@ async function previewManual(id){
   if(!intent)throw new Error('Execution intent not found');
   if(intent.status!=='PENDING')throw new Error('Intent is not pending');
   const r=await axios.post(String(process.env.MT5_BRIDGE_URL).replace(/\/$/,'')+'/preview',payloadForIntent(intent,bridgeMode),{headers:{authorization:`Bearer ${process.env.MT5_BRIDGE_TOKEN}`,'content-type':'application/json'},timeout:12000});
-  return {intentId:id,...r.data};
+  const p=r.data||{};
+  if(Number.isFinite(Number(p.entry))&&Number.isFinite(Number(p.stop))&&Number.isFinite(Number(p.target))){
+    db.prepare("UPDATE execution_intents SET entry=?,stop=?,target=?,reason=?,updated_at=? WHERE id=?")
+      .run(Number(p.entry),Number(p.stop),Number(p.target),p.adjusted?'Manual user-selected signal; broker preview adjusted entry/SL/TP to a safe pending-order distance':'Manual user-selected signal; broker preview validated entry/SL/TP',Date.now(),id);
+  }
+  return {intentId:id,...p};
 }
 async function symbols(query=''){
   if(!process.env.MT5_BRIDGE_URL||!process.env.MT5_BRIDGE_TOKEN)throw new Error('MT5 bridge is not configured');
