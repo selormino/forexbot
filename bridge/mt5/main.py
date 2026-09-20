@@ -102,7 +102,7 @@ def risk_volume(symbol,side,entry,stop,risk_pct,equity):
     risk_cash=equity*(risk_pct/100.0)
     return normalize_volume(info,risk_cash/abs(loss_one_lot)),risk_cash
 
-def prepare(order:Order):
+def prepare(order:Order,adjust_entry:bool=False):
     account=ensure_mt5()
     side=order.side.upper()
     if side not in ("LONG","SHORT"):
@@ -112,23 +112,46 @@ def prepare(order:Order):
     tick=mt5.symbol_info_tick(broker_symbol)
     if symbol_info is None or tick is None:
         raise HTTPException(400,"Symbol quote unavailable")
-    if side=="LONG" and order.entry<=tick.ask:
-        raise HTTPException(400,f"BUY STOP entry {order.entry} must be above current ask {tick.ask}; refresh the signal")
-    if side=="SHORT" and order.entry>=tick.bid:
-        raise HTTPException(400,f"SELL STOP entry {order.entry} must be below current bid {tick.bid}; refresh the signal")
-    if side=="LONG" and not(order.stop<order.entry<order.target):
+    point=symbol_info.point or (10 ** (-symbol_info.digits))
+    broker_min=max(0,float(symbol_info.trade_stops_level or 0)*point)
+    spread=max(point,abs(float(tick.ask)-float(tick.bid)))
+    safety_gap=max(broker_min+2*point,spread*1.5,10*point)
+    original_entry=float(order.entry)
+    original_stop=float(order.stop)
+    original_target=float(order.target)
+    stop_distance=abs(original_entry-original_stop)
+    target_distance=abs(original_target-original_entry)
+    if side=="LONG" and not(original_stop<original_entry<original_target):
         raise HTTPException(400,"Invalid LONG stop/entry/target ordering")
-    if side=="SHORT" and not(order.target<order.entry<order.stop):
+    if side=="SHORT" and not(original_target<original_entry<original_stop):
         raise HTTPException(400,"Invalid SHORT stop/entry/target ordering")
-    volume,risk_cash=risk_volume(broker_symbol,side,order.entry,order.stop,order.riskPct,account.equity)
+    entry=original_entry
+    adjusted=False
+    if side=="LONG":
+        required=float(tick.ask)+safety_gap
+        if entry<required:
+            if not adjust_entry:
+                raise HTTPException(409,f"Preview stale: BUY STOP entry {entry} is too close to current ask {tick.ask}. Refresh the preview.")
+            entry=required; adjusted=True
+        stop=entry-stop_distance; target=entry+target_distance
+    else:
+        required=float(tick.bid)-safety_gap
+        if entry>required:
+            if not adjust_entry:
+                raise HTTPException(409,f"Preview stale: SELL STOP entry {entry} is too close to current bid {tick.bid}. Refresh the preview.")
+            entry=required; adjusted=True
+        stop=entry+stop_distance; target=entry-target_distance
+    digits=int(symbol_info.digits)
+    entry=round(entry,digits);stop=round(stop,digits);target=round(target,digits)
+    volume,risk_cash=risk_volume(broker_symbol,side,entry,stop,order.riskPct,account.equity)
     request={
         "action":mt5.TRADE_ACTION_PENDING,
         "symbol":broker_symbol,
         "volume":volume,
         "type":mt5.ORDER_TYPE_BUY_STOP if side=="LONG" else mt5.ORDER_TYPE_SELL_STOP,
-        "price":order.entry,
-        "sl":order.stop,
-        "tp":order.target,
+        "price":entry,
+        "sl":stop,
+        "tp":target,
         "deviation":20,
         "magic":MAGIC,
         "comment":order.clientOrderId[:31],
@@ -138,7 +161,7 @@ def prepare(order:Order):
     check=mt5.order_check(request)
     if check is None or check.retcode!=0:
         raise HTTPException(400,f"MT5 order_check failed: {check or mt5.last_error()}")
-    return account,broker_symbol,tick,volume,risk_cash,request,check
+    return account,broker_symbol,tick,volume,risk_cash,request,check,{"adjusted":adjusted,"originalEntry":original_entry,"entry":entry,"stop":stop,"target":target,"safetyGap":safety_gap,"spread":spread,"brokerMinDistance":broker_min}
 
 @app.get("/health")
 def health(authorization:str|None=Header(default=None)):
@@ -163,8 +186,8 @@ def preview(order:Order,authorization:str|None=Header(default=None)):
     auth(authorization)
     if order.mode!=MODE:
         raise HTTPException(400,f"Requested mode {order.mode} does not match bridge mode {MODE}")
-    account,broker_symbol,tick,volume,risk_cash,request,check=prepare(order)
-    return {"ok":True,"canonicalSymbol":order.symbol,"brokerSymbol":broker_symbol,"mode":MODE,"accountLogin":account.login,"server":account.server,"equity":account.equity,"bid":tick.bid,"ask":tick.ask,"volumeLots":volume,"riskCash":risk_cash,"entry":order.entry,"stop":order.stop,"target":order.target,"orderType":"BUY_STOP" if order.side.upper()=="LONG" else "SELL_STOP","orderCheck":getattr(check,"comment","ok")}
+    account,broker_symbol,tick,volume,risk_cash,request,check,plan=prepare(order,adjust_entry=True)
+    return {"ok":True,"canonicalSymbol":order.symbol,"brokerSymbol":broker_symbol,"mode":MODE,"accountLogin":account.login,"server":account.server,"equity":account.equity,"bid":tick.bid,"ask":tick.ask,"volumeLots":volume,"riskCash":risk_cash,"entry":plan["entry"],"stop":plan["stop"],"target":plan["target"],"adjusted":plan["adjusted"],"originalEntry":plan["originalEntry"],"safetyGap":plan["safetyGap"],"spread":plan["spread"],"brokerMinDistance":plan["brokerMinDistance"],"orderType":"BUY_STOP" if order.side.upper()=="LONG" else "SELL_STOP","orderCheck":getattr(check,"comment","ok")}
 
 @app.post("/orders")
 def orders(order:Order,authorization:str|None=Header(default=None),x_live_confirm:str|None=Header(default=None)):
@@ -173,7 +196,7 @@ def orders(order:Order,authorization:str|None=Header(default=None),x_live_confir
         raise HTTPException(400,f"Requested mode {order.mode} does not match bridge mode {MODE}")
     if MODE=="live" and x_live_confirm!="CONFIRM_LIVE_TRADE":
         raise HTTPException(403,"Explicit live confirmation header is required")
-    account,broker_symbol,tick,volume,risk_cash,request,check=prepare(order)
+    account,broker_symbol,tick,volume,risk_cash,request,check,plan=prepare(order,adjust_entry=False)
     result=mt5.order_send(request)
     if result is None or result.retcode not in (mt5.TRADE_RETCODE_DONE,mt5.TRADE_RETCODE_PLACED):
         raise HTTPException(400,f"MT5 order_send failed: {result or mt5.last_error()}")
