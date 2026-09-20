@@ -51,13 +51,13 @@ async function fetchSeries(seriesId,startDate){
     .map(x=>({seriesId,date:x.date,value:Number(x.value)}));
 }
 
-async function fetchVintageChanges(seriesId,{startDate=process.env.ALFRED_START_DATE||'2000-01-01',endDate=day(Date.now())}={}){
+async function fetchVintageChanges(seriesId,{realtimeStart=process.env.ALFRED_START_DATE||'2000-01-01',observationStart=process.env.ALFRED_START_DATE||'2000-01-01',endDate=day(Date.now())}={}){
   const data=await fred('series/observations',{
     series_id:seriesId,
     output_type:3,
-    realtime_start:startDate,
+    realtime_start:realtimeStart,
     realtime_end:endDate,
-    observation_start:startDate,
+    observation_start:observationStart,
     observation_end:endDate,
     sort_order:'asc',
     limit:100000
@@ -91,6 +91,8 @@ async function syncMacro(seriesIds=Object.keys(SERIES)){
   return results;
 }
 
+function shiftDay(iso,days){const d=new Date(iso+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);}
+
 async function syncPointInTimeMacro(seriesIds=CORE_SERIES,options={}){
   const insert=db.prepare(`INSERT INTO macro_vintages(series_id,observation_date,realtime_start,realtime_end,value,ingested_at)
     VALUES(?,?,?,?,?,?)
@@ -99,12 +101,15 @@ async function syncPointInTimeMacro(seriesIds=CORE_SERIES,options={}){
   const results=[];
   for(const seriesId of seriesIds){
     try{
-      const rows=await fetchVintageChanges(seriesId,options);
+      const oldest=process.env.ALFRED_START_DATE||'2000-01-01';
+      const latestKnown=db.prepare('SELECT MAX(realtime_start) d FROM macro_vintages WHERE series_id=?').get(seriesId)?.d;
+      const realtimeStart=options.realtimeStart||options.startDate||(latestKnown?shiftDay(latestKnown,-30):oldest);
+      const rows=await fetchVintageChanges(seriesId,{...options,realtimeStart,observationStart:options.observationStart||oldest});
       const now=Date.now();
       db.transaction(()=>rows.forEach(x=>insert.run(x.seriesId,x.observationDate,x.realtimeStart,x.realtimeEnd,x.value,now)))();
       const coverage=db.prepare(`SELECT COUNT(*) revisions,MIN(realtime_start) oldestKnown,MAX(realtime_start) newestKnown
         FROM macro_vintages WHERE series_id=?`).get(seriesId);
-      results.push({seriesId,name:SERIES[seriesId]||seriesId,fetched:rows.length,...coverage,status:'SUCCESS'});
+      results.push({seriesId,name:SERIES[seriesId]||seriesId,fetched:rows.length,realtimeStart,...coverage,status:'SUCCESS'});
     }catch(error){
       results.push({seriesId,name:SERIES[seriesId]||seriesId,status:'FAILED',error:error.message});
     }
