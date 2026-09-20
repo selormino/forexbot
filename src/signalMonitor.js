@@ -55,6 +55,8 @@ addColumn('outcome_pips',"REAL");
 addColumn('realized_r',"REAL");
 addColumn('mfe_pips',"REAL");
 addColumn('mae_pips',"REAL");
+addColumn('setup_probability',"REAL");
+addColumn('directional_min_probability',"REAL");
 
 const tfMs=tf=>({'1h':3600000,'4h':14400000}[tf]||0);
 const minProbability=()=>signalMinProbability();
@@ -62,9 +64,10 @@ const minProbability=()=>signalMinProbability();
 function record(signal){
   const step=tfMs(signal.timeframe);if(!step||!Number.isFinite(signal.sourceCandleTs))throw new Error('Signal is missing source candle metadata');
   const plan=signal.tradePlan;if(!plan)throw new Error('Signal is missing trade plan');
-  const threshold=Number(signal.minProbability||minProbability()),directionalProbability=Number(signal.directionalProbability||0);
+  const threshold=Number(signal.minProbability||minProbability()),directionalProbability=Number(signal.directionalProbability||0),setupProbability=Number(signal.setupProbability);
+  const directionalFloor=Number(signal.directionalMinProbability||process.env.DIRECTIONAL_MIN_PROBABILITY||.55);
   const lean=signal.leanDirection||signal.candidateDirection||'WAIT';
-  const qualified=['LONG','SHORT'].includes(lean)&&directionalProbability>=threshold;
+  const qualified=['LONG','SHORT'].includes(signal.candidateDirection)&&Number.isFinite(setupProbability)&&setupProbability>=threshold&&directionalProbability>=directionalFloor;
   const actionable=['LONG','SHORT'].includes(signal.direction);
   const key=[signal.symbol,signal.timeframe,signal.sourceCandleTs].join(':');
   const status=qualified?'PENDING_ENTRY':'FILTERED';
@@ -72,7 +75,7 @@ function record(signal){
   const row={
     key,createdAt:Date.now(),sourceTs:signal.sourceCandleTs,sourceCloseAt:signal.sourceCandleTs+step,dueAt,
     symbol:signal.symbol,timeframe:signal.timeframe,candidate:signal.candidateDirection||'WAIT',direction:signal.direction,
-    lean,probability:Number(signal.probability),directionalProbability,threshold,price:Number(signal.price),modelId:signal.modelId||null,
+    lean,probability:Number(signal.probability),directionalProbability,setupProbability:Number.isFinite(setupProbability)?setupProbability:null,directionalFloor,threshold,price:Number(signal.price),modelId:signal.modelId||null,
     horizon:Number(signal.horizonBars||4),costBps:Number(signal.costs?.total||0),qualified:+qualified,actionable:+actionable,status,
     filters:JSON.stringify(signal.filters||[]),priceAction:JSON.stringify(signal.priceAction||null),plan:JSON.stringify(plan),analysis:JSON.stringify(signal.analysis||null),
     entry:plan.entry,stop:plan.stop,target:plan.target,tp1:plan.tp1,stopPips:plan.stopPips,targetPips:plan.targetPips,unitLabel:plan.unitLabel,
@@ -81,10 +84,10 @@ function record(signal){
   db.prepare(`INSERT OR IGNORE INTO signal_records(
     signal_key,created_at,source_ts,source_close_at,due_at,symbol,timeframe,candidate_direction,direction,lean_direction,
     probability,directional_probability,threshold,price,model_id,horizon_bars,cost_bps,qualified,actionable,status,filters_json,price_action_json,
-    plan_json,analysis_json,entry_price,stop_price,target_price,tp1_price,stop_pips,target_pips,unit_label,entry_expiry_bars,hold_bars
+    plan_json,analysis_json,entry_price,stop_price,target_price,tp1_price,stop_pips,target_pips,unit_label,entry_expiry_bars,hold_bars,setup_probability,directional_min_probability
   ) VALUES(@key,@createdAt,@sourceTs,@sourceCloseAt,@dueAt,@symbol,@timeframe,@candidate,@direction,@lean,
     @probability,@directionalProbability,@threshold,@price,@modelId,@horizon,@costBps,@qualified,@actionable,@status,@filters,@priceAction,
-    @plan,@analysis,@entry,@stop,@target,@tp1,@stopPips,@targetPips,@unitLabel,@entryExpiryBars,@holdBars)`).run(row);
+    @plan,@analysis,@entry,@stop,@target,@tp1,@stopPips,@targetPips,@unitLabel,@entryExpiryBars,@holdBars,@setupProbability,@directionalFloor)`).run(row);
   return db.prepare('SELECT * FROM signal_records WHERE signal_key=?').get(key);
 }
 
@@ -166,7 +169,7 @@ function aggregate(rows){
   return {total:rows.length,pendingEntry:rows.filter(r=>r.status==='PENDING_ENTRY').length,active:rows.filter(r=>r.status==='ACTIVE').length,
     expired:rows.filter(r=>r.status==='EXPIRED').length,settled:settled.length,wins,losses:settled.length-wins,tp,sl,
     accuracy:settled.length?wins/settled.length:null,confidence95:ci,
-    averageProbability:settled.length?settled.reduce((s,r)=>s+r.directional_probability,0)/settled.length:null,
+    averageProbability:settled.length?settled.reduce((s,r)=>s+Number(r.setup_probability??r.directional_probability),0)/settled.length:null,
     averageR:settled.length?settled.reduce((s,r)=>s+Number(r.realized_r||0),0)/settled.length:null};
 }
 function metrics(){
