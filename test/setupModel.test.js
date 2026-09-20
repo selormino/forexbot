@@ -67,8 +67,8 @@ test('setup eligibility mirrors live structural gates',()=>{
 
 
 test('pooled setup rows never cross the target test cutoff',()=>{
-  const rows=Array.from({length:200},(_,i)=>({at:i*10,end:i*10+4,setupEnd:i*10+9}));
-  const cutoff=1500;
+  const rows=Array.from({length:400},(_,i)=>({at:i*10,end:i*10+4,setupEnd:i*10+9}));
+  const cutoff=3200;
   const parts=research.poolSplitRows(rows,cutoff);
   assert.ok(parts.train.length>0);
   assert.ok(parts.tune.length>0);
