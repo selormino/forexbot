@@ -32,3 +32,14 @@ test('calibration produces finite bounded probabilities',()=>{
 test('cost configuration rejects negative estimates',()=>{
   process.env.SLIPPAGE_BPS='-1';assert.throws(()=>r.costs('EURUSD'));delete process.env.SLIPPAGE_BPS;
 });
+
+test('ALFRED vintages return only revisions known by the as-of date',()=>{
+  const macro=require('../src/macro');
+  process.env.ALFRED_AVAILABILITY_LAG_DAYS='0';
+  const ins=db.prepare('INSERT INTO macro_vintages(series_id,observation_date,realtime_start,realtime_end,value,ingested_at) VALUES(?,?,?,?,?,?)');
+  ins.run('DGS10','2026-01-01','2026-01-05','2026-01-09',4.1,1);
+  ins.run('DGS10','2026-01-01','2026-01-10','9999-12-31',4.2,1);
+  assert.equal(macro.pointInTimeSeries('DGS10',Date.parse('2026-01-07T12:00:00Z'),1)[0].value,4.1);
+  assert.equal(macro.pointInTimeSeries('DGS10',Date.parse('2026-01-11T12:00:00Z'),1)[0].value,4.2);
+  delete process.env.ALFRED_AVAILABILITY_LAG_DAYS;
+});
