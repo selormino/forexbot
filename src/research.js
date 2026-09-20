@@ -184,7 +184,7 @@ function cachedDataset(symbol,tf){
   const meta=db.prepare('SELECT COUNT(*) n,MAX(ts) maxTs FROM candles WHERE symbol=? AND timeframe=?').get(symbol,tf);
   const key=symbol+':'+tf,stamp=String(meta?.n||0)+':'+String(meta?.maxTs||0),hit=setupDatasetCache.get(key);
   if(hit?.stamp===stamp)return hit.rows;
-  const rows=cachedDataset(symbol,tf);setupDatasetCache.set(key,{stamp,rows});return rows;
+  const rows=dataset(symbol,tf);setupDatasetCache.set(key,{stamp,rows});return rows;
 }
 function poolSplitRows(rows,cutoff){
   const eligible=rows.filter(r=>(r.setupEnd||r.end)<cutoff);
