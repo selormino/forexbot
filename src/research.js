@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v11-plan-tuned-setup';
+const VERSION='technical-fundamental-v12-session-nonlinear';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -69,12 +69,21 @@ function features(rows,symbol,at){
   const ratio=vol(changes.slice(-14))/Math.max(vol(changes),1e-9);
   const regime=ratio>1.8?'volatile':Math.abs(trend)>.8?'trend':'range';
   const ctx=context(symbol,at);
+  const dt=new Date(at),utcHour=dt.getUTCHours()+dt.getUTCMinutes()/60,dow=dt.getUTCDay();
+  const session={
+    utcHour,dow,
+    asia:utcHour>=0&&utcHour<9,
+    london:utcHour>=7&&utcHour<16,
+    newYork:utcHour>=12&&utcHour<21,
+    londonNewYorkOverlap:utcHour>=12&&utcHour<16
+  };
+  const sessionX=[Math.sin(2*Math.PI*utcHour/24),Math.cos(2*Math.PI*utcHour/24),Math.sin(2*Math.PI*dow/7),Math.cos(2*Math.PI*dow/7),+session.asia,+session.london,+session.newYork,+session.londonNewYorkOverlap];
   const priceAction=analyzePriceAction(c,atr);
   const macdNorm=(Number(macd.MACD||0)-Number(macd.signal||0))/Math.max(atr,1e-9);
   const bbWidth=(bb.upper-bb.lower)/Math.max(price,1e-9),bbPosition=(price-bb.lower)/Math.max(bb.upper-bb.lower,1e-9);
   const rsiBias=Math.max(-1,Math.min(1,(rsi-50)/25));
   const technicalBias=Math.max(-1,Math.min(1,.34*Math.tanh(trend)+.18*Math.tanh(emaSlope)+.18*Math.tanh(macdNorm)+.12*adxDirection+.10*Math.tanh(momentum5)+.08*rsiBias));
-  return {price,atr,rsi,trend,ema20,ema50,emaSlope,momentum5,adx:{value:Number(adx.adx||0),pdi:Number(adx.pdi||0),mdi:Number(adx.mdi||0),direction:adxDirection},technicalBias,regime,macd:{value:macd.MACD||0,signal:macd.signal||0,histogram:macd.histogram||0},bollinger:{...bb,width:bbWidth,position:bbPosition},priceAction,context:ctx,x:[Math.tanh(trend),Math.tanh(emaSlope),Math.tanh(momentum5),rsiBias,Math.tanh(atr/price*100),Math.tanh(ratio-1),regime==='trend'?1:0,regime==='volatile'?1:0,Math.tanh(macdNorm),adxDirection,Math.tanh(Number(adx.adx||0)/25-1),Math.tanh((bbPosition-.5)*2),Math.tanh(bbWidth*100),technicalBias,...priceAction.vector,...ctx.x]};
+  return {price,atr,rsi,trend,ema20,ema50,emaSlope,momentum5,adx:{value:Number(adx.adx||0),pdi:Number(adx.pdi||0),mdi:Number(adx.mdi||0),direction:adxDirection},technicalBias,regime,session,macd:{value:macd.MACD||0,signal:macd.signal||0,histogram:macd.histogram||0},bollinger:{...bb,width:bbWidth,position:bbPosition},priceAction,context:ctx,x:[Math.tanh(trend),Math.tanh(emaSlope),Math.tanh(momentum5),rsiBias,Math.tanh(atr/price*100),Math.tanh(ratio-1),regime==='trend'?1:0,regime==='volatile'?1:0,Math.tanh(macdNorm),adxDirection,Math.tanh(Number(adx.adx||0)/25-1),Math.tanh((bbPosition-.5)*2),Math.tanh(bbWidth*100),technicalBias,...priceAction.vector,...ctx.x,...sessionX]};
 }
 function costs(symbol){
   // Round-trip estimates in basis points, not measured broker quotes.
@@ -219,20 +228,20 @@ function pooledSetup(symbol,tf,targetParts,threshold){
       calExamples.push(...setupModel.examples(p.parts.cal,p.peer,p.cost,planOptions));
     }
     if(trainExamples.length<100||calExamples.length<30){
-      pooled={model:null,trainExamples,calExamples,used,planOptions,planSelection:{chosen:chosen||null,candidates}};
+      pooled={model:null,trainExamples,calExamples,used,planOptions,modelCompetition:null,planSelection:{chosen:chosen||null,candidates}};
     }else{
-      const weights=setupModel.fit(trainExamples),calibration=setupModel.calibrate(weights,calExamples);
-      pooled={model:{weights,calibration,planOptions,meaning:'P(success | confirmation entry triggered), pooled eligible asset-family training with pre-test tuned plan'},trainExamples,calExamples,used,planOptions,planSelection:{chosen:chosen||null,candidates}};
+      const competition=setupModel.fitCompetitive(trainExamples,calExamples);
+      pooled={model:{...competition.model,planOptions,meaning:'P(success | confirmation entry triggered), pooled eligible asset-family training with pre-test tuned plan and pre-test model competition'},trainExamples,calExamples,used,planOptions,modelCompetition:competition.comparison,planSelection:{chosen:chosen||null,candidates}};
     }
     setupPoolCache.set(cacheKey,pooled);
   }
   const targetExamples=setupModel.examples(targetParts.test,symbol,costs(symbol).total,pooled.planOptions||{});
   if(!pooled.model||targetExamples.length<30){
-    return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols:pooled.used||poolSymbols,planOptions:pooled.planOptions,planSelection:pooled.planSelection,
+    return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols:pooled.used||poolSymbols,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:pooled.modelCompetition,
       trainSamples:pooled.trainExamples?.length||0,tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calExamples?.length||0,testSamples:targetExamples.length}};
   }
   const calibrationRecommendedThreshold=setupModel.recommendThreshold(pooled.model,pooled.calExamples,Math.max(30,Math.floor(pooled.calExamples.length*.03)));
-  const report={status:'trained',pooled:true,poolSymbols:pooled.used,planOptions:pooled.planOptions,planSelection:pooled.planSelection,
+  const report={status:'trained',pooled:true,poolSymbols:pooled.used,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:pooled.modelCompetition,
     trainSamples:pooled.trainExamples.length,tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calExamples.length,testSamples:targetExamples.length,
     ...setupModel.evaluate(pooled.model,targetExamples,threshold),calibrationRecommendedThreshold,
     recommendedTest:calibrationRecommendedThreshold===null?null:setupModel.statsAt(pooled.model,targetExamples,calibrationRecommendedThreshold)};
@@ -270,7 +279,7 @@ function trainSeries(symbol,tf){
   const setupApproved=setupReport.status==='trained'&&setupReport.selected>=30&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss;
   const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||(f.setupProbability.recommendedTest.averageR||0)>0));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Plan-tuned pooled setup-success model must have at least 30 market-specific out-of-sample selections at the configured threshold, meet the accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Session-aware plan-tuned setup model must have at least 30 market-specific out-of-sample selections at the configured threshold, meet the accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
