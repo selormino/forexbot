@@ -11,7 +11,7 @@ This project is an analytical and paper-trading system. Predictions are probabil
 - Economic calendar/event-risk layer
 - News ingestion and sentiment context
 - Explainable multi-factor signal scoring
-- Trainable logistic model with time-ordered out-of-sample evaluation
+- Two-stage probabilistic research model: directional bias plus triggered setup-success probability, both time-ordered and out-of-sample evaluated
 - SQLite feature/trade/model store
 - Incremental, idempotent 1H/4H historical candle ingestion
 - FRED current macro-history ingestion plus ALFRED point-in-time vintage storage for leakage-safe research
@@ -114,7 +114,7 @@ Run `npm test` locally. GitHub CI also runs syntax checks and price-action unit 
 
 
 ## Signal monitoring and accuracy
-The signal engine records one decision per closed candle for each supported market and monitored timeframe. A candidate is qualified only when its calibrated directional probability is at least `SIGNAL_MIN_PROBABILITY` (default 70%). Qualified candidates are monitored to the model horizon and settled using the next-bar entry and horizon-close exit, net of configured estimated transaction costs.
+The signal engine records one decision per closed candle for each supported market and monitored timeframe. The directional model first proposes LONG/SHORT only when `DIRECTIONAL_MIN_PROBABILITY` is met. A second model then estimates `P(success | confirmation entry triggers)` for the actual entry/SL/TP structure. `SIGNAL_MIN_PROBABILITY` is the minimum setup-success probability. No-entry setups expire and are not counted as losses.
 
 The dedicated `/signals.html` page shows the current 1H/4H board, price-action context, filters, historical signals, settled wins/losses, observed accuracy, and a 95% Wilson confidence interval. The broker-validation readiness gate requires a minimum settled sample and the configured empirical accuracy target; a model probability is never presented as proof of the same realized win rate.
 
@@ -131,23 +131,26 @@ Current research signals now include a concrete confirmation entry, ATR-adjusted
 Settled records include realized pips/points, realized R, maximum favorable excursion (MFE), and maximum adverse excursion (MAE). If both SL and TP fall inside the same candle, the monitor conservatively records SL because intrabar ordering is unknown.
 
 ## Manual broker action
-The Signals page allows an explicit manual trade intent from any displayed setup, even below the automated 70% probability gate. Manual actions are tagged separately and do not change strict-signal statistics. Broker submission uses the MT5 bridge. Demo mode can be used once the bridge URL/token are configured. Live manual dispatch is additionally gated by `ALLOW_MANUAL_LIVE=true`, broker mode `live`, an admin token, and an explicit per-order confirmation. Autonomous live-money dispatch remains disabled.
+The Signals page allows an explicit manual trade intent from any displayed setup, even below the automated setup-success probability gate. Manual actions are tagged separately and do not change strict-signal statistics. Broker submission uses the MT5 bridge. Demo mode can be used once the bridge URL/token are configured. Live manual dispatch is additionally gated by `ALLOW_MANUAL_LIVE=true`, broker mode `live`, an admin token, and an explicit per-order confirmation. Autonomous live-money dispatch remains disabled.
 
 
 ## Crypto analysis
 ForexBot now analyzes `BTCUSD`, `ETHUSD`, `SOLUSD`, `XRPUSD`, and `LTCUSD` alongside forex, metals, and WTI. Crypto uses the same 1H/4H technical, price-action, news, macro-context, trade-plan, monitoring, and backtest pipeline. Expected crypto movement is displayed in USD price movement rather than using a broker-specific pip convention.
 
-## Adjustable strict probability threshold
-The Signals page includes an admin-protected strict probability control from 50% to 95%. The value is stored in the persistent SQLite database, so it survives deploys and can be changed without editing Railway variables. A threshold change applies to newly generated/recorded signals and future research diagnostics; existing signal records preserve the threshold used when they were created.
+## Adjustable setup-success threshold
+The Signals page includes an admin-protected setup-success threshold from 50% to 95%. The value is stored in the persistent SQLite database, so it survives deploys and can be changed without editing Railway variables. Direction selection has a separate `DIRECTIONAL_MIN_PROBABILITY` floor. Existing signal records preserve the thresholds used when they were created.
 
 ## XM MT5 demo testing
 The Windows MT5 bridge supports private XM credentials through `bridge/mt5/.env`, broker symbol discovery, and a preview-before-send workflow. The XM login/password/server remain on the Windows/VPS host. ForexBot only stores the HTTPS bridge URL/token. Use demo mode first. A manual signal creates an execution intent, calls MT5 `order_check` through `/preview`, shows broker symbol/lot size/risk/entry/SL/TP, and sends the pending order only after explicit confirmation.
 
 ## Point-in-time fundamentals
-Research version v7 uses ALFRED/FRED real-time vintages instead of treating today's revised macro history as if it were known in the past. `macro_vintages` stores observation date, real-time availability date, revision window and value. Historical feature generation selects only revisions available by the candle timestamp. `ALFRED_AVAILABILITY_LAG_DAYS=1` is conservative for intraday bars because FRED vintage availability is date-level rather than an exact release timestamp. Live economic-event surprise analysis remains separate and uses the current calendar feed.
+Research version v8 uses ALFRED/FRED real-time vintages instead of treating today's revised macro history as if it were known in the past. `macro_vintages` stores observation date, real-time availability date, revision window and value. Historical feature generation selects only revisions available by the candle timestamp. `ALFRED_AVAILABILITY_LAG_DAYS=1` is conservative for intraday bars because FRED vintage availability is date-level rather than an exact release timestamp. Live economic-event surprise analysis remains separate and uses the current calendar feed.
 
 ## Automatic strict demo execution
 `AUTO_DEMO_STRICT=true` enables automatic **demo-only** broker dispatch for signals that are already STRICT, come from an approved model, meet the configured probability threshold, pass every signal filter, and meet `AUTO_MIN_CONFLUENCE`. One automatic intent is allowed per source candle. This switch never enables live automation.
 
 ## MT5 reconciliation
 Bridge v1.2 adds `GET /orders/{ticket}` and `DELETE /orders/{ticket}`. ForexBot stores broker status, fill price, close price, position ID and realized broker P/L. When `BROKER_RECONCILE_ENABLED=true`, it periodically refreshes broker tickets. Automatic pending demo orders are cancelled when their corresponding research signal expires before entry. Manual orders are not automatically cancelled by this rule.
+
+## Two-stage probability model
+The directional logistic model estimates market direction. A separate triggered-setup model is trained only on historical plans whose confirmation entry was actually reached, and predicts whether the same ATR-based stop/target structure succeeds after entry. Train/calibration/test splits are chronological and purged through the full entry-expiry plus hold window. Model approval requires the setup-success layer to beat its baseline log loss, maintain positive average R, meet the configured accuracy target with enough out-of-sample selections, and remain stable across expanding chronological folds.
