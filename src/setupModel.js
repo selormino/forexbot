@@ -53,10 +53,10 @@ function eligible(row,side,costBps){
   return confluence>=.10;
 }
 
-function outcome(row,symbol,side,costBps){
+function outcome(row,symbol,side,costBps,planOptions={}){
   const sign=side==='LONG'?1:-1;
   const pseudo={symbol,price:row.price,leanDirection:side,candidateDirection:side,features:row,priceAction:row.priceAction};
-  const plan=buildTradePlan(pseudo,{side}),future=row.futureBars||[];
+  const plan=buildTradePlan(pseudo,{side,...planOptions}),future=row.futureBars||[];
   let trigger=-1;
   for(let i=0;i<Math.min(plan.entryExpiryBars,future.length);i++){
     if(side==='LONG'?future[i].high>=plan.entry:future[i].low<=plan.entry){trigger=i;break;}
@@ -82,18 +82,50 @@ function outcome(row,symbol,side,costBps){
   const y=(result==='TP'||result==='TIMEOUT_WIN')?1:0;
   return {triggered:true,settled:true,plan,outcome:result,exit,y,realizedR};
 }
-function examples(rows,symbol,costBps){
+function examples(rows,symbol,costBps,planOptions={}){
   const out=[];
   for(const row of rows){
     for(const side of ['LONG','SHORT']){
       if(!eligible(row,side,costBps))continue;
-      const result=outcome(row,symbol,side,costBps);
+      const result=outcome(row,symbol,side,costBps,planOptions);
       if(!result.triggered||!result.settled)continue;
       out.push({z:vector(row,side),y:result.y,realizedR:result.realizedR,side,at:row.at,outcome:result.outcome});
     }
   }
   return out;
 }
+const PLAN_PROFILES=[
+  {name:'tight-1r',entryBufferAtr:.08,stopAtr:1.0,targetR:1.0,entryExpiryBars:4,holdBars:6},
+  {name:'base-1r',entryBufferAtr:.12,stopAtr:1.2,targetR:1.0,entryExpiryBars:4,holdBars:6},
+  {name:'wide-1r',entryBufferAtr:.18,stopAtr:1.4,targetR:1.0,entryExpiryBars:4,holdBars:6},
+  {name:'tight-1.25r',entryBufferAtr:.08,stopAtr:1.0,targetR:1.25,entryExpiryBars:4,holdBars:6},
+  {name:'base-1.25r',entryBufferAtr:.12,stopAtr:1.2,targetR:1.25,entryExpiryBars:4,holdBars:6},
+  {name:'wide-1.25r',entryBufferAtr:.18,stopAtr:1.4,targetR:1.25,entryExpiryBars:4,holdBars:6},
+  {name:'tight-1.5r',entryBufferAtr:.08,stopAtr:1.0,targetR:1.5,entryExpiryBars:4,holdBars:6},
+  {name:'base-1.5r',entryBufferAtr:.12,stopAtr:1.2,targetR:1.5,entryExpiryBars:4,holdBars:6},
+  {name:'wide-1.5r',entryBufferAtr:.18,stopAtr:1.4,targetR:1.5,entryExpiryBars:4,holdBars:6},
+  {name:'patient-1r',entryBufferAtr:.12,stopAtr:1.4,targetR:1.0,entryExpiryBars:4,holdBars:8},
+  {name:'patient-1.25r',entryBufferAtr:.12,stopAtr:1.4,targetR:1.25,entryExpiryBars:4,holdBars:8},
+  {name:'patient-1.5r',entryBufferAtr:.12,stopAtr:1.4,targetR:1.5,entryExpiryBars:4,holdBars:8}
+];
+function wilsonLower(wins,n,z=1.96){
+  if(!n)return 0;
+  const p=wins/n,z2=z*z,den=1+z2/n;
+  return (p+z2/(2*n)-z*Math.sqrt((p*(1-p)+z2/(4*n))/n))/den;
+}
+function summarizeExamples(rows){
+  const n=rows.length,wins=rows.filter(r=>r.y===1).length;
+  const averageR=n?rows.reduce((s,r)=>s+r.realizedR,0)/n:null;
+  const gainR=rows.reduce((s,r)=>s+Math.max(0,r.realizedR),0),lossR=rows.reduce((s,r)=>s+Math.max(0,-r.realizedR),0);
+  return {samples:n,wins,accuracy:n?wins/n:null,wilsonLower:wilsonLower(wins,n),averageR,profitFactorR:lossR?gainR/lossR:null};
+}
+function choosePlan(candidates,minSamples=40){
+  const viable=(candidates||[]).filter(x=>x.stats.samples>=minSamples&&Number.isFinite(x.stats.averageR)&&x.stats.averageR>0&&(x.stats.profitFactorR===null||x.stats.profitFactorR>1));
+  if(!viable.length)return null;
+  viable.sort((a,b)=>(b.stats.wilsonLower-a.stats.wilsonLower)||((b.stats.averageR||0)-(a.stats.averageR||0))||(b.stats.samples-a.stats.samples));
+  return viable[0];
+}
+
 function statsAt(model,rows,threshold){
   const chosen=rows.map(r=>({...r,p:predict(model,r.z)})).filter(r=>r.p>=threshold);
   const wins=chosen.filter(r=>r.y===1).length;
@@ -144,4 +176,4 @@ function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
   const report={status:'trained',trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold),calibrationRecommendedThreshold,recommendedTest:calibrationRecommendedThreshold===null?null:statsAt(model,testExamples,calibrationRecommendedThreshold)};
   return {model,report};
 }
-module.exports={vector,fit,calibrate,predict,eligible,outcome,examples,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
+module.exports={PLAN_PROFILES,vector,fit,calibrate,predict,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
