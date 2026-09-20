@@ -4,8 +4,9 @@ const ti=require('technicalindicators');
 const {analyzePriceAction}=require('./priceAction');
 const {buildTradePlan}=require('./tradePlan');
 const {signalMinProbability}=require('./settings');
+const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
-const VERSION='technical-fundamental-v6';
+const VERSION='technical-fundamental-v7-alfred';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -31,8 +32,11 @@ function recordNews(symbol,articles,now=Date.now()){
     ins.run(id,symbol,n.time,now,n.headline,Math.max(-1,Math.min(1,Number(n.sentiment)||0)),n.provider||'unknown');}
 }
 function context(symbol,at){
+  const vintageMacro=pointInTimeContext(at);
   const row=db.prepare("SELECT * FROM context_snapshots WHERE kind='macro' AND symbol='USD' AND known_at<=? ORDER BY known_at DESC LIMIT 1").get(at);
-  const macro=row&&at-row.known_at<7*864e5?JSON.parse(row.payload):{};
+  const snapshotMacro=row&&at-row.known_at<7*864e5?JSON.parse(row.payload):{};
+  const macro=Object.keys(vintageMacro).length>=5?vintageMacro:snapshotMacro;
+  const macroSource=Object.keys(vintageMacro).length>=5?'ALFRED_POINT_IN_TIME':Object.keys(snapshotMacro).length?'LIVE_SNAPSHOT':'NONE';
   const news=db.prepare('SELECT score,headline,provider,published_at FROM news_history WHERE symbol=? AND known_at<=? AND known_at>=? AND published_at>=? ORDER BY known_at DESC LIMIT 20').all(symbol,at,at-864e5,at-864e5);
   const orientation=symbol.startsWith('USD')?1:-1;
   const newsSentiment=news.length?news.reduce((s,n)=>s+n.score,0)/news.length:0;
@@ -40,7 +44,7 @@ function context(symbol,at){
   const growthBias=((macro.GDPC1?.change||0)-(macro.UNRATE?.change||0))*orientation;
   const inflationBias=(macro.CPIAUCSL?.change||0)*orientation;
   const macroBias=Math.tanh((rateBias+growthBias+inflationBias)*50);
-  return {macroAvailable:Object.keys(macro).length===5,newsAvailable:news.length>0,newsSentiment,newsCount:news.length,newsHeadlines:news.slice(0,5).map(n=>({headline:n.headline,provider:n.provider,time:n.published_at,score:n.score})),macroBias,macro,
+  return {macroAvailable:Object.keys(macro).length===5,macroSource,newsAvailable:news.length>0,newsSentiment,newsCount:news.length,newsHeadlines:news.slice(0,5).map(n=>({headline:n.headline,provider:n.provider,time:n.published_at,score:n.score})),macroBias,macro,
     x:[
     ...['FEDFUNDS','CPIAUCSL','UNRATE','GDPC1','DGS10'].map(id=>Math.tanh((macro[id]?.change||0)*100)*orientation),
     macro.FEDFUNDS?Math.tanh(macro.FEDFUNDS.level/10)*orientation:0,
@@ -174,7 +178,10 @@ function trainSeries(symbol,tf){
   const base=train.reduce((s,r)=>s+r.y,0)/train.length;
   const baselineLoss=-test.reduce((s,r)=>s+r.y*Math.log(base+1e-9)+(1-r.y)*Math.log(1-base+1e-9),0)/test.length;
   const contextSamples=train.filter(r=>r.context.macroAvailable&&r.context.newsAvailable).length;
-  const fundamentalCoverage=train.length?contextSamples/train.length:0;
+  const macroContextSamples=train.filter(r=>r.context.macroAvailable).length;
+  const newsContextSamples=train.filter(r=>r.context.newsAvailable).length;
+  const fundamentalCoverage=train.length?macroContextSamples/train.length:0;
+  const newsCoverage=train.length?newsContextSamples/train.length:0;
   const threshold=MIN_PROB();
   const qualified=test.filter(r=>Math.max(predict(m,r.x),1-predict(m,r.x))>=threshold);
   const qualifiedCorrect=qualified.filter(r=>(predict(m,r.x)>=.5)===(r.y===1)).length;
@@ -186,7 +193,7 @@ function trainSeries(symbol,tf){
     const foldModel={weights:w,calibration:cal};folds.push({...evaluate(foldModel,parts.test,cost.total),setup:evaluateTradePlans(foldModel,parts.test,symbol,cost.total)});
   }
   const approved=setupBacktest.triggered>=20&&setupBacktest.accuracy>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&(setupBacktest.averageR||0)>0&&metrics.logLoss<baselineLoss&&folds.every(f=>f.logLoss<0.78&&(f.setup.triggered<5||(f.setup.averageR||0)>0));
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,fundamentalCoverage,baselineLoss,metrics,setupBacktest,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,minProbability:threshold,approved,approvalRule:'At least 20 triggered out-of-sample trade plans at the configured probability threshold, observed setup accuracy at/above target, positive average R, and log-loss/fold stability gates',split:'60/20/20 chronological, purged by outcome end; expanding-window folds',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,setupBacktest,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,minProbability:threshold,approved,approvalRule:'At least 20 triggered out-of-sample trade plans at the configured probability threshold, observed setup accuracy at/above target, positive average R, and log-loss/fold stability gates',split:'60/20/20 chronological, purged by outcome end; expanding-window folds',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
