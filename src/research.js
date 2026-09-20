@@ -99,11 +99,17 @@ function dataset(symbol,tf){
   const out=[],horizon=4,lookahead=10;
   for(let i=59;i+lookahead<rows.length;i++){
     const at=rows[i].ts+ms(tf),f=features(rows.slice(Math.max(0,i-119),i+1),symbol,at);
-    // Enter next open, exit horizon close. Reject gaps/provider mixing inside outcome window.
     const segment=rows.slice(i,i+lookahead+1);
-    if(segment.some((r,j)=>r.provider!==rows[i].provider||(j&&r.ts-segment[j-1].ts!==ms(tf))))continue;
+    if(segment.some((row,j)=>row.provider!==rows[i].provider||(j&&row.ts-segment[j-1].ts!==ms(tf))))continue;
     const ret=rows[i+horizon].close/rows[i+1].open-1;
-    out.push({...f,at,end:rows[i+horizon].ts+ms(tf),setupEnd:rows[i+lookahead].ts+ms(tf),ret,y:ret>0?1:0,futureBars:rows.slice(i+1,i+lookahead+1).map(r=>({ts:r.ts,open:r.open,high:r.high,low:r.low,close:r.close}))});
+    const priceAction={bias:Number(f.priceAction?.bias||0),breakoutUp:!!f.priceAction?.breakoutUp,breakoutDown:!!f.priceAction?.breakoutDown};
+    const context={macroAvailable:!!f.context?.macroAvailable,newsAvailable:!!f.context?.newsAvailable,newsSentiment:Number(f.context?.newsSentiment||0),macroBias:Number(f.context?.macroBias||0)};
+    out.push({
+      price:f.price,atr:f.atr,trend:f.trend,technicalBias:f.technicalBias,regime:f.regime,
+      priceAction,context,x:f.x,
+      at,end:rows[i+horizon].ts+ms(tf),setupEnd:rows[i+lookahead].ts+ms(tf),ret,y:ret>0?1:0,
+      futureBars:rows.slice(i+1,i+lookahead+1).map(row=>({ts:row.ts,open:row.open,high:row.high,low:row.low,close:row.close}))
+    });
   }
   return out;
 }
@@ -176,6 +182,10 @@ function split(rows){
 
 const setupDatasetCache=new Map();
 const setupPoolCache=new Map();
+function boundedSet(map,key,value,max){
+  if(map.has(key))map.delete(key);map.set(key,value);
+  while(map.size>max)map.delete(map.keys().next().value);
+}
 function assetFamily(symbol){
   if(['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD'].includes(symbol))return ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD'];
   if(['XAUUSD','XAGUSD','WTI'].includes(symbol))return ['XAUUSD','XAGUSD','WTI'];
@@ -185,64 +195,70 @@ function assetFamily(symbol){
 function cachedDataset(symbol,tf){
   const meta=db.prepare('SELECT COUNT(*) n,MAX(ts) maxTs FROM candles WHERE symbol=? AND timeframe=?').get(symbol,tf);
   const key=symbol+':'+tf,stamp=String(meta?.n||0)+':'+String(meta?.maxTs||0),hit=setupDatasetCache.get(key);
-  if(hit?.stamp===stamp)return hit.rows;
-  const rows=dataset(symbol,tf);setupDatasetCache.set(key,{stamp,rows});return rows;
+  if(hit?.stamp===stamp){setupDatasetCache.delete(key);setupDatasetCache.set(key,hit);return hit.rows;}
+  const rows=dataset(symbol,tf);boundedSet(setupDatasetCache,key,{stamp,rows},6);return rows;
 }
 function poolSplitRows(rows,cutoff){
-  const eligible=rows.filter(r=>(r.setupEnd||r.end)<cutoff);
+  const eligible=rows.filter(row=>(row.setupEnd||row.end)<cutoff);
   if(eligible.length<180)return {train:[],tune:[],cal:[]};
   const tuneStart=Math.floor(eligible.length*.65),calStart=Math.floor(eligible.length*.82);
   const tuneBoundary=eligible[tuneStart]?.at??Infinity,calBoundary=eligible[calStart]?.at??Infinity;
-  const train=eligible.slice(0,tuneStart).filter(r=>(r.setupEnd||r.end)<tuneBoundary);
-  const tune=eligible.slice(tuneStart,calStart).filter(r=>(r.setupEnd||r.end)<calBoundary);
+  const train=eligible.slice(0,tuneStart).filter(row=>(row.setupEnd||row.end)<tuneBoundary);
+  const tune=eligible.slice(tuneStart,calStart).filter(row=>(row.setupEnd||row.end)<calBoundary);
   const cal=eligible.slice(calStart);
   return {train,tune,cal};
 }
 function pooledSetup(symbol,tf,targetParts,threshold){
   const poolSymbols=assetFamily(symbol),cutoff=targetParts.test[0]?.at;
   if(!Number.isFinite(cutoff))return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols,trainSamples:0,tuneSamples:0,calibrationSamples:0,testSamples:0}};
-  const fingerprints=poolSymbols.map(s=>{
-    const m=db.prepare('SELECT COUNT(*) n,MAX(ts) maxTs FROM candles WHERE symbol=? AND timeframe=?').get(s,tf);
-    return s+':'+String(m?.n||0)+':'+String(m?.maxTs||0);
+  const fingerprints=poolSymbols.map(peer=>{
+    const m=db.prepare('SELECT COUNT(*) n,MAX(ts) maxTs FROM candles WHERE symbol=? AND timeframe=?').get(peer,tf);
+    return peer+':'+String(m?.n||0)+':'+String(m?.maxTs||0);
   }).join('|');
   const cacheKey=[VERSION,tf,poolSymbols.join(','),cutoff,threshold,fingerprints].join(':');
   let pooled=setupPoolCache.get(cacheKey);
   if(!pooled){
     const peerParts=[],used=[];
     for(const peer of poolSymbols){
-      const rows=cachedDataset(peer,tf),parts=poolSplitRows(rows,cutoff);
+      const peerRows=cachedDataset(peer,tf),parts=poolSplitRows(peerRows,cutoff);
       if(!parts.train.length||!parts.tune.length||!parts.cal.length)continue;
       peerParts.push({peer,cost:costs(peer).total,parts});used.push(peer);
     }
     const candidates=[];
     for(const planOptions of setupModel.PLAN_PROFILES){
       const tuneExamples=[];
-      for(const p of peerParts)tuneExamples.push(...setupModel.examples(p.parts.tune,p.peer,p.cost,planOptions));
+      for(const peer of peerParts)tuneExamples.push(...setupModel.examples(peer.parts.tune,peer.peer,peer.cost,planOptions));
       candidates.push({planOptions,stats:setupModel.summarizeExamples(tuneExamples)});
     }
-    const chosen=setupModel.choosePlan(candidates,Math.max(40,Math.floor(peerParts.reduce((s,p)=>s+p.parts.tune.length,0)*.02)));
+    const chosen=setupModel.choosePlan(candidates,Math.max(40,Math.floor(peerParts.reduce((sum,peer)=>sum+peer.parts.tune.length,0)*.02)));
     const planOptions=chosen?.planOptions||{name:'default',entryBufferAtr:.12,stopAtr:1.4,targetR:1.6,entryExpiryBars:4,holdBars:6};
     const trainExamples=[],calExamples=[];
-    for(const p of peerParts){
-      trainExamples.push(...setupModel.examples(p.parts.train,p.peer,p.cost,planOptions));
-      calExamples.push(...setupModel.examples(p.parts.cal,p.peer,p.cost,planOptions));
+    for(const peer of peerParts){
+      trainExamples.push(...setupModel.examples(peer.parts.train,peer.peer,peer.cost,planOptions));
+      calExamples.push(...setupModel.examples(peer.parts.cal,peer.peer,peer.cost,planOptions));
     }
-    if(trainExamples.length<100||calExamples.length<30){
-      pooled={model:null,trainExamples,calExamples,used,planOptions,modelCompetition:null,planSelection:{chosen:chosen||null,candidates}};
-    }else{
+    let model=null,modelCompetition=null,calibrationRecommendedThreshold=null;
+    if(trainExamples.length>=100&&calExamples.length>=30){
       const competition=setupModel.fitCompetitive(trainExamples,calExamples);
-      pooled={model:{...competition.model,planOptions,meaning:'P(success | confirmation entry triggered), pooled eligible asset-family training with pre-test tuned plan and pre-test model competition'},trainExamples,calExamples,used,planOptions,modelCompetition:competition.comparison,planSelection:{chosen:chosen||null,candidates}};
+      model={...competition.model,planOptions,meaning:'P(success | confirmation entry triggered), pooled eligible asset-family training with pre-test tuned plan and pre-test model competition'};
+      modelCompetition=competition.comparison;
+      calibrationRecommendedThreshold=setupModel.recommendThreshold(model,calExamples,Math.max(30,Math.floor(calExamples.length*.03)));
     }
-    setupPoolCache.set(cacheKey,pooled);
+    pooled={
+      model,used,planOptions,modelCompetition,calibrationRecommendedThreshold,
+      trainSamples:trainExamples.length,calibrationSamples:calExamples.length,
+      planSelection:{chosen:chosen||null,candidates}
+    };
+    boundedSet(setupPoolCache,cacheKey,pooled,12);
   }
   const targetExamples=setupModel.examples(targetParts.test,symbol,costs(symbol).total,pooled.planOptions||{});
   if(!pooled.model||targetExamples.length<30){
     return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols:pooled.used||poolSymbols,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:pooled.modelCompetition,
-      trainSamples:pooled.trainExamples?.length||0,tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calExamples?.length||0,testSamples:targetExamples.length}};
+      trainSamples:pooled.trainSamples||0,tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples||0,testSamples:targetExamples.length}};
   }
-  const calibrationRecommendedThreshold=setupModel.recommendThreshold(pooled.model,pooled.calExamples,Math.max(30,Math.floor(pooled.calExamples.length*.03)));
+  const calibrationRecommendedThreshold=pooled.calibrationRecommendedThreshold;
   const report={status:'trained',pooled:true,poolSymbols:pooled.used,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:pooled.modelCompetition,
-    trainSamples:pooled.trainExamples.length,tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calExamples.length,testSamples:targetExamples.length,
+    trainSamples:pooled.trainSamples,tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples,testSamples:targetExamples.length,
     ...setupModel.evaluate(pooled.model,targetExamples,threshold),calibrationRecommendedThreshold,
     recommendedTest:calibrationRecommendedThreshold===null?null:setupModel.statsAt(pooled.model,targetExamples,calibrationRecommendedThreshold)};
   return {model:pooled.model,report};
