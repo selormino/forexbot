@@ -5,7 +5,7 @@ const {analyzePriceAction}=require('./priceAction');
 const {buildTradePlan}=require('./tradePlan');
 const {signalMinProbability}=require('./settings');
 const {createHash}=require('crypto');
-const VERSION='technical-pa-v5-trade-plans';
+const VERSION='technical-fundamental-v6';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -49,12 +49,16 @@ function context(symbol,at){
 function features(rows,symbol,at){
   const c=rows.slice(-120),close=c.map(r=>r.close),high=c.map(r=>r.high),low=c.map(r=>r.low);
   if(c.length<60)throw new Error('Need 60 closed candles');
-  const price=close.at(-1),ema=p=>ti.EMA.calculate({period:p,values:close}).at(-1);
+  const price=close.at(-1),emaSeries=p=>ti.EMA.calculate({period:p,values:close}),ema20s=emaSeries(20),ema50s=emaSeries(50);
   const atr=ti.ATR.calculate({period:14,high,low,close}).at(-1);
   const rsi=ti.RSI.calculate({period:14,values:close}).at(-1);
   const macd=ti.MACD.calculate({values:close,fastPeriod:12,slowPeriod:26,signalPeriod:9,SimpleMAOscillator:false,SimpleMASignal:false}).at(-1)||{MACD:0,signal:0,histogram:0};
   const bb=ti.BollingerBands.calculate({period:20,stdDev:2,values:close}).at(-1)||{upper:price,middle:price,lower:price};
-  const trend=(ema(20)-ema(50))/Math.max(atr,1e-9);
+  const adx=ti.ADX.calculate({period:14,close,high,low}).at(-1)||{adx:0,pdi:0,mdi:0};
+  const ema20=ema20s.at(-1),ema50=ema50s.at(-1),trend=(ema20-ema50)/Math.max(atr,1e-9);
+  const emaSlope=(ema20-(ema20s.at(-6)??ema20))/Math.max(atr,1e-9);
+  const momentum5=(price-close.at(-6))/Math.max(atr,1e-9);
+  const adxDirection=(Number(adx.pdi||0)-Number(adx.mdi||0))/Math.max(Number(adx.pdi||0)+Number(adx.mdi||0),1e-9);
   const changes=close.slice(1).map((v,i)=>Math.log(v/close[i]));
   const vol=a=>Math.sqrt(a.reduce((s,v)=>s+v*v,0)/a.length);
   const ratio=vol(changes.slice(-14))/Math.max(vol(changes),1e-9);
@@ -63,7 +67,9 @@ function features(rows,symbol,at){
   const priceAction=analyzePriceAction(c,atr);
   const macdNorm=(Number(macd.MACD||0)-Number(macd.signal||0))/Math.max(atr,1e-9);
   const bbWidth=(bb.upper-bb.lower)/Math.max(price,1e-9),bbPosition=(price-bb.lower)/Math.max(bb.upper-bb.lower,1e-9);
-  return {price,atr,rsi,trend,regime,macd:{value:macd.MACD||0,signal:macd.signal||0,histogram:macd.histogram||0},bollinger:{...bb,width:bbWidth,position:bbPosition},priceAction,context:ctx,x:[Math.tanh(trend),(rsi-50)/50,Math.tanh(atr/price*100),Math.tanh(ratio-1),regime==='trend'?1:0,regime==='volatile'?1:0,Math.tanh(macdNorm),Math.tanh((bbPosition-.5)*2),Math.tanh(bbWidth*100),...priceAction.vector]};
+  const rsiBias=Math.max(-1,Math.min(1,(rsi-50)/25));
+  const technicalBias=Math.max(-1,Math.min(1,.34*Math.tanh(trend)+.18*Math.tanh(emaSlope)+.18*Math.tanh(macdNorm)+.12*adxDirection+.10*Math.tanh(momentum5)+.08*rsiBias));
+  return {price,atr,rsi,trend,ema20,ema50,emaSlope,momentum5,adx:{value:Number(adx.adx||0),pdi:Number(adx.pdi||0),mdi:Number(adx.mdi||0),direction:adxDirection},technicalBias,regime,macd:{value:macd.MACD||0,signal:macd.signal||0,histogram:macd.histogram||0},bollinger:{...bb,width:bbWidth,position:bbPosition},priceAction,context:ctx,x:[Math.tanh(trend),Math.tanh(emaSlope),Math.tanh(momentum5),rsiBias,Math.tanh(atr/price*100),Math.tanh(ratio-1),regime==='trend'?1:0,regime==='volatile'?1:0,Math.tanh(macdNorm),adxDirection,Math.tanh(Number(adx.adx||0)/25-1),Math.tanh((bbPosition-.5)*2),Math.tanh(bbWidth*100),technicalBias,...priceAction.vector,...ctx.x]};
 }
 function costs(symbol){
   // Round-trip estimates in basis points, not measured broker quotes.
@@ -123,6 +129,9 @@ function evaluateTradePlans(m,rows,symbol,costBps,threshold=MIN_PROB()){
     if(r.atr/r.price*10000<costBps*2)continue;
     if(r.context?.newsAvailable&&((side==='LONG'&&r.context.newsSentiment<-.25)||(side==='SHORT'&&r.context.newsSentiment>.25)))continue;
     if(r.context?.macroAvailable&&((side==='LONG'&&r.context.macroBias<-.35)||(side==='SHORT'&&r.context.macroBias>.35)))continue;
+    const fundamentalBias=.6*Number(r.context?.macroBias||0)+.4*Number(r.context?.newsSentiment||0);
+    const confluence=sgn*(.58*Number(r.technicalBias||0)+.22*Number(r.priceAction?.bias||0)+.20*fundamentalBias);
+    if(confluence<.10)continue;
     candidates++;
     const pseudo={symbol,price:r.price,leanDirection:side,candidateDirection:side,directionalProbability,features:r,priceAction:r.priceAction};
     const plan=buildTradePlan(pseudo,{side}),future=r.futureBars||[];let trigger=-1;
@@ -181,13 +190,44 @@ function trainSeries(symbol,tf){
   return report;
 }
 function latest(symbol,tf){const r=db.prepare('SELECT * FROM research_models WHERE symbol=? AND timeframe=? AND version=? ORDER BY id DESC LIMIT 1').get(symbol,tf,VERSION);return r?{...r,model:JSON.parse(r.model),report:JSON.parse(r.report)}:null;}
+function numericValue(v){
+  if(v===null||v===undefined)return null;
+  const n=Number(String(v).replace(/[%,$]/g,'').trim());return Number.isFinite(n)?n:null;
+}
+function symbolCurrencies(symbol){
+  const map={EURUSD:['EUR','USD'],GBPUSD:['GBP','USD'],USDJPY:['USD','JPY'],AUDUSD:['AUD','USD'],USDCAD:['USD','CAD'],XAUUSD:['XAU','USD'],XAGUSD:['XAG','USD'],WTI:['WTI','USD'],BTCUSD:['BTC','USD'],ETHUSD:['ETH','USD'],SOLUSD:['SOL','USD'],XRPUSD:['XRP','USD'],LTCUSD:['LTC','USD']};
+  return map[symbol]||[symbol.slice(0,3),symbol.slice(3,6)];
+}
+function eventFundamentalBias(events,symbol,now){
+  if(!Array.isArray(events))return {bias:0,surprises:[]};
+  const [base,quote]=symbolCurrencies(symbol),rows=[];
+  for(const e of events){
+    const t=new Date(e.time).getTime();if(!Number.isFinite(t)||t<now-12*3600000||t>now)continue;
+    const actual=numericValue(e.actual),forecast=numericValue(e.forecast??e.estimate);if(actual===null||forecast===null)continue;
+    const cur=String(e.currency||e.country||'').toUpperCase();let orientation=cur===base?1:cur===quote?-1:0;if(!orientation)continue;
+    const title=String(e.event||'').toLowerCase();
+    const polarity=/unemployment|jobless|claims/.test(title)?-1:1;
+    const impact=String(e.impact||'medium').toLowerCase()==='high'?1:String(e.impact||'medium').toLowerCase()==='medium'?.65:.35;
+    const scale=Math.max(Math.abs(forecast),Math.abs(actual),1),surprise=Math.tanh(((actual-forecast)/scale)*4)*polarity*orientation*impact;
+    rows.push({event:e.event,currency:cur,actual,forecast,impact:e.impact,score:surprise,time:e.time});
+  }
+  const bias=rows.length?rows.reduce((s,r)=>s+r.score,0)/Math.sqrt(rows.length):0;
+  return {bias:Math.max(-1,Math.min(1,bias)),surprises:rows.slice(-5)};
+}
+function confluenceFor(side,f,higherTimeframe,fundamentalBias){
+  const sign=side==='LONG'?1:-1;
+  const higher=higherTimeframe?Math.tanh(Number(higherTimeframe.trend||0)):0;
+  const raw=.40*Number(f.technicalBias||0)+.20*Number(f.priceAction?.bias||0)+.15*higher+.25*Number(fundamentalBias||0);
+  const aligned=Math.max(-1,Math.min(1,sign*raw));
+  return {score:aligned,agreement:Math.round((aligned+1)*50),raw};
+}
 function signal(symbol,tf='1h',events=null){
   const now=Date.now(),step=ms(tf);if(!step)throw new Error('Invalid timeframe');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,tf,step,now).reverse();
   const f=features(rows,symbol,now),m=latest(symbol,tf),p=m?predict(m.model,f.x):.5,cost=costs(symbol),reasons=[];
   const threshold=MIN_PROB(),lean=p>=.5?'LONG':'SHORT',directionalProbability=Math.max(p,1-p);
   const candidate=directionalProbability>=threshold?lean:'WAIT';
-  if(!m?.approved)reasons.push('Model has not passed out-of-sample 70% quality gates');
+  if(!m?.approved)reasons.push('Model has not passed out-of-sample validation gates');
   if(now-(rows.at(-1).ts+step)>step*2)reasons.push('Stale closed candles');
   if(rows.some((r,i)=>r.provider==='demo'||(i&&r.ts-rows[i-1].ts!==step)))reasons.push('Candle gaps or synthetic data');
   if(rows.some(r=>r.provider==='yahoo'))reasons.push('Research-only fallback feed');
@@ -210,6 +250,10 @@ function signal(symbol,tf='1h',events=null){
     }catch{}
   }
   if(f.atr/f.price*10000<cost.total*2)reasons.push('Expected range too small relative to estimated costs');
+  const eventFundamentals=eventFundamentalBias(events,symbol,now);
+  const fundamentalBias=Math.max(-1,Math.min(1,.50*Number(f.context.macroBias||0)+.30*Number(f.context.newsSentiment||0)+.20*eventFundamentals.bias));
+  const confluence=confluenceFor(lean,f,higherTimeframe,fundamentalBias);
+  if(confluence.score<.12)reasons.push('Technical and fundamental evidence lacks directional confluence');
   const relevantEvents=Array.isArray(events)?events.filter(e=>{
     const t=new Date(e.time).getTime();return Number.isFinite(t)&&t>=now-3600000&&t<=now+24*3600000;
   }).sort((a,b)=>new Date(a.time)-new Date(b.time)).slice(0,5):[];
@@ -220,6 +264,8 @@ function signal(symbol,tf='1h',events=null){
     `EMA trend score ${f.trend.toFixed(2)} ATR (${f.trend>0?'bullish':'bearish'})`,
     `RSI(14) ${f.rsi.toFixed(1)}`,
     `MACD histogram ${Number(f.macd.histogram||0).toFixed(5)}`,
+    `ADX ${Number(f.adx.value||0).toFixed(1)} · +DI ${Number(f.adx.pdi||0).toFixed(1)} / -DI ${Number(f.adx.mdi||0).toFixed(1)}`,
+    `EMA20 slope ${Number(f.emaSlope||0).toFixed(2)} ATR · 5-bar momentum ${Number(f.momentum5||0).toFixed(2)} ATR`,
     `Bollinger position ${(f.bollinger.position*100).toFixed(0)}% of band`,
     `Volatility regime: ${f.regime}`
   ];
@@ -228,17 +274,21 @@ function signal(symbol,tf='1h',events=null){
   if((lean==='LONG'&&f.priceAction.bias>0)||(lean==='SHORT'&&f.priceAction.bias<0))confirmations.push('Price action bias confirms direction');
   if((lean==='LONG'&&f.context.newsSentiment>0)||(lean==='SHORT'&&f.context.newsSentiment<0))confirmations.push('Recent news sentiment confirms direction');
   if((lean==='LONG'&&f.context.macroBias>0)||(lean==='SHORT'&&f.context.macroBias<0))confirmations.push('Macro backdrop confirms direction');
+  if((lean==='LONG'&&eventFundamentals.bias>0)||(lean==='SHORT'&&eventFundamentals.bias<0))confirmations.push('Recent economic surprise confirms direction');
   if(higherTimeframe&&(lean==='LONG'?1:-1)*higherTimeframe.trend>0)confirmations.push('4H trend confirms 1H direction');
+  if(confluence.score>=.35)confirmations.push('Technical + fundamental confluence is strong');
   const risks=[...reasons];
   const explanation=reasons.length?reasons:[`All strict gates passed; price action: ${paSummary||'neutral'}`];
   const base={symbol,timeframe:tf,price:f.price,leanDirection:lean,candidateDirection:candidate,direction:reasons.length?'WAIT':candidate,probability:p,directionalProbability,minProbability:threshold,
     probabilityMeaning:'Directional probability is model-calibrated and is independently verified by triggered signal outcomes',
     confidence:Math.abs(p-.5)*2,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,
-    analysis:{thesis:`${lean} lean from calibrated model with ${(directionalProbability*100).toFixed(1)}% directional probability; strict execution requires all confirmation gates.`,
-      technical:technicalReasons,priceAction:{structure:f.priceAction.structure,patterns:f.priceAction.patterns,bias:f.priceAction.bias},
+    analysis:{thesis:`${lean} lean from the calibrated model at ${(directionalProbability*100).toFixed(1)}%; evidence agreement is ${confluence.agreement}% across trend, momentum, price action, higher timeframe and fundamentals.`,
+      technical:technicalReasons,technicalBias:f.technicalBias,priceAction:{structure:f.priceAction.structure,patterns:f.priceAction.patterns,bias:f.priceAction.bias},
       news:{available:f.context.newsAvailable,count:f.context.newsCount,sentiment:f.context.newsSentiment,headlines:f.context.newsHeadlines},
       macro:{available:f.context.macroAvailable,bias:f.context.macroBias,series:f.context.macro},
-      calendar:relevantEvents.map(e=>({time:e.time,event:e.event,currency:e.currency||e.country,impact:e.impact,actual:e.actual,forecast:e.forecast,previous:e.previous})),
+      fundamentals:{bias:fundamentalBias,eventBias:eventFundamentals.bias,eventSurprises:eventFundamentals.surprises},
+      confluence,
+      calendar:relevantEvents.map(e=>({time:e.time,event:e.event,currency:e.currency||e.country,impact:e.impact,actual:e.actual,forecast:e.forecast??e.estimate,previous:e.previous})),
       confirmations,risks},
     eventRisk:reasons.some(r=>r.includes('event'))?1:0,generatedAt:now,sourceCandleTs:rows.at(-1).ts,horizonBars:m?.model?.horizon||4,modelId:m?.id||null,modelApproved:!!m?.approved,execution:'gated'};
   return {...base,tradePlan:buildTradePlan(base,{side:lean})};
