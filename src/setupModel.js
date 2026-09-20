@@ -80,27 +80,45 @@ function examples(rows,symbol,costBps){
   }
   return out;
 }
+function statsAt(model,rows,threshold){
+  const chosen=rows.map(r=>({...r,p:predict(model,r.z)})).filter(r=>r.p>=threshold);
+  const wins=chosen.filter(r=>r.y===1).length;
+  const averageR=chosen.length?chosen.reduce((s,r)=>s+r.realizedR,0)/chosen.length:null;
+  const gainR=chosen.reduce((s,r)=>s+Math.max(0,r.realizedR),0),lossR=chosen.reduce((s,r)=>s+Math.max(0,-r.realizedR),0);
+  return {threshold,selected:chosen.length,selectedAccuracy:chosen.length?wins/chosen.length:null,selectedWins:wins,averageR,profitFactorR:lossR?gainR/lossR:null};
+}
+function quantile(values,q){
+  if(!values.length)return null;
+  const a=[...values].sort((x,y)=>x-y),p=(a.length-1)*q,lo=Math.floor(p),hi=Math.ceil(p);
+  return lo===hi?a[lo]:a[lo]+(a[hi]-a[lo])*(p-lo);
+}
+function thresholdSweep(model,rows){
+  return [.40,.45,.50,.55,.60,.65,.70,.75,.80].map(t=>statsAt(model,rows,t));
+}
 function evaluate(model,rows,threshold=.7){
-  if(!rows.length)return {samples:0,accuracy:null,logLoss:null,brier:null,baselineLoss:null,selected:0,selectedAccuracy:null,averageR:null,profitFactorR:null};
+  if(!rows.length)return {samples:0,baseRate:null,accuracy:null,logLoss:null,brier:null,baselineLoss:null,selected:0,selectedAccuracy:null,averageR:null,profitFactorR:null,sweep:[]};
   const base=Math.max(.001,Math.min(.999,rows.reduce((s,r)=>s+r.y,0)/rows.length));
   let correct=0,ll=0,brier=0,baselineLoss=0;
-  const chosen=[];
+  const probabilities=[];
   for(const r of rows){
-    const p=predict(model,r.z);
+    const p=predict(model,r.z);probabilities.push(p);
     correct+=(p>=.5)===(r.y===1);
     ll-=r.y*Math.log(p+1e-9)+(1-r.y)*Math.log(1-p+1e-9);
     brier+=(p-r.y)**2;
     baselineLoss-=r.y*Math.log(base)+(1-r.y)*Math.log(1-base);
-    if(p>=threshold)chosen.push({...r,p});
   }
-  const wins=chosen.filter(r=>r.y===1).length;
-  const averageR=chosen.length?chosen.reduce((s,r)=>s+r.realizedR,0)/chosen.length:null;
-  const gainR=chosen.reduce((s,r)=>s+Math.max(0,r.realizedR),0),lossR=chosen.reduce((s,r)=>s+Math.max(0,-r.realizedR),0);
+  const selected=statsAt(model,rows,threshold);
   return {
-    samples:rows.length,accuracy:correct/rows.length,logLoss:ll/rows.length,brier:brier/rows.length,baselineLoss:baselineLoss/rows.length,
-    selected:chosen.length,selectedAccuracy:chosen.length?wins/chosen.length:null,selectedWins:wins,
-    averageR,profitFactorR:lossR?gainR/lossR:null,threshold
+    samples:rows.length,baseRate:base,accuracy:correct/rows.length,logLoss:ll/rows.length,brier:brier/rows.length,baselineLoss:baselineLoss/rows.length,
+    ...selected,prediction:{min:Math.min(...probabilities),p50:quantile(probabilities,.5),p75:quantile(probabilities,.75),p90:quantile(probabilities,.9),p95:quantile(probabilities,.95),max:Math.max(...probabilities)},
+    sweep:thresholdSweep(model,rows)
   };
+}
+function recommendThreshold(model,rows,minSelected=30){
+  const eligible=thresholdSweep(model,rows).filter(x=>x.selected>=minSelected&&Number.isFinite(x.averageR));
+  if(!eligible.length)return null;
+  eligible.sort((a,b)=>(b.averageR-a.averageR)||(b.selectedAccuracy-a.selectedAccuracy)||(b.selected-a.selected));
+  return eligible[0].threshold;
 }
 function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
   const trainExamples=examples(trainRows,symbol,costBps),calExamples=examples(calRows,symbol,costBps),testExamples=examples(testRows,symbol,costBps);
@@ -108,7 +126,8 @@ function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
     return {model:null,report:{status:'insufficient-triggered-setups',trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length}};
   }
   const weights=fit(trainExamples),calibration=calibrate(weights,calExamples),model={weights,calibration,meaning:'P(success | confirmation entry triggered)'};
-  const report={status:'trained',trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold)};
+  const calibrationRecommendedThreshold=recommendThreshold(model,calExamples,Math.max(20,Math.floor(calExamples.length*.05)));
+  const report={status:'trained',trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold),calibrationRecommendedThreshold,recommendedTest:calibrationRecommendedThreshold===null?null:statsAt(model,testExamples,calibrationRecommendedThreshold)};
   return {model,report};
 }
-module.exports={vector,fit,calibrate,predict,outcome,examples,evaluate,train};
+module.exports={vector,fit,calibrate,predict,outcome,examples,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
