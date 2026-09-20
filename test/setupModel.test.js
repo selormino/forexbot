@@ -102,3 +102,33 @@ test('custom plan profile changes the generated trade geometry',()=>{
   assert.notEqual(a.plan.stop,b.plan.stop);
   assert.notEqual(a.plan.target,b.plan.target);
 });
+
+
+test('boosted setup model returns bounded probabilities',()=>{
+  const rows=Array.from({length:240},(_,i)=>{
+    const a=(i%12)/11,b=((i*7)%13)/12;
+    return {z:[a,b,a*b],y:(a>.55&&b>.35)?1:0};
+  });
+  const base=setup.fitBoosted(rows,{rounds:12});
+  const calibration=setup.calibrateModel(base,rows);
+  const model={...base,calibration};
+  for(const z of [[0,0,0],[1,1,1],[.7,.4,.28]]){
+    const p=setup.predict(model,z);
+    assert.ok(p>0&&p<1);
+  }
+});
+test('competitive setup model reports a calibrated candidate choice',()=>{
+  const train=Array.from({length:220},(_,i)=>{
+    const a=(i%20)/19,b=((i*11)%17)/16;
+    return {z:[a,b,a*b],y:(a>.6&&b>.45)?1:0};
+  });
+  const cal=Array.from({length:80},(_,i)=>{
+    const a=((i+3)%20)/19,b=((i*5+2)%17)/16;
+    return {z:[a,b,a*b],y:(a>.6&&b>.45)?1:0};
+  });
+  const out=setup.fitCompetitive(train,cal);
+  assert.ok(['logistic','boosted-stumps'].includes(out.comparison.selected));
+  assert.ok(Number.isFinite(out.comparison.logistic.logLoss));
+  assert.ok(Number.isFinite(out.comparison.boosted.logLoss));
+  assert.ok(out.model.calibration);
+});
