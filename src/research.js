@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v9-eligible-setup';
+const VERSION='technical-fundamental-v10-pooled-eligible-setup';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -171,11 +171,72 @@ function split(rows){
   const calStart=Math.floor(rows.length*.6),testStart=Math.floor(rows.length*.8);
   return {train:rows.slice(0,calStart).filter(r=>(r.setupEnd||r.end)<rows[calStart].at),cal:rows.slice(calStart,testStart).filter(r=>(r.setupEnd||r.end)<rows[testStart].at),test:rows.slice(testStart)};
 }
+
+const setupDatasetCache=new Map();
+const setupPoolCache=new Map();
+function assetFamily(symbol){
+  if(['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD'].includes(symbol))return ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD'];
+  if(['XAUUSD','XAGUSD','WTI'].includes(symbol))return ['XAUUSD','XAGUSD','WTI'];
+  if(['BTCUSD','ETHUSD','SOLUSD','XRPUSD','LTCUSD'].includes(symbol))return ['BTCUSD','ETHUSD','SOLUSD','XRPUSD','LTCUSD'];
+  return [symbol];
+}
+function cachedDataset(symbol,tf){
+  const meta=db.prepare('SELECT COUNT(*) n,MAX(ts) maxTs FROM candles WHERE symbol=? AND timeframe=?').get(symbol,tf);
+  const key=symbol+':'+tf,stamp=String(meta?.n||0)+':'+String(meta?.maxTs||0),hit=setupDatasetCache.get(key);
+  if(hit?.stamp===stamp)return hit.rows;
+  const rows=cachedDataset(symbol,tf);setupDatasetCache.set(key,{stamp,rows});return rows;
+}
+function poolSplitRows(rows,cutoff){
+  const eligible=rows.filter(r=>(r.setupEnd||r.end)<cutoff);
+  if(eligible.length<120)return {train:[],cal:[]};
+  const calStart=Math.floor(eligible.length*.8),cal=eligible.slice(calStart),calAt=cal[0]?.at??Infinity;
+  const train=eligible.slice(0,calStart).filter(r=>(r.setupEnd||r.end)<calAt);
+  return {train,cal};
+}
+function pooledSetup(symbol,tf,targetParts,threshold){
+  const poolSymbols=assetFamily(symbol),cutoff=targetParts.test[0]?.at;
+  if(!Number.isFinite(cutoff))return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols,trainSamples:0,calibrationSamples:0,testSamples:0}};
+  const fingerprints=poolSymbols.map(s=>{
+    const m=db.prepare('SELECT COUNT(*) n,MAX(ts) maxTs FROM candles WHERE symbol=? AND timeframe=?').get(s,tf);
+    return s+':'+String(m?.n||0)+':'+String(m?.maxTs||0);
+  }).join('|');
+  const cacheKey=[VERSION,tf,poolSymbols.join(','),cutoff,threshold,fingerprints].join(':');
+  let pooled=setupPoolCache.get(cacheKey);
+  if(!pooled){
+    const trainExamples=[],calExamples=[],used=[];
+    for(const peer of poolSymbols){
+      const rows=cachedDataset(peer,tf),parts=poolSplitRows(rows,cutoff);
+      if(!parts.train.length||!parts.cal.length)continue;
+      const cost=costs(peer).total;
+      const tr=setupModel.examples(parts.train,peer,cost),ca=setupModel.examples(parts.cal,peer,cost);
+      if(tr.length)trainExamples.push(...tr);
+      if(ca.length)calExamples.push(...ca);
+      if(tr.length||ca.length)used.push(peer);
+    }
+    if(trainExamples.length<100||calExamples.length<30){
+      pooled={model:null,trainExamples,calExamples,used};
+    }else{
+      const weights=setupModel.fit(trainExamples),calibration=setupModel.calibrate(weights,calExamples);
+      pooled={model:{weights,calibration,meaning:'P(success | confirmation entry triggered), pooled eligible asset-family training'},trainExamples,calExamples,used};
+    }
+    setupPoolCache.set(cacheKey,pooled);
+  }
+  const targetExamples=setupModel.examples(targetParts.test,symbol,costs(symbol).total);
+  if(!pooled.model||targetExamples.length<30){
+    return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols:pooled.used||poolSymbols,trainSamples:pooled.trainExamples?.length||0,calibrationSamples:pooled.calExamples?.length||0,testSamples:targetExamples.length}};
+  }
+  const calibrationRecommendedThreshold=setupModel.recommendThreshold(pooled.model,pooled.calExamples,Math.max(30,Math.floor(pooled.calExamples.length*.03)));
+  const report={status:'trained',pooled:true,poolSymbols:pooled.used,trainSamples:pooled.trainExamples.length,calibrationSamples:pooled.calExamples.length,testSamples:targetExamples.length,
+    ...setupModel.evaluate(pooled.model,targetExamples,threshold),calibrationRecommendedThreshold,
+    recommendedTest:calibrationRecommendedThreshold===null?null:setupModel.statsAt(pooled.model,targetExamples,calibrationRecommendedThreshold)};
+  return {model:pooled.model,report};
+}
+
 function trainSeries(symbol,tf){
   const rows=dataset(symbol,tf);if(rows.length<500)return {symbol,timeframe:tf,status:'insufficient-data',samples:rows.length};
   const {train,cal,test}=split(rows),weights=fit(train),calibration=calibrate(weights,cal);
   const cost=costs(symbol),threshold=MIN_PROB();
-  const setupTraining=setupModel.train(train,cal,test,symbol,cost.total,threshold);
+  const setupTraining=pooledSetup(symbol,tf,{train,cal,test},threshold);
   const m={version:VERSION,weights,calibration,horizon:4,setup:setupTraining.model};
   const metrics=evaluate(m,test,cost.total),setupBacktest=evaluateTradePlans(m,test,symbol,cost.total),thresholdSweep=thresholdDiagnostics(m,test,symbol,cost.total);
   const base=train.reduce((s,r)=>s+r.y,0)/train.length;
@@ -194,14 +255,14 @@ function trainSeries(symbol,tf){
     const window=rows.slice(0,Math.floor(rows.length*fraction));
     const parts=split(window),w=fit(parts.train),calibrationFold=calibrate(w,parts.cal);
     const foldModel={weights:w,calibration:calibrationFold};
-    const setupFold=setupModel.train(parts.train,parts.cal,parts.test,symbol,cost.total,threshold).report;
+    const setupFold=pooledSetup(symbol,tf,parts,threshold).report;
     folds.push({...evaluate(foldModel,parts.test,cost.total),setup:evaluateTradePlans(foldModel,parts.test,symbol,cost.total),setupProbability:setupFold});
   }
   const setupReport=setupTraining.report,target=Number(process.env.SIGNAL_TARGET_ACCURACY||.70);
   const setupApproved=setupReport.status==='trained'&&setupReport.selected>=30&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss;
-  const foldStable=folds.every(f=>f.logLoss<0.78&&(f.setupProbability.status!=='trained'||f.setupProbability.selected<10||((f.setupProbability.averageR||0)>0&&f.setupProbability.logLoss<f.setupProbability.baselineLoss)));
+  const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||(f.setupProbability.recommendedTest.averageR||0)>0));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Setup-success model must have at least 30 out-of-sample selections at the configured threshold, meet the accuracy target, produce positive average R, beat baseline log loss, and remain stable across chronological folds',split:'60/20/20 chronological, purged through full setup outcome window; expanding-window folds',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Pooled eligible setup-success model must have at least 30 market-specific out-of-sample selections at the configured threshold, meet the accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits; setup model pools asset-family train/calibration data strictly before each target market test cutoff and evaluates only the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
@@ -313,4 +374,4 @@ function signal(symbol,tf='1h',events=null){
   return {...base,tradePlan:buildTradePlan(base,{side:lean})};
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
-module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
+module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
