@@ -40,6 +40,19 @@ function calibrate(weights,rows){
 }
 const predict=(model,z)=>sigmoid(model.calibration.a*dot(model.weights,z)+model.calibration.b);
 
+function eligible(row,side,costBps){
+  const sign=side==='LONG'?1:-1;
+  if(row.regime!=='trend'||sign*Number(row.trend||0)<=0)return false;
+  if(side==='LONG'&&Number(row.priceAction?.bias||0)<-.34)return false;
+  if(side==='SHORT'&&Number(row.priceAction?.bias||0)>.34)return false;
+  if(Number(row.atr||0)/Math.max(Number(row.price||0),1e-12)*10000<costBps*2)return false;
+  if(row.context?.newsAvailable&&((side==='LONG'&&Number(row.context.newsSentiment||0)<-.25)||(side==='SHORT'&&Number(row.context.newsSentiment||0)>.25)))return false;
+  if(row.context?.macroAvailable&&((side==='LONG'&&Number(row.context.macroBias||0)<-.35)||(side==='SHORT'&&Number(row.context.macroBias||0)>.35)))return false;
+  const fundamentalBias=.6*Number(row.context?.macroBias||0)+.4*Number(row.context?.newsSentiment||0);
+  const confluence=sign*(.58*Number(row.technicalBias||0)+.22*Number(row.priceAction?.bias||0)+.20*fundamentalBias);
+  return confluence>=.10;
+}
+
 function outcome(row,symbol,side,costBps){
   const sign=side==='LONG'?1:-1;
   const pseudo={symbol,price:row.price,leanDirection:side,candidateDirection:side,features:row,priceAction:row.priceAction};
@@ -73,6 +86,7 @@ function examples(rows,symbol,costBps){
   const out=[];
   for(const row of rows){
     for(const side of ['LONG','SHORT']){
+      if(!eligible(row,side,costBps))continue;
       const result=outcome(row,symbol,side,costBps);
       if(!result.triggered||!result.settled)continue;
       out.push({z:vector(row,side),y:result.y,realizedR:result.realizedR,side,at:row.at,outcome:result.outcome});
@@ -130,4 +144,4 @@ function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
   const report={status:'trained',trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold),calibrationRecommendedThreshold,recommendedTest:calibrationRecommendedThreshold===null?null:statsAt(model,testExamples,calibrationRecommendedThreshold)};
   return {model,report};
 }
-module.exports={vector,fit,calibrate,predict,outcome,examples,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
+module.exports={vector,fit,calibrate,predict,eligible,outcome,examples,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
