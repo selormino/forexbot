@@ -91,7 +91,7 @@ async function bootstrapMonitoring(){
     for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){
       try{
         const s=research.signal(symbol,timeframe,e);generatedSignals.push(s);
-        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,setupProbability:s.setupProbability,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
+        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,setupProbability:s.setupProbability,setupProbability:s.setupProbability,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
       }catch(err){recordedSignals.push({symbol,timeframe,error:err.message});}
     }
     const autoDemoRuns=await autoDemoStrict(generatedSignals);
@@ -124,7 +124,7 @@ async function scheduledSync(){
     for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){
       try{
         const s=research.signal(symbol,timeframe,signalEvents);generatedSignals.push(s);
-        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,setupProbability:s.setupProbability,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
+        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,setupProbability:s.setupProbability,setupProbability:s.setupProbability,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
       }catch(err){recordedSignals.push({symbol,timeframe,error:err.message});}
     }
     const autoDemoRuns=await autoDemoStrict(generatedSignals);
