@@ -113,7 +113,8 @@ async function syncPointInTimeMacro(seriesIds=CORE_SERIES,options={}){
 }
 
 function pointInTimeSeries(seriesId,at=Date.now(),limit=14){
-  const asOf=day(at),n=Math.max(1,Math.min(100,Number(limit)||14));
+  const lagDays=Math.max(0,Number(process.env.ALFRED_AVAILABILITY_LAG_DAYS??1)||0);
+  const asOf=day(Number(at)-lagDays*86400000),n=Math.max(1,Math.min(100,Number(limit)||14));
   return db.prepare(`
     SELECT v.series_id,v.observation_date,v.realtime_start,v.realtime_end,v.value
     FROM macro_vintages v
