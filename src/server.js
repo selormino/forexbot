@@ -85,7 +85,17 @@ function compactLearning(rows){
       averageR:x.setupProbability.averageR??null,p90:x.setupProbability.prediction?.p90??null,max:x.setupProbability.prediction?.max??null,
       calibrationRecommendedThreshold:x.setupProbability.calibrationRecommendedThreshold??null,
       recommendedTest:x.setupProbability.recommendedTest??null
-    }:null
+    }:null,
+    folds:(x.folds||[]).map(f=>({
+      directionalLogLoss:f.logLoss??null,
+      setup:f.setupProbability?{
+        status:f.setupProbability.status,
+        logLoss:f.setupProbability.logLoss??null,
+        baselineLoss:f.setupProbability.baselineLoss??null,
+        calibrationRecommendedThreshold:f.setupProbability.calibrationRecommendedThreshold??null,
+        recommendedTest:f.setupProbability.recommendedTest??null
+      }:null
+    }))
   }));
 }
 
