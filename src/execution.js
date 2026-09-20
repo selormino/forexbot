@@ -66,7 +66,7 @@ function createIntent(signal,options={}){
     .get(signal.symbol,signal.timeframe||'1h',signal.modelId||null,plan.side,Date.now()-30*60000);
   if(duplicate)return {created:false,duplicateId:duplicate.id,plan};
   const r=db.prepare(`INSERT INTO execution_intents(created_at,symbol,timeframe,side,entry,stop,target,units,probability,model_id,mode,status,reason,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(Date.now(),signal.symbol,signal.timeframe||'1h',plan.side,plan.entry,plan.stop,plan.target,plan.units,signal.directionalProbability??signal.probability,signal.modelId||null,m,'PENDING','Research gates passed',Date.now());
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(Date.now(),signal.symbol,signal.timeframe||'1h',plan.side,plan.entry,plan.stop,plan.target,plan.units,signal.setupProbability??signal.probability,signal.modelId||null,m,'PENDING','Research gates passed',Date.now());
   if(m==='paper'&&process.env.AUTO_PAPER_TRADING==='true'){
     const trade=db.prepare('INSERT INTO paper_trades(created_at,symbol,side,entry,stop,target,units) VALUES(?,?,?,?,?,?,?)').run(Date.now(),signal.symbol,plan.side,plan.entry,plan.stop,plan.target,plan.units);
     db.prepare("UPDATE execution_intents SET status='PAPER_FILLED',reason=?,broker_order_id=?,updated_at=? WHERE id=?").run('Automatically filled in paper ledger',String(trade.lastInsertRowid),Date.now(),r.lastInsertRowid);
@@ -77,7 +77,7 @@ function createIntent(signal,options={}){
 function createAutoDemoIntent(signal,{riskPct=Number(process.env.RISK_PER_TRADE_PCT||0.5)}={}){
   if(process.env.AUTO_DEMO_STRICT!=='true')return {created:false,reason:'Automatic strict demo execution is disabled'};
   if(String(process.env.BROKER_BRIDGE_MODE||'demo').toLowerCase()!=='demo')return {created:false,reason:'Automatic execution is restricted to demo bridge mode'};
-  const side=signal.direction,prob=Number(signal.directionalProbability||0),threshold=Number(signal.minProbability||0.7);
+  const side=signal.direction,prob=Number(signal.setupProbability??signal.probability??0),threshold=Number(signal.minProbability||0.7);
   const agreement=Number(signal.analysis?.confluence?.agreement||0),minAgreement=Number(process.env.AUTO_MIN_CONFLUENCE||65);
   if(!['LONG','SHORT'].includes(side)||!signal.modelApproved||(signal.filters||[]).length||prob<threshold)return {created:false,reason:'Signal is not STRICT and model-approved'};
   if(!Number.isFinite(agreement)||agreement<minAgreement)return {created:false,reason:`Evidence agreement below automatic demo minimum (${minAgreement}%)`};
@@ -115,7 +115,7 @@ function createManualIntent(signal,{side,equity=10000,riskPct=.5,maxPositionUnit
   const m=mode();
   if(!['paper','demo','bridge'].includes(m))throw new Error('Execution mode is off');
   const r=db.prepare(`INSERT INTO execution_intents(created_at,symbol,timeframe,side,entry,stop,target,units,probability,model_id,mode,status,reason,updated_at,risk_pct,sizing_mode,manual,source_ts,signal_key,confluence)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(Date.now(),signal.symbol,signal.timeframe||'1h',chosen,entry,stop,target,0,signal.directionalProbability,signal.modelId||null,m,'PENDING','Manual user-selected signal; probability threshold may be below automated gate',Date.now(),riskPct,'BROKER_RISK_PERCENT',1,signal.sourceCandleTs||null,null,Number(signal.analysis?.confluence?.agreement||0));
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(Date.now(),signal.symbol,signal.timeframe||'1h',chosen,entry,stop,target,0,signal.setupProbability??signal.probability,signal.modelId||null,m,'PENDING','Manual user-selected signal; probability threshold may be below automated gate',Date.now(),riskPct,'BROKER_RISK_PERCENT',1,signal.sourceCandleTs||null,null,Number(signal.analysis?.confluence?.agreement||0));
   return {created:true,id:r.lastInsertRowid,status:'PENDING',manual:true,plan:{side:chosen,entry,stop,target,riskPct,sizingMode:'BROKER_RISK_PERCENT',riskReward:Math.abs(target-entry)/stopDistance}};
 }
 module.exports={status,createIntent,createAutoDemoIntent,createManualIntent,list,approve};
