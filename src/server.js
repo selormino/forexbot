@@ -14,7 +14,7 @@ app.use('/api', (req,res,next)=>{if(req.method==='POST')return admin(req,res,nex
 app.get('/api/settings',(req,res)=>res.json(settings.status()));
 app.post('/api/settings/signal-threshold',(req,res)=>{try{const value=Number(req.body?.value);res.json({...settings.status(),signalMinProbability:settings.setSignalMinProbability(value),source:'database',updatedAt:Date.now()});}catch(e){res.status(400).json({error:e.message});}});
 app.get('/api/research/status',(req,res)=>res.json({version:research.VERSION,models:research.status()}));
-app.get('/api/research/edge',(req,res)=>{const models=research.status();res.json({version:research.VERSION,target:Number(process.env.SIGNAL_TARGET_ACCURACY||.70),series:models.map(m=>({symbol:m.symbol,timeframe:m.timeframe,approved:m.approved,samples:m.samples,setupBacktest:m.setupBacktest,thresholdSweep:m.thresholdSweep||[],contextSamples:m.contextSamples||0,fundamentalCoverage:m.fundamentalCoverage||0,newsCoverage:m.newsCoverage||0}))});});
+app.get('/api/research/edge',(req,res)=>{const models=research.status();res.json({version:research.VERSION,target:Number(process.env.SIGNAL_TARGET_ACCURACY||.70),series:models.map(m=>({symbol:m.symbol,timeframe:m.timeframe,approved:m.approved,samples:m.samples,setupBacktest:m.setupBacktest,setupProbability:m.setupProbability,thresholdSweep:m.thresholdSweep||[],contextSamples:m.contextSamples||0,fundamentalCoverage:m.fundamentalCoverage||0,newsCoverage:m.newsCoverage||0}))});});
 app.get('/api/signals/metrics',(req,res)=>res.json(signalMonitor.metrics()));
 app.get('/api/signals/history',(req,res)=>res.json(signalMonitor.history(req.query.limit)));
 app.get('/api/signals/board',async(req,res)=>{try{const e=await calendar().catch(()=>null);const out=[];for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){try{out.push(research.signal(symbol,timeframe,e));}catch(err){out.push({symbol,timeframe,direction:'WAIT',candidateDirection:'WAIT',directionalProbability:0,filters:[err.message],priceAction:null,regime:'unknown'});}}res.json(out);}catch(e){res.status(500).json({error:e.message});}});
@@ -91,7 +91,7 @@ async function bootstrapMonitoring(){
     for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){
       try{
         const s=research.signal(symbol,timeframe,e);generatedSignals.push(s);
-        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
+        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,setupProbability:s.setupProbability,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
       }catch(err){recordedSignals.push({symbol,timeframe,error:err.message});}
     }
     const autoDemoRuns=await autoDemoStrict(generatedSignals);
@@ -124,7 +124,7 @@ async function scheduledSync(){
     for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){
       try{
         const s=research.signal(symbol,timeframe,signalEvents);generatedSignals.push(s);
-        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
+        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,setupProbability:s.setupProbability,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
       }catch(err){recordedSignals.push({symbol,timeframe,error:err.message});}
     }
     const autoDemoRuns=await autoDemoStrict(generatedSignals);
