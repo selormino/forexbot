@@ -64,3 +64,19 @@ test('setup eligibility mirrors live structural gates',()=>{
   assert.equal(setup.eligible({...base,priceAction:{bias:-.8}},'LONG',5),false);
   assert.equal(setup.eligible({...base,atr:.01},'LONG',5),false);
 });
+
+
+test('pooled setup rows never cross the target test cutoff',()=>{
+  const rows=Array.from({length:200},(_,i)=>({at:i*10,end:i*10+4,setupEnd:i*10+9}));
+  const cutoff=1500;
+  const parts=research.poolSplitRows(rows,cutoff);
+  assert.ok(parts.train.length>0);
+  assert.ok(parts.cal.length>0);
+  assert.ok(parts.train.every(r=>r.setupEnd<parts.cal[0].at));
+  assert.ok(parts.cal.every(r=>r.setupEnd<cutoff));
+});
+test('asset-family pooling stays within related markets',()=>{
+  assert.deepEqual(research.assetFamily('EURUSD'),['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD']);
+  assert.deepEqual(research.assetFamily('XAUUSD'),['XAUUSD','XAGUSD','WTI']);
+  assert.deepEqual(research.assetFamily('BTCUSD'),['BTCUSD','ETHUSD','SOLUSD','XRPUSD','LTCUSD']);
+});
