@@ -174,6 +174,7 @@ function trainSeries(symbol,tf){
   const base=train.reduce((s,r)=>s+r.y,0)/train.length;
   const baselineLoss=-test.reduce((s,r)=>s+r.y*Math.log(base+1e-9)+(1-r.y)*Math.log(1-base+1e-9),0)/test.length;
   const contextSamples=train.filter(r=>r.context.macroAvailable&&r.context.newsAvailable).length;
+  const fundamentalCoverage=train.length?contextSamples/train.length:0;
   const threshold=MIN_PROB();
   const qualified=test.filter(r=>Math.max(predict(m,r.x),1-predict(m,r.x))>=threshold);
   const qualifiedCorrect=qualified.filter(r=>(predict(m,r.x)>=.5)===(r.y===1)).length;
@@ -185,7 +186,7 @@ function trainSeries(symbol,tf){
     const foldModel={weights:w,calibration:cal};folds.push({...evaluate(foldModel,parts.test,cost.total),setup:evaluateTradePlans(foldModel,parts.test,symbol,cost.total)});
   }
   const approved=setupBacktest.triggered>=20&&setupBacktest.accuracy>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&(setupBacktest.averageR||0)>0&&metrics.logLoss<baselineLoss&&folds.every(f=>f.logLoss<0.78&&(f.setup.triggered<5||(f.setup.averageR||0)>0));
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,baselineLoss,metrics,setupBacktest,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,minProbability:threshold,approved,approvalRule:'At least 20 triggered out-of-sample trade plans at the configured probability threshold, observed setup accuracy at/above target, positive average R, and log-loss/fold stability gates',split:'60/20/20 chronological, purged by outcome end; expanding-window folds',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,fundamentalCoverage,baselineLoss,metrics,setupBacktest,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,minProbability:threshold,approved,approvalRule:'At least 20 triggered out-of-sample trade plans at the configured probability threshold, observed setup accuracy at/above target, positive average R, and log-loss/fold stability gates',split:'60/20/20 chronological, purged by outcome end; expanding-window folds',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
@@ -207,7 +208,7 @@ function eventFundamentalBias(events,symbol,now){
     const cur=String(e.currency||e.country||'').toUpperCase();let orientation=cur===base?1:cur===quote?-1:0;if(!orientation)continue;
     const title=String(e.event||'').toLowerCase();
     const polarity=/unemployment|jobless|claims/.test(title)?-1:1;
-    const impact=String(e.impact||'medium').toLowerCase()==='high'?1:String(e.impact||'medium').toLowerCase()==='medium'?.65:.35;
+    const impactName=String(e.impact||'medium').toLowerCase();const impact=impactName==='high'?1:impactName==='medium'?.65:.35;
     const scale=Math.max(Math.abs(forecast),Math.abs(actual),1),surprise=Math.tanh(((actual-forecast)/scale)*4)*polarity*orientation*impact;
     rows.push({event:e.event,currency:cur,actual,forecast,impact:e.impact,score:surprise,time:e.time});
   }
