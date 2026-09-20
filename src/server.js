@@ -74,7 +74,7 @@ async function autoDemoStrict(signals){
 
 function compactLearning(rows){
   return (rows||[]).map(x=>({
-    symbol:x.symbol,timeframe:x.timeframe,status:x.status||'trained',approved:!!x.approved,
+    symbol:x.symbol,timeframe:x.timeframe,status:x.status||'trained',error:x.error||null,approved:!!x.approved,
     fundamentalCoverage:x.fundamentalCoverage??null,newsCoverage:x.newsCoverage??null,
     directional:{accuracy:x.qualifiedAccuracy??null,minProbability:x.directionalMinProbability??null},
     setup:x.setupProbability?{
