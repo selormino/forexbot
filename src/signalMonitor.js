@@ -66,7 +66,8 @@ const minProbability=()=>signalMinProbability();
 function record(signal){
   const step=tfMs(signal.timeframe);if(!step||!Number.isFinite(signal.sourceCandleTs))throw new Error('Signal is missing source candle metadata');
   const plan=signal.tradePlan;if(!plan)throw new Error('Signal is missing trade plan');
-  const threshold=Number(signal.minProbability||minProbability()),directionalProbability=Number(signal.directionalProbability||0),setupProbability=Number(signal.setupProbability);
+  const threshold=Number(signal.minProbability||minProbability()),directionalProbability=Number(signal.directionalProbability||0);
+  const rawSetupProbability=signal.setupProbability,setupProbability=rawSetupProbability===null||rawSetupProbability===undefined?null:Number(rawSetupProbability);
   const directionalFloor=Number(signal.directionalMinProbability||process.env.DIRECTIONAL_MIN_PROBABILITY||.55);
   const lean=signal.leanDirection||signal.candidateDirection||'WAIT';
   const qualified=['LONG','SHORT'].includes(signal.candidateDirection)&&Number.isFinite(setupProbability)&&setupProbability>=threshold&&directionalProbability>=directionalFloor;
