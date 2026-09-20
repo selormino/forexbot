@@ -38,7 +38,80 @@ function calibrate(weights,rows){
   }
   return {a,b};
 }
-const predict=(model,z)=>sigmoid(model.calibration.a*dot(model.weights,z)+model.calibration.b);
+function rawScore(model,z){
+  if(model?.kind==='boosted-stumps'){
+    let score=Number(model.baseScore||0);
+    for(const s of model.stumps||[])score+=z[s.feature]<=s.threshold?s.left:s.right;
+    return score;
+  }
+  return dot(model.weights,z);
+}
+function calibrateModel(model,rows){
+  if(rows.length<30)return {a:1,b:0};
+  let a=1,b=0;
+  for(let k=0;k<250;k++){
+    let da=0,db=0;
+    for(const r of rows){
+      const z=rawScore(model,r.z),e=sigmoid(a*z+b)-r.y;
+      da+=e*z;db+=e;
+    }
+    a-=.04*(da/rows.length+.01*(a-1));
+    b-=.04*db/rows.length;
+  }
+  return {a,b};
+}
+const predict=(model,z)=>sigmoid((model.calibration?.a??1)*rawScore(model,z)+(model.calibration?.b??0));
+function fitBoosted(rows,{rounds=30,learningRate=.12,lambda=1}={}){
+  if(rows.length<100)throw new Error('Insufficient triggered setup samples');
+  const dim=rows[0].z.length,mean=Math.max(.01,Math.min(.99,rows.reduce((s,r)=>s+r.y,0)/rows.length));
+  const baseScore=Math.log(mean/(1-mean)),scores=Array(rows.length).fill(baseScore),stumps=[];
+  const thresholds=Array.from({length:dim},(_,j)=>{
+    const v=rows.map(r=>r.z[j]).sort((a,b)=>a-b),out=[];
+    for(const q of [.2,.4,.6,.8]){
+      const x=v[Math.min(v.length-1,Math.floor((v.length-1)*q))];
+      if(Number.isFinite(x)&&!out.includes(x))out.push(x);
+    }
+    return out;
+  });
+  for(let round=0;round<rounds;round++){
+    const g=rows.map((r,i)=>r.y-sigmoid(scores[i])),h=rows.map((r,i)=>{const p=sigmoid(scores[i]);return Math.max(1e-4,p*(1-p));});
+    let best=null;
+    for(let j=0;j<dim;j++)for(const threshold of thresholds[j]){
+      let gl=0,hl=0,gr=0,hr=0,nl=0,nr=0;
+      for(let i=0;i<rows.length;i++){
+        if(rows[i].z[j]<=threshold){gl+=g[i];hl+=h[i];nl++;}else{gr+=g[i];hr+=h[i];nr++;}
+      }
+      if(nl<10||nr<10)continue;
+      const gain=gl*gl/(hl+lambda)+gr*gr/(hr+lambda);
+      if(!best||gain>best.gain){
+        const clip=x=>Math.max(-2,Math.min(2,x));
+        best={feature:j,threshold,left:learningRate*clip(gl/(hl+lambda)),right:learningRate*clip(gr/(hr+lambda)),gain};
+      }
+    }
+    if(!best||best.gain<1e-6)break;
+    stumps.push(best);
+    for(let i=0;i<rows.length;i++)scores[i]+=rows[i].z[best.feature]<=best.threshold?best.left:best.right;
+  }
+  return {kind:'boosted-stumps',baseScore,stumps};
+}
+function probabilityMetrics(model,rows){
+  if(!rows.length)return {samples:0,logLoss:null,brier:null,accuracy:null};
+  let ll=0,brier=0,correct=0;
+  for(const r of rows){
+    const p=predict(model,r.z);
+    ll-=r.y*Math.log(p+1e-9)+(1-r.y)*Math.log(1-p+1e-9);
+    brier+=(p-r.y)**2;correct+=(p>=.5)===(r.y===1);
+  }
+  return {samples:rows.length,logLoss:ll/rows.length,brier:brier/rows.length,accuracy:correct/rows.length};
+}
+function fitCompetitive(trainRows,calRows){
+  const logisticBase={kind:'logistic',weights:fit(trainRows)};
+  const logistic={...logisticBase,calibration:calibrateModel(logisticBase,calRows)};
+  const boostedBase=fitBoosted(trainRows),boosted={...boostedBase,calibration:calibrateModel(boostedBase,calRows)};
+  const logisticMetrics=probabilityMetrics(logistic,calRows),boostedMetrics=probabilityMetrics(boosted,calRows);
+  const selected=boostedMetrics.logLoss+0.005<logisticMetrics.logLoss?'boosted-stumps':'logistic';
+  return {model:selected==='boosted-stumps'?boosted:logistic,comparison:{selected,logistic:logisticMetrics,boosted:boostedMetrics,minimumBoostedImprovement:.005}};
+}
 
 function eligible(row,side,costBps){
   const sign=side==='LONG'?1:-1;
@@ -171,9 +244,9 @@ function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
   if(trainExamples.length<100||calExamples.length<30||testExamples.length<30){
     return {model:null,report:{status:'insufficient-triggered-setups',trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length}};
   }
-  const weights=fit(trainExamples),calibration=calibrate(weights,calExamples),model={weights,calibration,meaning:'P(success | confirmation entry triggered)'};
+  const competition=fitCompetitive(trainExamples,calExamples),model={...competition.model,meaning:'P(success | confirmation entry triggered)'};
   const calibrationRecommendedThreshold=recommendThreshold(model,calExamples,Math.max(20,Math.floor(calExamples.length*.05)));
-  const report={status:'trained',trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold),calibrationRecommendedThreshold,recommendedTest:calibrationRecommendedThreshold===null?null:statsAt(model,testExamples,calibrationRecommendedThreshold)};
+  const report={status:'trained',modelCompetition:competition.comparison,trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold),calibrationRecommendedThreshold,recommendedTest:calibrationRecommendedThreshold===null?null:statsAt(model,testExamples,calibrationRecommendedThreshold)};
   return {model,report};
 }
-module.exports={PLAN_PROFILES,vector,fit,calibrate,predict,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
+module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
