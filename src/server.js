@@ -72,6 +72,23 @@ async function autoDemoStrict(signals){
   return runs;
 }
 
+function compactLearning(rows){
+  return (rows||[]).map(x=>({
+    symbol:x.symbol,timeframe:x.timeframe,status:x.status||'trained',approved:!!x.approved,
+    fundamentalCoverage:x.fundamentalCoverage??null,newsCoverage:x.newsCoverage??null,
+    directional:{accuracy:x.qualifiedAccuracy??null,minProbability:x.directionalMinProbability??null},
+    setup:x.setupProbability?{
+      status:x.setupProbability.status,testSamples:x.setupProbability.testSamples??x.setupProbability.samples??null,
+      baseRate:x.setupProbability.baseRate??null,accuracy:x.setupProbability.accuracy??null,
+      logLoss:x.setupProbability.logLoss??null,baselineLoss:x.setupProbability.baselineLoss??null,
+      selected:x.setupProbability.selected??0,selectedAccuracy:x.setupProbability.selectedAccuracy??null,
+      averageR:x.setupProbability.averageR??null,p90:x.setupProbability.prediction?.p90??null,max:x.setupProbability.prediction?.max??null,
+      calibrationRecommendedThreshold:x.setupProbability.calibrationRecommendedThreshold??null,
+      recommendedTest:x.setupProbability.recommendedTest??null
+    }:null
+  }));
+}
+
 async function bootstrapMonitoring(){
   try{
     let macroVintages=[];
@@ -95,7 +112,9 @@ async function bootstrapMonitoring(){
       }catch(err){recordedSignals.push({symbol,timeframe,error:err.message});}
     }
     const autoDemoRuns=await autoDemoStrict(generatedSignals);
-    console.log(JSON.stringify({event:'signal-bootstrap',macroVintages,learning,settledSignals,brokerReconcile,recordedSignals,autoDemoRuns,signalMetrics:signalMonitor.metrics()}));
+    const learningSummary=compactLearning(learning);
+    console.log(JSON.stringify({event:'model-summary',version:research.VERSION,learning:learningSummary}));
+    console.log(JSON.stringify({event:'signal-bootstrap',macroVintages,learning:learningSummary,settledSignals,brokerReconcile,recordedSignals,autoDemoRuns,signalMetrics:signalMonitor.metrics()}));
   }catch(e){console.error('Signal bootstrap failed:',e.message);}
 }
 setTimeout(bootstrapMonitoring,3000);
@@ -135,7 +154,9 @@ async function scheduledSync(){
         catch(err){executionRuns.push({symbol:signal.symbol,error:err.message});}
       }
     }
-    console.log(JSON.stringify({event:'research-sync',macro,macroVintages,newsRuns,market,settledSignals,brokerReconcile,learning,recordedSignals,autoDemoRuns,signalMetrics:signalMonitor.metrics(),executionRuns}));
+    const learningSummary=compactLearning(learning);
+    console.log(JSON.stringify({event:'model-summary',version:research.VERSION,learning:learningSummary}));
+    console.log(JSON.stringify({event:'research-sync',macro,macroVintages,newsRuns,market,settledSignals,brokerReconcile,learning:learningSummary,recordedSignals,autoDemoRuns,signalMetrics:signalMonitor.metrics(),executionRuns}));
   }catch(e){console.error('Research sync failed:',e.message);}finally{syncing=false;}
 }
 if(process.env.HISTORY_AUTO_SYNC==='true'){
