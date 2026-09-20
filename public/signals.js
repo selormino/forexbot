@@ -1,91 +1,140 @@
-const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let board=[];let currentSettings=null;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let board=[],settings=null,adminToken='';
+
 async function get(u){const r=await fetch(u);const d=await r.json();if(!r.ok)throw new Error(d.error||'Request failed');return d}
-async function post(u,body,token){const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json','x-admin-token':token||''},body:JSON.stringify(body||{})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Request failed');return d}
-const pct=x=>x==null?'—':(x*100).toFixed(1)+'%';
-const fmtPrice=x=>x==null?'—':Number(x).toFixed(Number(x)>100?2:5);
+async function post(u,body,token=adminToken){const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json','x-admin-token':token||''},body:JSON.stringify(body||{})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Request failed');return d}
+const pct=x=>x==null?'—':(Number(x)*100).toFixed(1)+'%';
+const fmt=x=>x==null?'—':Number(x).toFixed(Math.abs(Number(x))>=100?2:5);
 const num=x=>x==null?'—':Number(x).toFixed(1);
 const cls=x=>x==='LONG'?'long':x==='SHORT'?'short':'wait';
+const statusOf=s=>s.direction!=='WAIT'?'STRICT':s.candidateDirection!=='WAIT'?'FILTERED':'WATCH';
+const friendly=e=>{const m=String(e?.message||e||'Unknown error');if(/Market closed/i.test(m))return 'This market is currently closed. No order was sent.';if(/Preview stale/i.test(m))return 'Price moved after the preview. Refresh the trade preview and try again.';if(/Autotrading disabled/i.test(m))return 'MT5 Algo Trading is disabled. Enable Algo Trading and external Python API trading in MT5.';return m.replace(/^MT5 order_send failed:\s*/,'');};
+
+function modal(title,body,actions=''){ $('modalTitle').textContent=title;$('modalBody').innerHTML=body;$('modalActions').innerHTML=actions;$('modalBackdrop').classList.add('open');}
+window.closeModal=()=>$('modalBackdrop').classList.remove('open');
+window.backdropClose=e=>{if(e.target===$('modalBackdrop'))closeModal()};
+function toast(msg){$('toast').textContent=msg;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),2800)}
+
 function renderAccuracy(m){
  const q=m.qualified;
- $('accuracyCards').innerHTML=`<div class="card"><span class="label">Triggered accuracy</span><div class="big">${pct(q.accuracy)}</div><span class="label">${q.wins} wins / ${q.settled} settled</span></div>
- <div class="card"><span class="label">Pending / active</span><div class="big compact">${q.pendingEntry} / ${q.active}</div><span class="label">${q.expired} expired without entry</span></div>
- <div class="card"><span class="label">Average R</span><div class="big">${q.averageR==null?'—':Number(q.averageR).toFixed(2)}</div><span class="label">settled strict setups</span></div>
- <div class="card"><span class="label">Broker-validation gate</span><div class="big compact">${m.readyForBrokerValidation?'PASS':'NOT YET'}</div><span class="label">≥50 settled + ${pct(m.targetAccuracy)} accuracy + confidence gate</span></div>`;
+ $('accuracyCards').innerHTML=`
+ <div class="card metric"><span class="label">Strict accuracy</span><div class="big">${pct(q.accuracy)}</div><span class="muted">${q.wins} wins · ${q.settled} settled</span></div>
+ <div class="card metric"><span class="label">Monitoring</span><div class="big compact">${q.pendingEntry+q.active} open</div><span class="muted">${q.pendingEntry} waiting · ${q.active} active</span></div>
+ <div class="card metric"><span class="label">Validation</span><div class="big compact">${m.readyForBrokerValidation?'READY':'RESEARCH'}</div><span class="muted">Target ${pct(m.targetAccuracy)} · avg R ${q.averageR==null?'—':Number(q.averageR).toFixed(2)}</span></div>`;
 }
-function renderSeries(m){
- const rows=Object.entries(m.bySeries||{}).sort((a,b)=>a[0].localeCompare(b[0]));
- $('seriesAccuracy').innerHTML=rows.map(([k,v])=>{const [symbol,tf]=k.split(':');return `<tr><td><b>${esc(symbol)}</b></td><td>${esc(tf)}</td><td>${v.pendingEntry}</td><td>${v.active}</td><td>${v.expired}</td><td>${v.settled}</td><td>${v.wins}</td><td><b>${pct(v.accuracy)}</b></td><td>${v.averageR==null?'—':Number(v.averageR).toFixed(2)}</td><td>${v.settled?pct(v.confidence95.lower)+'–'+pct(v.confidence95.upper):'—'}</td></tr>`}).join('')||'<tr><td colspan="10">No strict setups have qualified yet.</td></tr>';
+function renderSettings(s){settings=s;$('thresholdInput').value=Math.round(Number(s.signalMinProbability||.7)*100);$('thresholdSource').textContent=s.source==='database'?'custom':'default';}
+function renderBroker(b){
+ $('brokerMode').textContent=(b.mode||'demo').toUpperCase();
+ const ok=!!(b.configured&&b.reachable&&b.bridge?.accountConnected);
+ $('brokerDot').className='dot'+(ok?' ok':'');
+ $('brokerText').textContent=ok?'XM MT5 connected':b.configured?'Bridge unavailable':'Bridge not configured';
 }
-function signalStatus(s){if(s.candidateDirection!=='WAIT'&&s.direction!=='WAIT')return 'STRICT';if(s.candidateDirection!=='WAIT')return 'FILTERED';return 'WATCH';}
 function renderBoard(rows){
  board=rows;
- $('signalBoard').innerHTML=rows.map((s,i)=>{const p=s.tradePlan||{},status=signalStatus(s),unit=p.unitLabel||'pips';
- return `<tr><td><b>${esc(s.symbol)}</b><small>spot ${fmtPrice(s.price)}</small></td><td>${esc(s.timeframe)}</td>
- <td class="${cls(s.leanDirection)}"><b>${esc(s.leanDirection||'WAIT')}</b><small>${status==='WATCH'?'below strict threshold':''}</small></td>
- <td><b>${pct(s.directionalProbability)}</b><small>strict min ${pct(s.minProbability)}</small></td>
- <td><b>${fmtPrice(p.entry)}</b><small>${esc(p.entryType||'')}</small></td><td>${fmtPrice(p.stop)}<small>${num(p.stopPips)} ${esc(unit)}</small></td>
- <td>${fmtPrice(p.target)}<small>TP1 ${fmtPrice(p.tp1)}</small></td><td><b>${num(p.targetPips)} ${esc(unit)}</b><small>SL ${num(p.stopPips)} ${esc(unit)}</small></td>
- <td>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</td><td><span class="pill ${status==='STRICT'?'good':'neutral'}">${status}</span><small>${esc((s.filters||[])[0]||'All strict gates passed')}</small></td>
- <td><button class="small-btn" onclick="showDetail(${i})">Explain</button><button class="small-btn secondary" onclick="manualTrade(${i})">Trade ${esc(s.leanDirection||'')}</button></td></tr>`}).join('');
- $('boardUpdated').textContent='Updated '+new Date().toLocaleTimeString();
+ $('signalBoard').innerHTML=rows.map((s,i)=>{
+  const p=s.tradePlan||{},status=statusOf(s),conf=s.analysis?.confluence?.agreement,unit=p.unitLabel||'pips';
+  return `<tr>
+   <td><b>${esc(s.symbol)}</b><small>${esc(s.timeframe)} · spot ${fmt(s.price)}</small></td>
+   <td class="${cls(s.leanDirection)}"><b>${esc(s.leanDirection||'WAIT')}</b><small>${esc(s.regime||'')}</small></td>
+   <td><b>${pct(s.directionalProbability)}</b><small>min ${pct(s.minProbability)}</small></td>
+   <td><b>${conf==null?'—':conf+'%'}</b><small>cross-factor agreement</small></td>
+   <td><b>${fmt(p.entry)}</b><small>SL ${fmt(p.stop)} · TP ${fmt(p.target)} · ${num(p.targetPips)} ${esc(unit)}</small></td>
+   <td><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></td>
+   <td><span class="pill ${status==='STRICT'?'good':'neutral'}">${status}</span><small>${esc((s.filters||[])[0]||'All gates passed')}</small></td>
+   <td><div class="action-stack"><button class="small-btn" onclick="explain(${i})">Details</button><button class="small-btn primary" onclick="trade(${i})">Trade</button></div></td>
+  </tr>`;
+ }).join('');
+ $('boardUpdated').textContent=new Date().toLocaleTimeString();
 }
-function lines(title,arr){return `<section><h3>${esc(title)}</h3><ul>${(arr||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li>None</li>'}</ul></section>`}
-window.showDetail=i=>{const s=board[i],a=s.analysis||{},p=s.tradePlan||{},pa=a.priceAction||{},n=a.news||{},m=a.macro||{};
- $('signalDetail').classList.remove('empty-state');
- $('signalDetail').innerHTML=`<div class="detail-head"><div><span class="label">${esc(s.symbol)} · ${esc(s.timeframe)}</span><h2 class="${cls(s.leanDirection)}">${esc(s.leanDirection)} lean · ${pct(s.directionalProbability)}</h2><p>${esc(a.thesis||'')}</p></div><div class="plan-summary"><b>Entry ${fmtPrice(p.entry)}</b><span>SL ${fmtPrice(p.stop)} · TP1 ${fmtPrice(p.tp1)} · TP2 ${fmtPrice(p.target)}</span><span>${num(p.stopPips)} ${esc(p.unitLabel)} risk · ${num(p.targetPips)} ${esc(p.unitLabel)} target · ${p.riskReward?Number(p.riskReward).toFixed(2):'—'}R</span></div></div>
- <div class="detail-grid">${lines('Technical analysis',a.technical)}
- ${lines('Confirmations',a.confirmations)}
- ${lines('Risks / blockers',a.risks)}
- <section><h3>Price action</h3><p>Structure: <b>${esc(pa.structure||'—')}</b></p><p>Patterns: ${esc((pa.patterns||[]).join(', ')||'none detected')}</p><p>Bias score: ${pa.bias==null?'—':Number(pa.bias).toFixed(2)}</p></section>
- <section><h3>News context</h3><p>${n.available?'Available':'Unavailable'} · ${n.count||0} recent items</p><p>Sentiment: ${n.sentiment==null?'—':Number(n.sentiment).toFixed(2)} (-1 bearish to +1 bullish)</p>${(n.headlines||[]).map(h=>`<p><b>${esc(h.provider||'news')}</b> · ${esc(h.headline||'')}<br><small>${h.time?new Date(h.time).toLocaleString():''} · score ${h.score==null?'—':Number(h.score).toFixed(2)}</small></p>`).join('')}</section>
- <section><h3>Macro context</h3><p>${m.available?'Available':'Unavailable'} · bias ${m.bias==null?'—':Number(m.bias).toFixed(2)}</p><p>Uses Fed funds, CPI, unemployment, real GDP and US 10Y yield context.</p></section>
- <section><h3>Economic calendar</h3>${(a.calendar||[]).map(e=>`<p><b>${esc(e.impact||'')}</b> ${esc(e.currency||'')} · ${esc(e.event||'')}<br><small>${e.time?new Date(e.time).toLocaleString():''} · actual ${esc(e.actual??'—')} · forecast ${esc(e.forecast??'—')} · previous ${esc(e.previous??'—')}</small></p>`).join('')||'<p>No near-term events returned.</p>'}</section></div>`;
+function list(title,arr){return `<div class="analysis-box"><h3>${esc(title)}</h3><ul>${(arr||[]).slice(0,6).map(x=>`<li>${esc(x)}</li>`).join('')||'<li>None</li>'}</ul></div>`}
+window.explain=i=>{
+ const s=board[i],a=s.analysis||{},p=s.tradePlan||{},fund=a.fundamentals||{},n=a.news||{},pa=a.priceAction||{};
+ modal(`${s.symbol} · ${s.timeframe}`,`
+   <div class="kv">
+    <div><small>Bias</small><b class="${cls(s.leanDirection)}">${esc(s.leanDirection)}</b></div>
+    <div><small>Probability</small><b>${pct(s.directionalProbability)}</b></div>
+    <div><small>Evidence agreement</small><b>${a.confluence?.agreement??'—'}%</b></div>
+    <div><small>Status</small><b>${statusOf(s)}</b></div>
+   </div>
+   <div class="notice">${esc(a.thesis||'')}</div>
+   <div class="kv"><div><small>Entry</small><b>${fmt(p.entry)}</b></div><div><small>Stop</small><b>${fmt(p.stop)}</b></div><div><small>Target</small><b>${fmt(p.target)}</b></div><div><small>R:R</small><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></div></div>
+   <div class="analysis-grid" style="margin-top:12px">
+    ${list('Technical',a.technical)}
+    <div class="analysis-box"><h3>Price action</h3><p>Structure: <b>${esc(pa.structure||'—')}</b></p><p>Patterns: ${esc((pa.patterns||[]).join(', ')||'none')}</p><p>Bias: ${pa.bias==null?'—':Number(pa.bias).toFixed(2)}</p></div>
+    <div class="analysis-box"><h3>Fundamentals</h3><p>Combined bias: <b>${fund.bias==null?'—':Number(fund.bias).toFixed(2)}</b></p><p>Macro: ${a.macro?.bias==null?'—':Number(a.macro.bias).toFixed(2)}</p><p>News: ${n.sentiment==null?'—':Number(n.sentiment).toFixed(2)}</p><p>Event surprise: ${fund.eventBias==null?'—':Number(fund.eventBias).toFixed(2)}</p></div>
+    ${list('Confirmations',a.confirmations)}
+    ${list('Blockers',a.risks)}
+    <div class="analysis-box"><h3>Recent news</h3>${(n.headlines||[]).slice(0,3).map(h=>`<p><b>${esc(h.headline||'')}</b><br><small>${esc(h.provider||'')}</small></p>`).join('')||'<p>No recent headlines.</p>'}</div>
+   </div>`,
+   '<button onclick="closeModal()">Close</button>');
 };
-function renderSettings(s){
- currentSettings=s;
- $('thresholdInput').value=Math.round(Number(s.signalMinProbability||.70)*100);
- $('thresholdSource').textContent=(s.source==='database'?'Custom runtime setting':'Environment default')+' · '+Math.round(Number(s.signalMinProbability||.70)*100)+'%';
-}
+
+window.openThreshold=()=>{
+ const current=Number($('thresholdInput').value||60);
+ modal('Strict signal threshold',`
+  <p class="muted">This changes qualification for new signals. Historical results keep their original threshold.</p>
+  <div class="field"><label>Threshold (%)</label><input id="modalThreshold" type="number" min="50" max="95" value="${current}"></div>
+  <div class="field"><label>Admin API key</label><input id="modalAdmin" type="password" autocomplete="off" placeholder="Required to save"></div>`,
+  '<button onclick="closeModal()">Cancel</button><button class="primary" onclick="saveThreshold()">Save threshold</button>');
+};
 window.saveThreshold=async()=>{
- const pctValue=Number($('thresholdInput').value);
- if(!Number.isFinite(pctValue)||pctValue<50||pctValue>95){alert('Threshold must be between 50% and 95%.');return;}
- const token=prompt('Admin API token (not saved)')||'';if(!token)return;
- try{
-   const s=await post('/api/settings/signal-threshold',{value:pctValue/100},token);
-   renderSettings(s);await load();
-   alert('Strict probability threshold updated to '+pctValue.toFixed(0)+'%. New signals will use this threshold.');
- }catch(e){alert(e.message)}
+ const value=Number($('modalThreshold')?.value),token=$('modalAdmin')?.value||adminToken;
+ if(!Number.isFinite(value)||value<50||value>95){toast('Threshold must be between 50% and 95%.');return}
+ if(!token){toast('Admin API key is required.');return}
+ try{adminToken=token;const s=await post('/api/settings/signal-threshold',{value:value/100},token);renderSettings(s);closeModal();toast('Threshold updated to '+value.toFixed(0)+'%');await load();}
+ catch(e){toast(friendly(e))}
 };
-async function manualTrade(i){
- const s=board[i],p=s.tradePlan||{};if(!s.leanDirection)return;
- if(!confirm(`Prepare a manual ${s.leanDirection} setup for ${s.symbol} ${s.timeframe}?\nEntry ${fmtPrice(p.entry)} | SL ${fmtPrice(p.stop)} | TP ${fmtPrice(p.target)}\nProbability ${pct(s.directionalProbability)}. Current strict threshold: ${pct(s.minProbability)}. Manual execution is allowed below that threshold.`))return;
- const token=prompt('Admin API token (not saved)')||'';if(!token)return;
+
+window.trade=i=>{
+ const s=board[i],p=s.tradePlan||{},conf=s.analysis?.confluence?.agreement;
+ modal(`Trade ${s.symbol} ${s.timeframe}`,`
+   <div class="kv"><div><small>Bias</small><b class="${cls(s.leanDirection)}">${esc(s.leanDirection)}</b></div><div><small>Probability</small><b>${pct(s.directionalProbability)}</b></div><div><small>Evidence agreement</small><b>${conf??'—'}%</b></div><div><small>Status</small><b>${statusOf(s)}</b></div></div>
+   <div class="notice">${statusOf(s)==='STRICT'?'Strict gates passed.':'Manual demo execution is allowed, but this setup has not passed all strict gates.'}</div>
+   <div class="kv"><div><small>Entry</small><b>${fmt(p.entry)}</b></div><div><small>SL</small><b>${fmt(p.stop)}</b></div><div><small>TP</small><b>${fmt(p.target)}</b></div><div><small>R:R</small><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></div></div>
+   <div class="field"><label>Admin API key</label><input id="tradeAdmin" type="password" autocomplete="off" value="${esc(adminToken)}" placeholder="Required for broker preview"></div>`,
+   '<button onclick="closeModal()">Cancel</button><button class="primary" onclick="previewTrade('+i+')">Preview on XM</button>');
+};
+window.previewTrade=async i=>{
+ const token=$('tradeAdmin')?.value||adminToken;if(!token){toast('Admin API key is required.');return}
+ adminToken=token;const s=board[i];
  try{
-   const created=await post('/api/execution/manual',{symbol:s.symbol,timeframe:s.timeframe,side:s.leanDirection},token);
-   const broker=created.broker||{};
-   if(!broker.configured){alert('Manual intent created (#'+created.intent.id+'). Broker bridge is not configured yet. Configure MT5_BRIDGE_URL and MT5_BRIDGE_TOKEN on Railway, then use the signal again.');return;}
-   const mode=broker.mode||'demo';
-   const preview=await post('/api/broker/manual-preview/'+created.intent.id,{},token);
-   const previewText=`XM/MT5 PREVIEW\nBroker symbol: ${preview.brokerSymbol||s.symbol}\nOrder: ${preview.orderType||s.leanDirection}\n${preview.adjusted?'Broker-safe adjustment: YES\nOriginal entry: '+fmtPrice(preview.originalEntry)+'\n':''}Entry: ${fmtPrice(preview.entry)}\nSL: ${fmtPrice(preview.stop)}\nTP: ${fmtPrice(preview.target)}\nVolume: ${preview.volumeLots} lots\nRisk cash: ${preview.riskCash==null?'—':Number(preview.riskCash).toFixed(2)} ${preview.mode||mode}\nBid/Ask: ${fmtPrice(preview.bid)} / ${fmtPrice(preview.ask)}\n${preview.safetyGap!=null?'Minimum pending-entry gap: '+fmtPrice(preview.safetyGap)+'\n':''}\nNo trade has been placed yet.`;
-   if(!confirm(previewText+`\n\nSend manual intent #${created.intent.id} to the configured ${mode.toUpperCase()} broker bridge now?`))return;
-   const confirmPhrase=mode==='live'?'CONFIRM_LIVE_TRADE':undefined;
-   const sent=await post('/api/broker/manual-dispatch/'+created.intent.id,{confirm:confirmPhrase},token);
-   alert(`Trade sent to ${sent.mode} bridge. Broker order: ${sent.brokerOrderId||'accepted'}`);
- }catch(e){alert(e.message)}
-}
-function renderHistory(rows){
- $('signalHistory').innerHTML=rows.map(r=>{const p=r.plan||{},result=r.outcome_pips==null?'—':Number(r.outcome_pips).toFixed(1)+' '+(r.unit_label||p.unitLabel||'');
- const outcome=r.outcome||r.status;
- return `<tr><td>${new Date(r.created_at).toLocaleString()}</td><td><b>${esc(r.symbol)}</b></td><td>${esc(r.timeframe)}</td><td class="${cls(r.lean_direction)}"><b>${esc(r.lean_direction||r.candidate_direction)}</b></td><td>${pct(r.directional_probability)}</td><td>${fmtPrice(r.entry_price)}<small>${r.entry_triggered_at?'triggered '+new Date(r.entry_triggered_at).toLocaleString():'waiting/unused'}</small></td><td>${fmtPrice(r.stop_price)} / ${fmtPrice(r.target_price)}<small>${num(r.stop_pips)} / ${num(r.target_pips)} ${esc(r.unit_label||'')}</small></td><td><span class="pill neutral">${esc(r.status)}</span></td><td><span class="pill ${r.success===1?'good':r.success===0&&r.status==='SETTLED'?'bad':'neutral'}">${esc(outcome)}</span></td><td>${esc(result)}<small>${r.realized_r==null?'':Number(r.realized_r).toFixed(2)+'R · MFE '+num(r.mfe_pips)+' · MAE '+num(r.mae_pips)}</small></td></tr>`}).join('')||'<tr><td colspan="10">Monitoring history will populate after closed-candle evaluations.</td></tr>';
-}
-function renderEdge(e){
- const out=[];
- for(const s of e.series||[])for(const x of s.thresholdSweep||[])out.push({...x,symbol:s.symbol,timeframe:s.timeframe});
- $('edgeDiagnostics').innerHTML=out.map(x=>`<tr><td><b>${esc(x.symbol)}</b></td><td>${esc(x.timeframe)}</td><td>${pct(x.threshold)}</td><td>${x.directionalSamples||0}</td><td>${pct(x.directionalAccuracy)}</td><td>${x.setup?.triggered||0}</td><td>${pct(x.setup?.accuracy)}</td><td>${x.setup?.averageR==null?'—':Number(x.setup.averageR).toFixed(2)}</td></tr>`).join('')||'<tr><td colspan="8">Edge diagnostics will populate after the current research version retrains.</td></tr>';
-}
-async function renderBroker(){
- try{const b=await get('/api/broker/status');$('brokerMode').textContent=(b.mode||'demo').toUpperCase();$('brokerStatus').innerHTML=`<div><span class="label">Configured</span><b>${b.configured?'YES':'NO'}</b></div><div><span class="label">Reachable</span><b>${b.reachable?'YES':'NO'}</b></div><div><span class="label">Manual live gate</span><b>${b.liveDispatchSupported?'ENABLED':'OFF'}</b></div><div><span class="label">Setup</span><b>${b.configured?'MT5 bridge connected':'Set MT5_BRIDGE_URL + MT5_BRIDGE_TOKEN'}</b></div>`;}catch(e){$('brokerStatus').textContent=e.message}
-}
-async function load(){try{const [m,b,h,e,s]=await Promise.all([get('/api/signals/metrics'),get('/api/signals/board'),get('/api/signals/history?limit=300'),get('/api/research/edge'),get('/api/settings')]);renderAccuracy(m);renderSeries(m);renderBoard(b);renderHistory(h);renderEdge(e);renderSettings(s);renderBroker();}catch(e){$('signalBoard').innerHTML='<tr><td colspan="11">'+esc(e.message)+'</td></tr>'}}
+  $('modalActions').innerHTML='<button disabled>Checking XM…</button>';
+  const created=await post('/api/execution/manual',{symbol:s.symbol,timeframe:s.timeframe,side:s.leanDirection},token);
+  if(!created.broker?.configured)throw new Error('MT5 bridge is not configured');
+  const preview=await post('/api/broker/manual-preview/'+created.intent.id,{},token);
+  const mode=created.broker.mode||'demo';
+  modal('XM order preview',`
+    <div class="notice">${preview.adjusted?'XM adjusted the pending entry to a broker-safe distance.':'XM validated the planned entry.'} No order has been sent yet.</div>
+    <div class="kv">
+      <div><small>Broker symbol</small><b>${esc(preview.brokerSymbol||s.symbol)}</b></div>
+      <div><small>Order type</small><b>${esc(preview.orderType||s.leanDirection)}</b></div>
+      <div><small>Entry</small><b>${fmt(preview.entry)}</b></div>
+      <div><small>SL / TP</small><b>${fmt(preview.stop)} / ${fmt(preview.target)}</b></div>
+      <div><small>Volume</small><b>${num(preview.volumeLots)} lots</b></div>
+      <div><small>Risk cash</small><b>${preview.riskCash==null?'—':Number(preview.riskCash).toFixed(2)}</b></div>
+      <div><small>Bid / Ask</small><b>${fmt(preview.bid)} / ${fmt(preview.ask)}</b></div>
+      <div><small>Mode</small><b>${esc(String(mode).toUpperCase())}</b></div>
+    </div>`,
+    '<button onclick="closeModal()">Cancel</button><button class="primary" onclick="sendTrade('+created.intent.id+',\''+mode+'\')">Send '+String(mode).toUpperCase()+' order</button>');
+ }catch(e){modal('Trade preview failed','<div class="notice">'+esc(friendly(e))+'</div>','<button onclick="closeModal()">Close</button>')}
+};
+window.sendTrade=async(id,mode)=>{
+ try{
+  $('modalActions').innerHTML='<button disabled>Sending…</button>';
+  const sent=await post('/api/broker/manual-dispatch/'+id,{confirm:mode==='live'?'CONFIRM_LIVE_TRADE':undefined});
+  modal('Order sent',`<div class="notice">XM accepted the ${esc(String(sent.mode).toUpperCase())} order.</div><div class="kv"><div><small>Broker ticket</small><b>${esc(sent.brokerOrderId||'accepted')}</b></div><div><small>Mode</small><b>${esc(String(sent.mode).toUpperCase())}</b></div></div>`,'<button class="primary" onclick="closeModal()">Done</button>');
+ }catch(e){modal('Order not sent','<div class="notice">'+esc(friendly(e))+'</div>','<button onclick="closeModal()">Close</button>')}
+};
+
+function renderSeries(m){const rows=Object.entries(m.bySeries||{}).sort((a,b)=>a[0].localeCompare(b[0]));$('seriesAccuracy').innerHTML=rows.map(([k,v])=>{const [symbol,tf]=k.split(':');return `<tr><td><b>${esc(symbol)}</b></td><td>${esc(tf)}</td><td>${v.pendingEntry}</td><td>${v.active}</td><td>${v.settled}</td><td>${v.wins}</td><td>${pct(v.accuracy)}</td><td>${v.averageR==null?'—':Number(v.averageR).toFixed(2)}</td></tr>`}).join('')||'<tr><td colspan="8">No strict setups yet.</td></tr>'}
+function renderEdge(e){const out=[];for(const s of e.series||[])for(const x of s.thresholdSweep||[])out.push({...x,symbol:s.symbol,timeframe:s.timeframe});$('edgeDiagnostics').innerHTML=out.map(x=>`<tr><td><b>${esc(x.symbol)}</b></td><td>${esc(x.timeframe)}</td><td>${pct(x.threshold)}</td><td>${x.directionalSamples||0}</td><td>${pct(x.directionalAccuracy)}</td><td>${x.setup?.triggered||0}</td><td>${pct(x.setup?.accuracy)}</td><td>${x.setup?.averageR==null?'—':Number(x.setup.averageR).toFixed(2)}</td></tr>`).join('')}
+function renderHistory(rows){$('signalHistory').innerHTML=rows.map(r=>`<tr><td>${new Date(r.created_at).toLocaleString()}</td><td><b>${esc(r.symbol)}</b><small>${esc(r.timeframe)}</small></td><td class="${cls(r.lean_direction)}">${esc(r.lean_direction||r.candidate_direction)}</td><td>${pct(r.directional_probability)}</td><td>${fmt(r.entry_price)}</td><td>${esc(r.status)}</td><td>${esc(r.outcome||'—')}</td><td>${r.outcome_pips==null?'—':Number(r.outcome_pips).toFixed(1)+' '+esc(r.unit_label||'')}<small>${r.realized_r==null?'':Number(r.realized_r).toFixed(2)+'R'}</small></td></tr>`).join('')||'<tr><td colspan="8">No monitored history yet.</td></tr>'}
+
+window.load=async()=>{
+ try{
+  const [m,b,h,e,s,broker]=await Promise.all([get('/api/signals/metrics'),get('/api/signals/board'),get('/api/signals/history?limit=200'),get('/api/research/edge'),get('/api/settings'),get('/api/broker/status')]);
+  renderAccuracy(m);renderBoard(b);renderHistory(h);renderEdge(e);renderSeries(m);renderSettings(s);renderBroker(broker);
+ }catch(e){toast(friendly(e))}
+};
 load();setInterval(load,60000);
