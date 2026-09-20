@@ -50,3 +50,17 @@ test('setup logistic model returns bounded probabilities',()=>{
     assert.ok(p>0&&p<1);
   }
 });
+
+
+test('setup eligibility mirrors live structural gates',()=>{
+  const base={
+    regime:'trend',trend:1,atr:1,price:100,
+    technicalBias:.5,priceAction:{bias:.2},
+    context:{macroAvailable:true,macroBias:.2,newsAvailable:false,newsSentiment:0}
+  };
+  assert.equal(setup.eligible(base,'LONG',5),true);
+  assert.equal(setup.eligible({...base,regime:'range'},'LONG',5),false);
+  assert.equal(setup.eligible({...base,trend:-1},'LONG',5),false);
+  assert.equal(setup.eligible({...base,priceAction:{bias:-.8}},'LONG',5),false);
+  assert.equal(setup.eligible({...base,atr:.01},'LONG',5),false);
+});
