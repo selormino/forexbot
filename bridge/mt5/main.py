@@ -18,7 +18,7 @@ try:
 except Exception:
     SYMBOL_MAP={}
 
-app=FastAPI(title="ForexBot MT5 Bridge",version="1.1.0")
+app=FastAPI(title="ForexBot MT5 Bridge",version="1.2.0")
 
 class Order(BaseModel):
     clientOrderId:str
@@ -167,7 +167,8 @@ def prepare(order:Order,adjust_entry:bool=False):
 def health(authorization:str|None=Header(default=None)):
     auth(authorization)
     info=ensure_mt5()
-    return {"ok":True,"mode":MODE,"accountConnected":True,"server":info.server,"currency":info.currency,"equity":info.equity,"balance":info.balance,"login":info.login,"tradeAllowed":info.trade_allowed}
+    terminal=mt5.terminal_info()
+    return {"ok":True,"mode":MODE,"accountConnected":True,"server":info.server,"currency":info.currency,"equity":info.equity,"balance":info.balance,"login":info.login,"tradeAllowed":info.trade_allowed,"tradeApiDisabled":getattr(terminal,"tradeapi_disabled",None)}
 
 @app.get("/symbols")
 def symbols(q:str=Query(default=""),authorization:str|None=Header(default=None)):
@@ -201,3 +202,90 @@ def orders(order:Order,authorization:str|None=Header(default=None),x_live_confir
     if result is None or result.retcode not in (mt5.TRADE_RETCODE_DONE,mt5.TRADE_RETCODE_PLACED):
         raise HTTPException(400,f"MT5 order_send failed: {result or mt5.last_error()}")
     return {"accepted":True,"orderId":str(result.order),"dealId":str(result.deal),"canonicalSymbol":order.symbol,"brokerSymbol":broker_symbol,"volumeLots":volume,"riskCash":risk_cash,"mode":MODE}
+
+def _ticket(value:str):
+    try:
+        return int(value)
+    except Exception:
+        raise HTTPException(400,"Invalid MT5 ticket")
+
+def _weighted_price(deals):
+    total=sum(abs(float(getattr(d,"volume",0) or 0)) for d in deals)
+    if total<=0:
+        return None
+    return sum(float(d.price)*abs(float(getattr(d,"volume",0) or 0)) for d in deals)/total
+
+def _deal_money(deals):
+    fields=("profit","swap","commission","fee")
+    return sum(sum(float(getattr(d,f,0) or 0) for f in fields) for d in deals)
+
+def _state_name(state):
+    mapping={
+        getattr(mt5,"ORDER_STATE_STARTED",-100):"STARTED",
+        getattr(mt5,"ORDER_STATE_PLACED",-101):"PENDING",
+        getattr(mt5,"ORDER_STATE_CANCELED",-102):"CANCELLED",
+        getattr(mt5,"ORDER_STATE_PARTIAL",-103):"PARTIAL",
+        getattr(mt5,"ORDER_STATE_FILLED",-104):"FILLED",
+        getattr(mt5,"ORDER_STATE_REJECTED",-105):"REJECTED",
+        getattr(mt5,"ORDER_STATE_EXPIRED",-106):"EXPIRED",
+        getattr(mt5,"ORDER_STATE_REQUEST_ADD",-107):"REQUEST_ADD",
+        getattr(mt5,"ORDER_STATE_REQUEST_MODIFY",-108):"REQUEST_MODIFY",
+        getattr(mt5,"ORDER_STATE_REQUEST_CANCEL",-109):"REQUEST_CANCEL",
+    }
+    return mapping.get(state,str(state))
+
+@app.get("/orders/{ticket}")
+def order_status(ticket:str,authorization:str|None=Header(default=None)):
+    auth(authorization)
+    ensure_mt5()
+    t=_ticket(ticket)
+    active=mt5.orders_get(ticket=t) or ()
+    if active:
+        o=active[0]
+        return {"ticket":str(t),"status":"PENDING","state":_state_name(o.state),"symbol":o.symbol,"volume":o.volume_current,"entry":o.price_open,"stop":o.sl,"target":o.tp,"positionId":str(getattr(o,"position_id",0) or "")}
+
+    history=mt5.history_orders_get(ticket=t) or ()
+    if not history:
+        return {"ticket":str(t),"status":"UNKNOWN"}
+
+    o=history[-1]
+    state=_state_name(o.state)
+    position_id=int(getattr(o,"position_id",0) or 0)
+    if state in ("CANCELLED","EXPIRED","REJECTED"):
+        return {"ticket":str(t),"status":state,"state":state,"symbol":o.symbol,"entry":o.price_open,"stop":o.sl,"target":o.tp,"positionId":str(position_id or "")}
+
+    deals=mt5.history_deals_get(position=position_id) if position_id else ()
+    deals=deals or ()
+    entry_values={getattr(mt5,"DEAL_ENTRY_IN",0),getattr(mt5,"DEAL_ENTRY_INOUT",2)}
+    exit_values={getattr(mt5,"DEAL_ENTRY_OUT",1),getattr(mt5,"DEAL_ENTRY_OUT_BY",3)}
+    entries=[d for d in deals if getattr(d,"entry",None) in entry_values]
+    exits=[d for d in deals if getattr(d,"entry",None) in exit_values]
+    positions=mt5.positions_get(symbol=o.symbol) or ()
+    open_positions=[p for p in positions if position_id and (int(getattr(p,"identifier",0) or 0)==position_id or int(getattr(p,"ticket",0) or 0)==position_id)]
+    fill_price=_weighted_price(entries) or (float(getattr(o,"price_open",0) or 0) or None)
+
+    if open_positions:
+        p=open_positions[0]
+        return {"ticket":str(t),"status":"OPEN","state":state,"symbol":o.symbol,"positionId":str(position_id),"fillPrice":fill_price,"volume":p.volume,"stop":p.sl,"target":p.tp,"profit":float(getattr(p,"profit",0) or 0)+float(getattr(p,"swap",0) or 0)}
+
+    if exits:
+        return {"ticket":str(t),"status":"CLOSED","state":state,"symbol":o.symbol,"positionId":str(position_id or ""),"fillPrice":fill_price,"closePrice":_weighted_price(exits),"profit":_deal_money(deals)}
+
+    return {"ticket":str(t),"status":"FILLED" if state in ("FILLED","PARTIAL") else state,"state":state,"symbol":o.symbol,"positionId":str(position_id or ""),"fillPrice":fill_price,"profit":_deal_money(deals)}
+
+@app.delete("/orders/{ticket}")
+def cancel_order(ticket:str,authorization:str|None=Header(default=None),x_live_confirm:str|None=Header(default=None)):
+    auth(authorization)
+    ensure_mt5()
+    if MODE=="live" and x_live_confirm!="CONFIRM_LIVE_TRADE":
+        raise HTTPException(403,"Explicit live confirmation header is required")
+    t=_ticket(ticket)
+    active=mt5.orders_get(ticket=t) or ()
+    if not active:
+        snapshot=order_status(ticket,authorization)
+        return {"ticket":str(t),"cancelled":False,**snapshot}
+    request={"action":mt5.TRADE_ACTION_REMOVE,"order":t,"magic":MAGIC,"comment":"forexbot-expiry"}
+    result=mt5.order_send(request)
+    if result is None or result.retcode!=mt5.TRADE_RETCODE_DONE:
+        raise HTTPException(400,f"MT5 cancel failed: {result or mt5.last_error()}")
+    return {"ticket":str(t),"cancelled":True,"status":"CANCELLED","retcode":result.retcode}
