@@ -86,7 +86,7 @@ async function bootstrapMonitoring(){
       }
     }
     const settledSignals=signalMonitor.settle();
-    const brokerReconcile=await brokerBridge.reconcile().catch(e=>({checked:0,error:e.message}));
+    const brokerReconcile=process.env.BROKER_RECONCILE_ENABLED==='true'?await brokerBridge.reconcile().catch(e=>({checked:0,error:e.message})):{checked:0,disabled:true};
     const e=await calendar().catch(()=>null),recordedSignals=[],generatedSignals=[];
     for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){
       try{
@@ -111,7 +111,7 @@ async function scheduledSync(){
     for(const symbol of SYMBOLS){try{const articles=await news(symbol);research.recordNews(symbol,articles);newsRuns.push({symbol,articles:articles.length});}catch(e){newsRuns.push({symbol,error:'News collection failed'});}}
     const market=await history.syncHistory();
     const settledSignals=signalMonitor.settle();
-    const brokerReconcile=await brokerBridge.reconcile().catch(e=>({checked:0,error:e.message}));
+    const brokerReconcile=process.env.BROKER_RECONCILE_ENABLED==='true'?await brokerBridge.reconcile().catch(e=>({checked:0,error:e.message})):{checked:0,disabled:true};
     const learning=[];
     if(process.env.MODEL_AUTO_TRAIN==='true'){
       for(const symbol of SYMBOLS)for(const tf of ['1h','4h']){
