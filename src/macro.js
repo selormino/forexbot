@@ -6,12 +6,13 @@ const SERIES={
   CPIAUCSL:'US consumer price index',
   UNRATE:'US unemployment rate',
   GDPC1:'US real GDP',
-  DGS10:'US 10-year Treasury yield',
+  DGS10:'US 10-year Treasury yield (daily)',
+  GS10:'US 10-year Treasury yield (monthly ALFRED-compatible)',
   DEXUSEU:'US dollar per euro',
   DEXUSUK:'US dollar per pound',
   DEXJPUS:'Japanese yen per US dollar'
 };
-const CORE_SERIES=['FEDFUNDS','CPIAUCSL','UNRATE','GDPC1','DGS10'];
+const CORE_SERIES=['FEDFUNDS','CPIAUCSL','UNRATE','GDPC1','GS10'];
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS macro_vintages(
@@ -167,7 +168,8 @@ function pointInTimeContext(at=Date.now(),seriesIds=CORE_SERIES){
     const rows=pointInTimeSeries(id,at,14);
     if(rows.length){
       const first=rows[0],prior=rows[1];
-      values[id]={
+      const outputId=id==='GS10'?'DGS10':id;
+      values[outputId]={
         level:first.value,
         change:prior&&Number.isFinite(prior.value)&&prior.value!==0?first.value/prior.value-1:0,
         observationDate:first.observation_date,
