@@ -208,7 +208,7 @@ function eventFundamentalBias(events,symbol,now){
     const cur=String(e.currency||e.country||'').toUpperCase();let orientation=cur===base?1:cur===quote?-1:0;if(!orientation)continue;
     const title=String(e.event||'').toLowerCase();
     const polarity=/unemployment|jobless|claims/.test(title)?-1:1;
-    const impactName=String(e.impact||'medium').toLowerCase();const impact=impactName==='high'?1:impactName==='medium'?.65:.35;
+    const impactName=String(e.impact||'medium').toLowerCase();const impact=impactName==='high'?1:impactName==='medium'?0.65:0.35;
     const scale=Math.max(Math.abs(forecast),Math.abs(actual),1),surprise=Math.tanh(((actual-forecast)/scale)*4)*polarity*orientation*impact;
     rows.push({event:e.event,currency:cur,actual,forecast,impact:e.impact,score:surprise,time:e.time});
   }
