@@ -93,6 +93,47 @@ async function ingestOne(symbol, timeframe, options = {}) {
   }
 }
 
+async function backfillOne(symbol,timeframe,{targetBars=Math.max(MAX_BARS,Number(process.env.HISTORY_BACKFILL_TARGET_BARS||5000)),maxPages=Math.max(1,Math.min(5,Number(process.env.HISTORY_BACKFILL_PAGES||1)))}={}){
+  if(!SYMBOLS.includes(symbol))throw new Error(`Unsupported symbol: ${symbol}`);
+  targetBars=Math.max(250,Math.min(20000,Number(targetBars)||5000));
+  const step=timeframeMs(timeframe),result={symbol,timeframe,targetBars,pages:0,fetched:0,upserted:0,status:'SKIPPED'};
+  for(let page=0;page<maxPages;page++){
+    const meta=db.prepare('SELECT COUNT(*) n,MIN(ts) oldest,MAX(ts) newest,MIN(provider) provider FROM candles WHERE symbol=? AND timeframe=?').get(symbol,timeframe);
+    if((meta?.n||0)>=targetBars){result.status='TARGET_REACHED';result.candles=meta.n;break;}
+    if(!meta?.oldest){result.status='NO_EXISTING_HISTORY';break;}
+    if(meta.provider!=='twelvedata'){result.status='PROVIDER_NO_BACKWARD_PAGING';result.provider=meta.provider;result.candles=meta.n;break;}
+    const need=Math.min(5000,Math.max(250,targetBars-meta.n+120));
+    const fetched=await historicalCandles(symbol,timeframe,{outputsize:need,endTime:meta.oldest-step});
+    if(!fetched.length){result.status='NO_OLDER_DATA';result.candles=meta.n;break;}
+    const insert=db.prepare(`INSERT INTO candles(symbol,timeframe,ts,open,high,low,close,volume,provider,ingested_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,ts) DO UPDATE SET
+      open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,provider=excluded.provider,ingested_at=excluded.ingested_at`);
+    let changes=0;
+    const tx=db.transaction(()=>{
+      for(const bar of fetched){
+        const r=insert.run(symbol,timeframe,bar.time,bar.open,bar.high,bar.low,bar.close,bar.volume||0,bar.provider||'twelvedata',Date.now());
+        changes+=r.changes;
+      }
+    });tx();
+    result.pages++;result.fetched+=fetched.length;result.upserted+=changes;
+    const after=db.prepare('SELECT COUNT(*) n,MIN(ts) oldest FROM candles WHERE symbol=? AND timeframe=?').get(symbol,timeframe);
+    result.candles=after.n;result.oldest=after.oldest;
+    if(!changes||after.oldest>=meta.oldest){result.status='NO_PROGRESS';break;}
+    result.status=after.n>=targetBars?'TARGET_REACHED':'PARTIAL';
+  }
+  if(result.upserted>0)result.observations=rebuildObservations(symbol,timeframe);
+  return result;
+}
+async function backfillHistory({symbols=SYMBOLS,timeframes=DEFAULT_TIMEFRAMES,targetBars,maxPages}={}){
+  const results=[];let index=0,total=symbols.length*timeframes.length;
+  for(const symbol of symbols)for(const timeframe of timeframes){
+    try{results.push(await backfillOne(symbol,timeframe,{targetBars,maxPages}));}
+    catch(error){results.push({symbol,timeframe,status:'FAILED',error:error.message});}
+    index++;if(index<total&&REQUEST_DELAY_MS)await sleep(REQUEST_DELAY_MS);
+  }
+  return results;
+}
+
 async function syncHistory({ symbols = SYMBOLS, timeframes = DEFAULT_TIMEFRAMES, outputsize = MAX_BARS } = {}) {
   const results = [];
   let requestIndex = 0;
@@ -117,4 +158,4 @@ function status() {
   };
 }
 
-module.exports = { ingestOne, syncHistory, rebuildObservations, status, featureVector, DEFAULT_TIMEFRAMES };
+module.exports = { ingestOne, syncHistory, backfillOne, backfillHistory, rebuildObservations, status, featureVector, DEFAULT_TIMEFRAMES };
