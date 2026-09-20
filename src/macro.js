@@ -51,11 +51,11 @@ async function fetchSeries(seriesId,startDate){
     .map(x=>({seriesId,date:x.date,value:Number(x.value)}));
 }
 
-async function fetchVintageChanges(seriesId,{realtimeStart=process.env.ALFRED_START_DATE||'2000-01-01',observationStart=process.env.ALFRED_START_DATE||'2000-01-01',endDate=day(Date.now())}={}){
+async function fetchInitialReleases(seriesId,{observationStart=process.env.ALFRED_START_DATE||'2000-01-01',endDate=day(Date.now())}={}){
   const data=await fred('series/observations',{
     series_id:seriesId,
-    output_type:3,
-    realtime_start:realtimeStart,
+    output_type:4,
+    realtime_start:'1776-07-04',
     realtime_end:endDate,
     observation_start:observationStart,
     observation_end:endDate,
@@ -102,16 +102,18 @@ async function syncPointInTimeMacro(seriesIds=CORE_SERIES,options={}){
   for(const seriesId of seriesIds){
     try{
       const oldest=process.env.ALFRED_START_DATE||'2000-01-01';
-      const latestKnown=db.prepare('SELECT MAX(realtime_start) d FROM macro_vintages WHERE series_id=?').get(seriesId)?.d;
-      const realtimeStart=options.realtimeStart||options.startDate||(latestKnown?shiftDay(latestKnown,-30):oldest);
-      const rows=await fetchVintageChanges(seriesId,{...options,realtimeStart,observationStart:options.observationStart||oldest});
+      const latestObservation=db.prepare('SELECT MAX(observation_date) d FROM macro_vintages WHERE series_id=?').get(seriesId)?.d;
+      const observationStart=options.observationStart||options.startDate||(latestObservation?shiftDay(latestObservation,-90):oldest);
+      const rows=await fetchInitialReleases(seriesId,{...options,observationStart});
       const now=Date.now();
       db.transaction(()=>rows.forEach(x=>insert.run(x.seriesId,x.observationDate,x.realtimeStart,x.realtimeEnd,x.value,now)))();
-      const coverage=db.prepare(`SELECT COUNT(*) revisions,MIN(realtime_start) oldestKnown,MAX(realtime_start) newestKnown
+      const coverage=db.prepare(`SELECT COUNT(*) revisions,COUNT(DISTINCT observation_date) observations,
+        MIN(realtime_start) oldestKnown,MAX(realtime_start) newestKnown,
+        MIN(observation_date) oldestObservation,MAX(observation_date) newestObservation
         FROM macro_vintages WHERE series_id=?`).get(seriesId);
-      results.push({seriesId,name:SERIES[seriesId]||seriesId,fetched:rows.length,realtimeStart,...coverage,status:'SUCCESS'});
+      results.push({seriesId,name:SERIES[seriesId]||seriesId,fetched:rows.length,observationStart,...coverage,status:'SUCCESS',mode:'INITIAL_RELEASE_ONLY'});
     }catch(error){
-      results.push({seriesId,name:SERIES[seriesId]||seriesId,status:'FAILED',error:error.message});
+      results.push({seriesId,name:SERIES[seriesId]||seriesId,status:'FAILED',error:error.response?.data?.error_message||error.message,mode:'INITIAL_RELEASE_ONLY'});
     }
   }
   return results;
@@ -175,4 +177,4 @@ function vintageStatus(){
     .map(x=>({...x,name:SERIES[x.series_id]||x.series_id}));
 }
 
-module.exports={SERIES,CORE_SERIES,fetchSeries,fetchVintageChanges,syncMacro,syncPointInTimeMacro,pointInTimeSeries,pointInTimeContext,macroStatus,vintageStatus};
+module.exports={SERIES,CORE_SERIES,fetchSeries,fetchInitialReleases,syncMacro,syncPointInTimeMacro,pointInTimeSeries,pointInTimeContext,macroStatus,vintageStatus};
