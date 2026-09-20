@@ -71,12 +71,34 @@ test('pooled setup rows never cross the target test cutoff',()=>{
   const cutoff=1500;
   const parts=research.poolSplitRows(rows,cutoff);
   assert.ok(parts.train.length>0);
+  assert.ok(parts.tune.length>0);
   assert.ok(parts.cal.length>0);
-  assert.ok(parts.train.every(r=>r.setupEnd<parts.cal[0].at));
+  assert.ok(parts.train.every(r=>r.setupEnd<parts.tune[0].at));
+  assert.ok(parts.tune.every(r=>r.setupEnd<parts.cal[0].at));
   assert.ok(parts.cal.every(r=>r.setupEnd<cutoff));
 });
 test('asset-family pooling stays within related markets',()=>{
   assert.deepEqual(research.assetFamily('EURUSD'),['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD']);
   assert.deepEqual(research.assetFamily('XAUUSD'),['XAUUSD','XAGUSD','WTI']);
   assert.deepEqual(research.assetFamily('BTCUSD'),['BTCUSD','ETHUSD','SOLUSD','XRPUSD','LTCUSD']);
+});
+
+
+test('plan selection requires positive expectancy and prefers stronger lower-bound accuracy',()=>{
+  const candidates=[
+    {planOptions:{name:'bad'},stats:{samples:100,wilsonLower:.80,averageR:-.1,profitFactorR:.8}},
+    {planOptions:{name:'good-a'},stats:{samples:100,wilsonLower:.55,averageR:.12,profitFactorR:1.2}},
+    {planOptions:{name:'good-b'},stats:{samples:100,wilsonLower:.60,averageR:.05,profitFactorR:1.1}}
+  ];
+  const chosen=setup.choosePlan(candidates,40);
+  assert.equal(chosen.planOptions.name,'good-b');
+});
+test('custom plan profile changes the generated trade geometry',()=>{
+  const r=row([{open:100,high:105,low:95,close:100}]);
+  r.regime='trend';r.trend=1;r.technicalBias=.6;r.context={macroAvailable:false,newsAvailable:false,macroBias:0,newsSentiment:0};r.priceAction={bias:.2};
+  const a=setup.outcome(r,'EURUSD','LONG',0,{entryBufferAtr:.05,stopAtr:1,targetR:1});
+  const b=setup.outcome(r,'EURUSD','LONG',0,{entryBufferAtr:.2,stopAtr:1.5,targetR:1.5});
+  assert.notEqual(a.plan.entry,b.plan.entry);
+  assert.notEqual(a.plan.stop,b.plan.stop);
+  assert.notEqual(a.plan.target,b.plan.target);
 });
