@@ -51,17 +51,7 @@ async function fetchSeries(seriesId,startDate){
     .map(x=>({seriesId,date:x.date,value:Number(x.value)}));
 }
 
-async function fetchInitialReleases(seriesId,{observationStart=process.env.ALFRED_START_DATE||'2000-01-01',endDate=day(Date.now())}={}){
-  const data=await fred('series/observations',{
-    series_id:seriesId,
-    output_type:4,
-    realtime_start:'1776-07-04',
-    realtime_end:endDate,
-    observation_start:observationStart,
-    observation_end:endDate,
-    sort_order:'asc',
-    limit:100000
-  });
+function parseInitial(seriesId,data){
   return (data.observations||[])
     .filter(x=>x.value!=='.'&&Number.isFinite(Number(x.value))&&x.realtime_start)
     .map(x=>({
@@ -71,6 +61,38 @@ async function fetchInitialReleases(seriesId,{observationStart=process.env.ALFRE
       realtimeEnd:x.realtime_end||null,
       value:Number(x.value)
     }));
+}
+function addYears(iso,years){
+  const d=new Date(iso+'T00:00:00Z');d.setUTCFullYear(d.getUTCFullYear()+years);
+  return d.toISOString().slice(0,10);
+}
+async function initialReleaseWindow(seriesId,observationStart,endDate,realtimeStart,realtimeEnd){
+  const data=await fred('series/observations',{
+    series_id:seriesId,
+    output_type:4,
+    realtime_start:realtimeStart,
+    realtime_end:realtimeEnd,
+    observation_start:observationStart,
+    observation_end:endDate,
+    sort_order:'asc',
+    limit:100000
+  });
+  return parseInitial(seriesId,data);
+}
+async function fetchInitialReleases(seriesId,{observationStart=process.env.ALFRED_START_DATE||'2000-01-01',endDate=day(Date.now())}={}){
+  // Daily series can exceed FRED's 2,000-vintage JSON limit even with output_type=4.
+  // Split the real-time period into non-overlapping 5-year windows while keeping
+  // the observation range intact so initial publication dates remain authoritative.
+  if(seriesId==='DGS10'){
+    const rows=[];let start=observationStart;
+    while(start<=endDate){
+      let end=addYears(start,5);end=shiftDay(end,-1);if(end>endDate)end=endDate;
+      rows.push(...await initialReleaseWindow(seriesId,observationStart,endDate,start,end));
+      start=shiftDay(end,1);
+    }
+    return rows;
+  }
+  return initialReleaseWindow(seriesId,observationStart,endDate,observationStart,endDate);
 }
 
 async function syncMacro(seriesIds=Object.keys(SERIES)){
