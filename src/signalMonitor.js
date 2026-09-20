@@ -57,6 +57,7 @@ addColumn('mfe_pips',"REAL");
 addColumn('mae_pips',"REAL");
 addColumn('setup_probability',"REAL");
 addColumn('directional_min_probability',"REAL");
+addColumn('model_version',"TEXT");
 addColumn('setup_probability',"REAL");
 addColumn('directional_min_probability',"REAL");
 
@@ -72,13 +73,14 @@ function record(signal){
   const lean=signal.leanDirection||signal.candidateDirection||'WAIT';
   const qualified=['LONG','SHORT'].includes(signal.candidateDirection)&&Number.isFinite(setupProbability)&&setupProbability>=threshold&&directionalProbability>=directionalFloor;
   const actionable=['LONG','SHORT'].includes(signal.direction);
-  const key=[signal.symbol,signal.timeframe,signal.sourceCandleTs].join(':');
+  const modelVersion=String(signal.modelVersion||'legacy');
+  const key=[signal.symbol,signal.timeframe,signal.sourceCandleTs,modelVersion].join(':');
   const status=qualified?'PENDING_ENTRY':'FILTERED';
   const dueAt=signal.sourceCandleTs+(1+plan.entryExpiryBars+plan.holdBars)*step;
   const row={
     key,createdAt:Date.now(),sourceTs:signal.sourceCandleTs,sourceCloseAt:signal.sourceCandleTs+step,dueAt,
     symbol:signal.symbol,timeframe:signal.timeframe,candidate:signal.candidateDirection||'WAIT',direction:signal.direction,
-    lean,probability:Number(signal.probability),directionalProbability,setupProbability:Number.isFinite(setupProbability)?setupProbability:null,directionalFloor,threshold,price:Number(signal.price),modelId:signal.modelId||null,
+    lean,probability:Number(signal.probability),directionalProbability,setupProbability:Number.isFinite(setupProbability)?setupProbability:null,directionalFloor,threshold,price:Number(signal.price),modelId:signal.modelId||null,modelVersion,
     horizon:Number(signal.horizonBars||4),costBps:Number(signal.costs?.total||0),qualified:+qualified,actionable:+actionable,status,
     filters:JSON.stringify(signal.filters||[]),priceAction:JSON.stringify(signal.priceAction||null),plan:JSON.stringify(plan),analysis:JSON.stringify(signal.analysis||null),
     entry:plan.entry,stop:plan.stop,target:plan.target,tp1:plan.tp1,stopPips:plan.stopPips,targetPips:plan.targetPips,unitLabel:plan.unitLabel,
@@ -87,10 +89,10 @@ function record(signal){
   db.prepare(`INSERT OR IGNORE INTO signal_records(
     signal_key,created_at,source_ts,source_close_at,due_at,symbol,timeframe,candidate_direction,direction,lean_direction,
     probability,directional_probability,threshold,price,model_id,horizon_bars,cost_bps,qualified,actionable,status,filters_json,price_action_json,
-    plan_json,analysis_json,entry_price,stop_price,target_price,tp1_price,stop_pips,target_pips,unit_label,entry_expiry_bars,hold_bars,setup_probability,directional_min_probability
+    plan_json,analysis_json,entry_price,stop_price,target_price,tp1_price,stop_pips,target_pips,unit_label,entry_expiry_bars,hold_bars,setup_probability,directional_min_probability,model_version
   ) VALUES(@key,@createdAt,@sourceTs,@sourceCloseAt,@dueAt,@symbol,@timeframe,@candidate,@direction,@lean,
     @probability,@directionalProbability,@threshold,@price,@modelId,@horizon,@costBps,@qualified,@actionable,@status,@filters,@priceAction,
-    @plan,@analysis,@entry,@stop,@target,@tp1,@stopPips,@targetPips,@unitLabel,@entryExpiryBars,@holdBars,@setupProbability,@directionalFloor)`).run(row);
+    @plan,@analysis,@entry,@stop,@target,@tp1,@stopPips,@targetPips,@unitLabel,@entryExpiryBars,@holdBars,@setupProbability,@directionalFloor,@modelVersion)`).run(row);
   return db.prepare('SELECT * FROM signal_records WHERE signal_key=?').get(key);
 }
 
@@ -175,8 +177,10 @@ function aggregate(rows){
     averageProbability:settled.length?settled.reduce((s,r)=>s+Number(r.setup_probability??r.directional_probability),0)/settled.length:null,
     averageR:settled.length?settled.reduce((s,r)=>s+Number(r.realized_r||0),0)/settled.length:null};
 }
+function currentVersion(){return db.prepare('SELECT version FROM research_models ORDER BY id DESC LIMIT 1').get()?.version||null;}
 function metrics(){
-  const qualified=db.prepare('SELECT * FROM signal_records WHERE qualified=1 ORDER BY created_at').all(),actionable=qualified.filter(r=>r.actionable===1),groups={};
+  const version=currentVersion();
+  const qualified=version?db.prepare('SELECT * FROM signal_records WHERE qualified=1 AND model_version=? ORDER BY created_at').all(version):[],actionable=qualified.filter(r=>r.actionable===1),groups={};
   for(const r of qualified){const k=r.symbol+':'+r.timeframe;(groups[k]||(groups[k]=[])).push(r);}
   const q=aggregate(qualified);
   return {targetAccuracy:Number(process.env.SIGNAL_TARGET_ACCURACY||.70),minProbability:minProbability(),qualified:q,actionable:aggregate(actionable),
@@ -184,7 +188,8 @@ function metrics(){
     readyForBrokerValidation:q.settled>=Number(process.env.SIGNAL_MIN_SETTLED||50)&&(q.accuracy||0)>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&q.confidence95.lower>=Number(process.env.SIGNAL_MIN_CONFIDENCE_LOWER||.60)};
 }
 function history(limit=300){
-  return db.prepare('SELECT * FROM signal_records ORDER BY id DESC LIMIT ?').all(Math.max(1,Math.min(2000,Number(limit)||300))).map(r=>({
+  const version=currentVersion();if(!version)return [];
+  return db.prepare('SELECT * FROM signal_records WHERE model_version=? ORDER BY id DESC LIMIT ?').all(version,Math.max(1,Math.min(2000,Number(limit)||300))).map(r=>({
     ...r,filters:JSON.parse(r.filters_json||'[]'),priceAction:JSON.parse(r.price_action_json||'null'),plan:JSON.parse(r.plan_json||'null'),analysis:JSON.parse(r.analysis_json||'null'),
     filters_json:undefined,price_action_json:undefined,plan_json:undefined,analysis_json:undefined
   }));
