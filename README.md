@@ -14,9 +14,9 @@ This project is an analytical and paper-trading system. Predictions are probabil
 - Trainable logistic model with time-ordered out-of-sample evaluation
 - SQLite feature/trade/model store
 - Incremental, idempotent 1H/4H historical candle ingestion
-- FRED macro-history ingestion
+- FRED current macro-history ingestion plus ALFRED point-in-time vintage storage for leakage-safe research
 - Automatic forward-return labeling and walk-forward validation
-- Automatic paper-trading evaluation and broker-neutral execution-intent ledger
+- Automatic paper-trading evaluation, broker-neutral execution-intent ledger, XM demo reconciliation, and strict-signal demo automation
 - Optional OANDA execution adapter (disabled by default)
 - Responsive dashboard
 - Railway-ready Node.js deployment
@@ -42,6 +42,8 @@ DATA_REFRESH_SECONDS=120
 TWELVE_DATA_API_KEY=
 FINNHUB_API_KEY=
 FRED_API_KEY=
+ALFRED_START_DATE=2000-01-01
+ALFRED_AVAILABILITY_LAG_DAYS=1
 ADMIN_API_KEY=<generate-a-long-random-value>
 HISTORY_AUTO_SYNC=true
 HISTORY_SYNC_MINUTES=60
@@ -51,7 +53,11 @@ MODEL_MIN_NEW_OBSERVATIONS=50
 TRADING_ENABLED=false
 EXECUTION_MODE=off
 AUTO_PAPER_TRADING=false
+AUTO_DEMO_STRICT=false
+AUTO_MIN_CONFLUENCE=65
 BROKER_BRIDGE=none
+BROKER_RECONCILE_ENABLED=false
+BROKER_RECONCILE_SECONDS=60
 ```
 
 ## Run
@@ -77,6 +83,9 @@ Connect this repository to Railway and deploy the `main` branch. Railway can aut
 - `GET /api/history/candles?symbol=EURUSD&timeframe=1h` — stored candles
 - `POST /api/history/sync` — incremental sync (requires `x-admin-token`)
 - `POST /api/macro/sync` — incremental FRED sync (requires `x-admin-token`)
+- `GET /api/macro/vintages/status` — point-in-time ALFRED vintage coverage
+- `POST /api/macro/vintages/sync` — backfill/refresh ALFRED vintages (requires `x-admin-token`)
+- `POST /api/broker/reconcile` — refresh MT5 order lifecycle/P&L (requires `x-admin-token`)
 - `POST /api/backtest/walk-forward` — expanding-window validation (requires `x-admin-token`)
 - `GET /api/backtests/latest` — latest persisted walk-forward result
 
@@ -133,3 +142,12 @@ The Signals page includes an admin-protected strict probability control from 50%
 
 ## XM MT5 demo testing
 The Windows MT5 bridge supports private XM credentials through `bridge/mt5/.env`, broker symbol discovery, and a preview-before-send workflow. The XM login/password/server remain on the Windows/VPS host. ForexBot only stores the HTTPS bridge URL/token. Use demo mode first. A manual signal creates an execution intent, calls MT5 `order_check` through `/preview`, shows broker symbol/lot size/risk/entry/SL/TP, and sends the pending order only after explicit confirmation.
+
+## Point-in-time fundamentals
+Research version v7 uses ALFRED/FRED real-time vintages instead of treating today's revised macro history as if it were known in the past. `macro_vintages` stores observation date, real-time availability date, revision window and value. Historical feature generation selects only revisions available by the candle timestamp. `ALFRED_AVAILABILITY_LAG_DAYS=1` is conservative for intraday bars because FRED vintage availability is date-level rather than an exact release timestamp. Live economic-event surprise analysis remains separate and uses the current calendar feed.
+
+## Automatic strict demo execution
+`AUTO_DEMO_STRICT=true` enables automatic **demo-only** broker dispatch for signals that are already STRICT, come from an approved model, meet the configured probability threshold, pass every signal filter, and meet `AUTO_MIN_CONFLUENCE`. One automatic intent is allowed per source candle. This switch never enables live automation.
+
+## MT5 reconciliation
+Bridge v1.2 adds `GET /orders/{ticket}` and `DELETE /orders/{ticket}`. ForexBot stores broker status, fill price, close price, position ID and realized broker P/L. When `BROKER_RECONCILE_ENABLED=true`, it periodically refreshes broker tickets. Automatic pending demo orders are cancelled when their corresponding research signal expires before entry. Manual orders are not automatically cancelled by this rule.
