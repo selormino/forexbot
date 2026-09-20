@@ -7,7 +7,7 @@ const execution=require('../src/execution');
 function strictSignal(){
   return {
     symbol:'EURUSD',timeframe:'1h',sourceCandleTs:123456789,
-    direction:'LONG',directionalProbability:.74,minProbability:.70,
+    direction:'LONG',directionalProbability:.74,setupProbability:.76,minProbability:.70,
     modelApproved:true,modelId:42,filters:[],
     analysis:{confluence:{agreement:78}},
     tradePlan:{side:'LONG',entry:1.1,stop:1.095,target:1.108,riskReward:1.6}
