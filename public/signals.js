@@ -37,7 +37,7 @@ function renderBoard(rows){
   return `<tr>
    <td><b>${esc(s.symbol)}</b><small>${esc(s.timeframe)} · spot ${fmt(s.price)}</small></td>
    <td class="${cls(s.leanDirection)}"><b>${esc(s.leanDirection||'WAIT')}</b><small>${esc(s.regime||'')}</small></td>
-   <td><b>${pct(s.directionalProbability)}</b><small>min ${pct(s.minProbability)}</small></td>
+   <td><b>${pct(s.setupProbability)}</b><small>direction ${pct(s.directionalProbability)} · min ${pct(s.minProbability)}</small></td>
    <td><b>${conf==null?'—':conf+'%'}</b><small>cross-factor agreement</small></td>
    <td><b>${fmt(p.entry)}</b><small>SL ${fmt(p.stop)} · TP ${fmt(p.target)} · ${num(p.targetPips)} ${esc(unit)}</small></td>
    <td><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></td>
@@ -53,7 +53,7 @@ window.explain=i=>{
  modal(`${s.symbol} · ${s.timeframe}`,`
    <div class="kv">
     <div><small>Bias</small><b class="${cls(s.leanDirection)}">${esc(s.leanDirection)}</b></div>
-    <div><small>Probability</small><b>${pct(s.directionalProbability)}</b></div>
+    <div><small>Setup success</small><b>${pct(s.setupProbability)}</b><small>direction ${pct(s.directionalProbability)}</small></div>
     <div><small>Evidence agreement</small><b>${a.confluence?.agreement??'—'}%</b></div>
     <div><small>Status</small><b>${statusOf(s)}</b></div>
    </div>
@@ -89,7 +89,7 @@ window.saveThreshold=async()=>{
 window.trade=i=>{
  const s=board[i],p=s.tradePlan||{},conf=s.analysis?.confluence?.agreement;
  modal(`Trade ${s.symbol} ${s.timeframe}`,`
-   <div class="kv"><div><small>Bias</small><b class="${cls(s.leanDirection)}">${esc(s.leanDirection)}</b></div><div><small>Probability</small><b>${pct(s.directionalProbability)}</b></div><div><small>Evidence agreement</small><b>${conf??'—'}%</b></div><div><small>Status</small><b>${statusOf(s)}</b></div></div>
+   <div class="kv"><div><small>Bias</small><b class="${cls(s.leanDirection)}">${esc(s.leanDirection)}</b></div><div><small>Setup success</small><b>${pct(s.setupProbability)}</b><small>direction ${pct(s.directionalProbability)}</small></div><div><small>Evidence agreement</small><b>${conf??'—'}%</b></div><div><small>Status</small><b>${statusOf(s)}</b></div></div>
    <div class="notice">${statusOf(s)==='STRICT'?'Strict gates passed.':'Manual demo execution is allowed, but this setup has not passed all strict gates.'}</div>
    <div class="kv"><div><small>Entry</small><b>${fmt(p.entry)}</b></div><div><small>SL</small><b>${fmt(p.stop)}</b></div><div><small>TP</small><b>${fmt(p.target)}</b></div><div><small>R:R</small><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></div></div>
    <div class="field"><label>Admin API key</label><input id="tradeAdmin" type="password" autocomplete="off" value="${esc(adminToken)}" placeholder="Required for broker preview"></div>`,
@@ -128,9 +128,9 @@ window.sendTrade=async(id,mode)=>{
 };
 
 function renderSeries(m){const rows=Object.entries(m.bySeries||{}).sort((a,b)=>a[0].localeCompare(b[0]));$('seriesAccuracy').innerHTML=rows.map(([k,v])=>{const [symbol,tf]=k.split(':');return `<tr><td><b>${esc(symbol)}</b></td><td>${esc(tf)}</td><td>${v.pendingEntry}</td><td>${v.active}</td><td>${v.settled}</td><td>${v.wins}</td><td>${pct(v.accuracy)}</td><td>${v.averageR==null?'—':Number(v.averageR).toFixed(2)}</td></tr>`}).join('')||'<tr><td colspan="8">No strict setups yet.</td></tr>'}
-function renderEdge(e){const out=[];for(const s of e.series||[])for(const x of s.thresholdSweep||[])out.push({...x,symbol:s.symbol,timeframe:s.timeframe});$('edgeDiagnostics').innerHTML=out.map(x=>`<tr><td><b>${esc(x.symbol)}</b></td><td>${esc(x.timeframe)}</td><td>${pct(x.threshold)}</td><td>${x.directionalSamples||0}</td><td>${pct(x.directionalAccuracy)}</td><td>${x.setup?.triggered||0}</td><td>${pct(x.setup?.accuracy)}</td><td>${x.setup?.averageR==null?'—':Number(x.setup.averageR).toFixed(2)}</td></tr>`).join('')}
+function renderEdge(e){const out=(e.series||[]).map(s=>({symbol:s.symbol,timeframe:s.timeframe,approved:s.approved,direction:s.setupBacktest,setup:s.setupProbability}));$('edgeDiagnostics').innerHTML=out.map(x=>`<tr><td><b>${esc(x.symbol)}</b></td><td>${esc(x.timeframe)}</td><td>${pct(x.setup?.threshold)}</td><td>${x.setup?.testSamples||0}</td><td>${pct(x.setup?.accuracy)}</td><td>${x.setup?.selected||0}</td><td>${pct(x.setup?.selectedAccuracy)}</td><td>${x.setup?.averageR==null?'—':Number(x.setup.averageR).toFixed(2)}</td></tr>`).join('')}
 function renderBrokerActivity(rows){$('brokerActivity').innerHTML=(rows||[]).filter(r=>r.broker_order_id||String(r.status||'').startsWith('DEMO_')).map(r=>`<tr><td>${new Date(r.created_at).toLocaleString()}</td><td><b>${esc(r.symbol)}</b><small>${esc(r.timeframe)}</small></td><td>${r.manual?'MANUAL':'AUTO'}<small>${esc(String(r.mode||'').toUpperCase())}</small></td><td class="${cls(r.side)}">${esc(r.side)}<small>${pct(r.probability)} · conf ${r.confluence==null?'—':Number(r.confluence).toFixed(0)+'%'}</small></td><td>${esc(r.broker_order_id||'—')}</td><td><span class="pill neutral">${esc(r.broker_status||r.status||'—')}</span></td><td>${r.broker_fill_price==null?'—':fmt(r.broker_fill_price)}<small>${r.broker_close_price==null?'':'close '+fmt(r.broker_close_price)}</small></td><td>${r.broker_profit==null?'—':Number(r.broker_profit).toFixed(2)}</td></tr>`).join('')||'<tr><td colspan="8">No broker executions recorded yet.</td></tr>'}
-function renderHistory(rows){$('signalHistory').innerHTML=rows.map(r=>`<tr><td>${new Date(r.created_at).toLocaleString()}</td><td><b>${esc(r.symbol)}</b><small>${esc(r.timeframe)}</small></td><td class="${cls(r.lean_direction)}">${esc(r.lean_direction||r.candidate_direction)}</td><td>${pct(r.directional_probability)}</td><td>${fmt(r.entry_price)}</td><td>${esc(r.status)}</td><td>${esc(r.outcome||'—')}</td><td>${r.outcome_pips==null?'—':Number(r.outcome_pips).toFixed(1)+' '+esc(r.unit_label||'')}<small>${r.realized_r==null?'':Number(r.realized_r).toFixed(2)+'R'}</small></td></tr>`).join('')||'<tr><td colspan="8">No monitored history yet.</td></tr>'}
+function renderHistory(rows){$('signalHistory').innerHTML=rows.map(r=>`<tr><td>${new Date(r.created_at).toLocaleString()}</td><td><b>${esc(r.symbol)}</b><small>${esc(r.timeframe)}</small></td><td class="${cls(r.lean_direction)}">${esc(r.lean_direction||r.candidate_direction)}</td><td>${pct(r.setup_probability)}<small>dir ${pct(r.directional_probability)}</small></td><td>${fmt(r.entry_price)}</td><td>${esc(r.status)}</td><td>${esc(r.outcome||'—')}</td><td>${r.outcome_pips==null?'—':Number(r.outcome_pips).toFixed(1)+' '+esc(r.unit_label||'')}<small>${r.realized_r==null?'':Number(r.realized_r).toFixed(2)+'R'}</small></td></tr>`).join('')||'<tr><td colspan="8">No monitored history yet.</td></tr>'}
 
 window.load=async()=>{
  try{
