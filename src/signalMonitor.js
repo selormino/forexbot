@@ -57,6 +57,8 @@ addColumn('mfe_pips',"REAL");
 addColumn('mae_pips',"REAL");
 addColumn('setup_probability',"REAL");
 addColumn('directional_min_probability',"REAL");
+addColumn('setup_probability',"REAL");
+addColumn('directional_min_probability',"REAL");
 
 const tfMs=tf=>({'1h':3600000,'4h':14400000}[tf]||0);
 const minProbability=()=>signalMinProbability();
