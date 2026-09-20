@@ -8,7 +8,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check src/server.js && node --check src/settings.js && node --check src/research.js && node --check src/setupModel.js && node --check src/priceAction.js && node --check src/tradePlan.js && node --check src/risk.js && node --check src/execution.js && node --check src/signalMonitor.js && node --check src/brokerBridge.js && node --check public/theme.js && node --check public/app.js && node --check public/signals.js"
+    "check": "node --check src/server.js && node --check src/settings.js && node --check src/research.js && node --check src/setupModel.js && node --check src/history.js && node --check src/priceAction.js && node --check src/tradePlan.js && node --check src/risk.js && node --check src/execution.js && node --check src/signalMonitor.js && node --check src/brokerBridge.js && node --check public/theme.js && node --check public/app.js && node --check public/signals.js"
   },
   "engines": {
     "node": "22.x"
