@@ -84,7 +84,10 @@ function compactLearning(rows){
       selected:x.setupProbability.selected??0,selectedAccuracy:x.setupProbability.selectedAccuracy??null,
       averageR:x.setupProbability.averageR??null,p90:x.setupProbability.prediction?.p90??null,max:x.setupProbability.prediction?.max??null,
       calibrationRecommendedThreshold:x.setupProbability.calibrationRecommendedThreshold??null,
-      recommendedTest:x.setupProbability.recommendedTest??null
+      recommendedTest:x.setupProbability.recommendedTest??null,
+      planOptions:x.setupProbability.planOptions??null,
+      planTune:x.setupProbability.planSelection?.chosen?.stats??null,
+      modelCompetition:x.setupProbability.modelCompetition??null
     }:null,
     folds:(x.folds||[]).map(f=>({
       directionalLogLoss:f.logLoss??null,
