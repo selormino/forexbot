@@ -6,7 +6,8 @@ const {buildTradePlan}=require('./tradePlan');
 const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
-const VERSION='technical-fundamental-v7-alfred';
+const setupModel=require('./setupModel');
+const VERSION='technical-fundamental-v8-setup-success';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -93,7 +94,7 @@ function dataset(symbol,tf){
     const segment=rows.slice(i,i+lookahead+1);
     if(segment.some((r,j)=>r.provider!==rows[i].provider||(j&&r.ts-segment[j-1].ts!==ms(tf))))continue;
     const ret=rows[i+horizon].close/rows[i+1].open-1;
-    out.push({...f,at,end:rows[i+horizon].ts+ms(tf),ret,y:ret>0?1:0,futureBars:rows.slice(i+1,i+lookahead+1).map(r=>({ts:r.ts,open:r.open,high:r.high,low:r.low,close:r.close}))});
+    out.push({...f,at,end:rows[i+horizon].ts+ms(tf),setupEnd:rows[i+lookahead].ts+ms(tf),ret,y:ret>0?1:0,futureBars:rows.slice(i+1,i+lookahead+1).map(r=>({ts:r.ts,open:r.open,high:r.high,low:r.low,close:r.close}))});
   }
   return out;
 }
@@ -168,13 +169,15 @@ function thresholdDiagnostics(m,rows,symbol,costBps){
 }
 function split(rows){
   const calStart=Math.floor(rows.length*.6),testStart=Math.floor(rows.length*.8);
-  return {train:rows.slice(0,calStart).filter(r=>r.end<rows[calStart].at),cal:rows.slice(calStart,testStart).filter(r=>r.end<rows[testStart].at),test:rows.slice(testStart)};
+  return {train:rows.slice(0,calStart).filter(r=>(r.setupEnd||r.end)<rows[calStart].at),cal:rows.slice(calStart,testStart).filter(r=>(r.setupEnd||r.end)<rows[testStart].at),test:rows.slice(testStart)};
 }
 function trainSeries(symbol,tf){
   const rows=dataset(symbol,tf);if(rows.length<500)return {symbol,timeframe:tf,status:'insufficient-data',samples:rows.length};
   const {train,cal,test}=split(rows),weights=fit(train),calibration=calibrate(weights,cal);
-  const m={version:VERSION,weights,calibration,horizon:4};
-  const cost=costs(symbol),metrics=evaluate(m,test,cost.total),setupBacktest=evaluateTradePlans(m,test,symbol,cost.total),thresholdSweep=thresholdDiagnostics(m,test,symbol,cost.total);
+  const cost=costs(symbol),threshold=MIN_PROB();
+  const setupTraining=setupModel.train(train,cal,test,symbol,cost.total,threshold);
+  const m={version:VERSION,weights,calibration,horizon:4,setup:setupTraining.model};
+  const metrics=evaluate(m,test,cost.total),setupBacktest=evaluateTradePlans(m,test,symbol,cost.total),thresholdSweep=thresholdDiagnostics(m,test,symbol,cost.total);
   const base=train.reduce((s,r)=>s+r.y,0)/train.length;
   const baselineLoss=-test.reduce((s,r)=>s+r.y*Math.log(base+1e-9)+(1-r.y)*Math.log(1-base+1e-9),0)/test.length;
   const contextSamples=train.filter(r=>r.context.macroAvailable&&r.context.newsAvailable).length;
@@ -182,18 +185,23 @@ function trainSeries(symbol,tf){
   const newsContextSamples=train.filter(r=>r.context.newsAvailable).length;
   const fundamentalCoverage=train.length?macroContextSamples/train.length:0;
   const newsCoverage=train.length?newsContextSamples/train.length:0;
-  const threshold=MIN_PROB();
-  const qualified=test.filter(r=>Math.max(predict(m,r.x),1-predict(m,r.x))>=threshold);
+  const directionalFloor=Math.max(.5,Math.min(.9,Number(process.env.DIRECTIONAL_MIN_PROBABILITY||.55)));
+  const qualified=test.filter(r=>Math.max(predict(m,r.x),1-predict(m,r.x))>=directionalFloor);
   const qualifiedCorrect=qualified.filter(r=>(predict(m,r.x)>=.5)===(r.y===1)).length;
   const qualifiedAccuracy=qualified.length?qualifiedCorrect/qualified.length:null;
   const folds=[];
   for(const fraction of [.6,.8,1]){
     const window=rows.slice(0,Math.floor(rows.length*fraction));
-    const parts=split(window),w=fit(parts.train),cal=calibrate(w,parts.cal);
-    const foldModel={weights:w,calibration:cal};folds.push({...evaluate(foldModel,parts.test,cost.total),setup:evaluateTradePlans(foldModel,parts.test,symbol,cost.total)});
+    const parts=split(window),w=fit(parts.train),calibrationFold=calibrate(w,parts.cal);
+    const foldModel={weights:w,calibration:calibrationFold};
+    const setupFold=setupModel.train(parts.train,parts.cal,parts.test,symbol,cost.total,threshold).report;
+    folds.push({...evaluate(foldModel,parts.test,cost.total),setup:evaluateTradePlans(foldModel,parts.test,symbol,cost.total),setupProbability:setupFold});
   }
-  const approved=setupBacktest.triggered>=20&&setupBacktest.accuracy>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&(setupBacktest.averageR||0)>0&&metrics.logLoss<baselineLoss&&folds.every(f=>f.logLoss<0.78&&(f.setup.triggered<5||(f.setup.averageR||0)>0));
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,setupBacktest,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,minProbability:threshold,approved,approvalRule:'At least 20 triggered out-of-sample trade plans at the configured probability threshold, observed setup accuracy at/above target, positive average R, and log-loss/fold stability gates',split:'60/20/20 chronological, purged by outcome end; expanding-window folds',createdAt:Date.now()};
+  const setupReport=setupTraining.report,target=Number(process.env.SIGNAL_TARGET_ACCURACY||.70);
+  const setupApproved=setupReport.status==='trained'&&setupReport.selected>=30&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss;
+  const foldStable=folds.every(f=>f.logLoss<0.78&&(f.setupProbability.status!=='trained'||f.setupProbability.selected<10||((f.setupProbability.averageR||0)>0&&f.setupProbability.logLoss<f.setupProbability.baselineLoss)));
+  const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Setup-success model must have at least 30 out-of-sample selections at the configured threshold, meet the accuracy target, produce positive average R, beat baseline log loss, and remain stable across chronological folds',split:'60/20/20 chronological, purged through full setup outcome window; expanding-window folds',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
@@ -233,14 +241,17 @@ function signal(symbol,tf='1h',events=null){
   const now=Date.now(),step=ms(tf);if(!step)throw new Error('Invalid timeframe');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,tf,step,now).reverse();
   const f=features(rows,symbol,now),m=latest(symbol,tf),p=m?predict(m.model,f.x):.5,cost=costs(symbol),reasons=[];
-  const threshold=MIN_PROB(),lean=p>=.5?'LONG':'SHORT',directionalProbability=Math.max(p,1-p);
-  const candidate=directionalProbability>=threshold?lean:'WAIT';
+  const threshold=MIN_PROB(),directionalFloor=Math.max(.5,Math.min(.9,Number(process.env.DIRECTIONAL_MIN_PROBABILITY||.55))),lean=p>=.5?'LONG':'SHORT',directionalProbability=Math.max(p,1-p);
+  const setupProbability=m?.model?.setup?setupModel.predict(m.model.setup,setupModel.vector(f,lean)):null;
+  const candidate=directionalProbability>=directionalFloor&&setupProbability!==null&&setupProbability>=threshold?lean:'WAIT';
   if(!m?.approved)reasons.push('Model has not passed out-of-sample validation gates');
   if(now-(rows.at(-1).ts+step)>step*2)reasons.push('Stale closed candles');
   if(rows.some((r,i)=>r.provider==='demo'||(i&&r.ts-rows[i-1].ts!==step)))reasons.push('Candle gaps or synthetic data');
   if(rows.some(r=>r.provider==='yahoo'))reasons.push('Research-only fallback feed');
   if(!f.context.macroAvailable||!f.context.newsAvailable)reasons.push('Missing fresh macro/news confirmation');
-  if(candidate==='WAIT')reasons.push(`Directional probability below ${Math.round(threshold*100)}% threshold`);
+  if(directionalProbability<directionalFloor)reasons.push(`Directional probability below ${Math.round(directionalFloor*100)}% direction floor`);
+  if(setupProbability===null)reasons.push('Triggered setup-success model is unavailable');
+  else if(setupProbability<threshold)reasons.push(`Setup success probability below ${Math.round(threshold*100)}% threshold`);
   if(f.regime!=='trend')reasons.push('Range or high-volatility regime');
   if((lean==='LONG'?1:-1)*f.trend<=0)reasons.push('Direction conflicts with trend');
   if(lean==='LONG'&&f.priceAction.bias<-.34)reasons.push('Price action is materially bearish');
@@ -287,10 +298,10 @@ function signal(symbol,tf='1h',events=null){
   if(confluence.score>=.35)confirmations.push('Technical + fundamental confluence is strong');
   const risks=[...reasons];
   const explanation=reasons.length?reasons:[`All strict gates passed; price action: ${paSummary||'neutral'}`];
-  const base={symbol,timeframe:tf,price:f.price,leanDirection:lean,candidateDirection:candidate,direction:reasons.length?'WAIT':candidate,probability:p,directionalProbability,minProbability:threshold,
-    probabilityMeaning:'Directional probability is model-calibrated and is independently verified by triggered signal outcomes',
-    confidence:Math.abs(p-.5)*2,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,
-    analysis:{thesis:`${lean} lean from the calibrated model at ${(directionalProbability*100).toFixed(1)}%; evidence agreement is ${confluence.agreement}% across trend, momentum, price action, higher timeframe and fundamentals.`,
+  const base={symbol,timeframe:tf,price:f.price,leanDirection:lean,candidateDirection:candidate,direction:reasons.length?'WAIT':candidate,probability:setupProbability??directionalProbability,setupProbability,directionalProbability,minProbability:threshold,directionalMinProbability:directionalFloor,
+    probabilityMeaning:'Setup probability estimates P(success | confirmation entry triggers) for this entry/SL/TP structure; directional probability is reported separately',
+    confidence:setupProbability??0,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,
+    analysis:{thesis:`${lean} directional lean at ${(directionalProbability*100).toFixed(1)}%; triggered setup success probability is ${setupProbability===null?'unavailable':(setupProbability*100).toFixed(1)+'%'}; evidence agreement is ${confluence.agreement}%.`,
       technical:technicalReasons,technicalBias:f.technicalBias,priceAction:{structure:f.priceAction.structure,patterns:f.priceAction.patterns,bias:f.priceAction.bias},
       news:{available:f.context.newsAvailable,count:f.context.newsCount,sentiment:f.context.newsSentiment,headlines:f.context.newsHeadlines},
       macro:{available:f.context.macroAvailable,bias:f.context.macroBias,series:f.context.macro},
@@ -302,4 +313,4 @@ function signal(symbol,tf='1h',events=null){
   return {...base,tradePlan:buildTradePlan(base,{side:lean})};
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
-module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status};
+module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
