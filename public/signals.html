@@ -1,26 +1,26 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signals · ForexBot</title><link rel="stylesheet" href="/app.css"><script src="/theme.js"></script></head>
-<body><div class="shell"><aside><div class="brand"><span>FB</span><div><b>ForexBot</b><small>MARKET INTELLIGENCE</small></div></div><nav><a href="/">Dashboard</a><a class="active" href="/signals.html">Signals</a></nav><div class="side-note">Strict signals require the configured probability threshold plus model validation and cross-factor confirmation. Manual demo trades remain separate.</div></aside>
+<body><div class="shell"><aside><div class="brand"><span>FB</span><div><b>ForexBot</b><small>MARKET INTELLIGENCE</small></div></div><nav><a href="/">Dashboard</a><a class="active" href="/signals.html">Signals</a></nav><div class="side-note">Strict signals require the configured setup-success threshold plus model validation and cross-factor confirmation. Manual demo trades remain separate.</div></aside>
 <main>
-<header><div><p class="eyebrow">SIGNALS</p><h1>Clean setups. Measured outcomes.</h1><p class="muted">Model probability + technicals + price action + fundamentals, with every triggered setup tracked.</p></div><div class="header-actions"><button class="ghost" data-theme-toggle>☀ Light</button><button onclick="load()">Refresh</button></div></header>
+<header><div><p class="eyebrow">SIGNALS</p><h1>Clean setups. Measured outcomes.</h1><p class="muted">Triggered-setup probability + directional model + technicals + price action + fundamentals, with every outcome tracked.</p></div><div class="header-actions"><button class="ghost" data-theme-toggle>☀ Light</button><button onclick="load()">Refresh</button></div></header>
 
 <div class="controls card">
-  <div class="control-group"><span class="label">Strict threshold</span><div class="threshold-control"><input id="thresholdInput" type="number" min="50" max="95" step="1"><span>%</span><button class="primary" onclick="openThreshold()">Save</button></div><small id="thresholdSource" class="muted"></small></div>
+  <div class="control-group"><span class="label">Setup threshold</span><div class="threshold-control"><input id="thresholdInput" type="number" min="50" max="95" step="1"><span>%</span><button class="primary" onclick="openThreshold()">Save</button></div><small id="thresholdSource" class="muted"></small></div>
   <div class="broker-mini"><span id="brokerDot" class="dot"></span><b id="brokerText">Checking XM bridge…</b><span id="brokerMode"></span></div>
 </div>
 
 <section id="accuracyCards" class="grid hero"></section>
 
 <div class="card signal-table-card"><div class="card-head"><h2>Signal board</h2><span id="boardUpdated">—</span></div><div class="table-wrap"><table>
-<thead><tr><th>Market</th><th>Bias</th><th>Probability</th><th>Evidence</th><th>Trade plan</th><th>R:R</th><th>Status</th><th></th></tr></thead>
+<thead><tr><th>Market</th><th>Bias</th><th>Setup probability</th><th>Evidence</th><th>Trade plan</th><th>R:R</th><th>Status</th><th></th></tr></thead>
 <tbody id="signalBoard"></tbody></table></div></div>
 
 <details class="research"><summary>Accuracy by market</summary><div class="details-body"><div class="table-wrap"><table><thead><tr><th>Market</th><th>TF</th><th>Pending</th><th>Active</th><th>Settled</th><th>Wins</th><th>Accuracy</th><th>Avg R</th></tr></thead><tbody id="seriesAccuracy"></tbody></table></div></div></details>
-<details class="research"><summary>Edge diagnostics</summary><div class="details-body"><p class="muted">Out-of-sample threshold sweep. Small samples are not treated as proof.</p><div class="table-wrap"><table><thead><tr><th>Market</th><th>TF</th><th>Threshold</th><th>Samples</th><th>Direction acc.</th><th>Triggered</th><th>Setup acc.</th><th>Avg R</th></tr></thead><tbody id="edgeDiagnostics"></tbody></table></div></div></details>
+<details class="research"><summary>Edge diagnostics</summary><div class="details-body"><p class="muted">Out-of-sample triggered-setup model diagnostics. The probability is conditional on the confirmation entry triggering.</p><div class="table-wrap"><table><thead><tr><th>Market</th><th>TF</th><th>Threshold</th><th>Test setups</th><th>All acc.</th><th>Selected</th><th>Selected acc.</th><th>Avg R</th></tr></thead><tbody id="edgeDiagnostics"></tbody></table></div></div></details>
 <details class="research"><summary>XM activity</summary><div class="details-body"><div class="table-wrap"><table><thead><tr><th>Created</th><th>Market</th><th>Mode</th><th>Signal</th><th>Ticket</th><th>Broker status</th><th>Fill</th><th>P/L</th></tr></thead><tbody id="brokerActivity"></tbody></table></div></div></details>
 <details class="research"><summary>Signal history</summary><div class="details-body"><div class="table-wrap"><table><thead><tr><th>Created</th><th>Market</th><th>Bias</th><th>Probability</th><th>Entry</th><th>Status</th><th>Outcome</th><th>Result</th></tr></thead><tbody id="signalHistory"></tbody></table></div></div></details>
 
-<footer>Probability is a calibrated model estimate, not a guarantee. Execution remains demo/manual while the monitored edge is being validated.</footer>
+<footer>Setup probability estimates success after the confirmation entry triggers; it is calibrated, not a guarantee. Execution remains demo/manual while the monitored edge is being validated.</footer>
 </main></div>
 
 <div id="modalBackdrop" class="modal-backdrop" onclick="backdropClose(event)"><div class="modal"><div class="modal-head"><h2 id="modalTitle">ForexBot</h2><button class="ghost" onclick="closeModal()">✕</button></div><div id="modalBody" class="modal-body"></div><div id="modalActions" class="modal-actions"></div></div></div>
