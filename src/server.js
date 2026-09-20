@@ -42,6 +42,7 @@ app.get('/api/risk-plan',async(req,res)=>{try{const symbol=(req.query.symbol||'E
 app.get('/api/history/status',(req,res)=>res.json({...history.status(),macro:macroStatus(),macroVintages:vintageStatus()}));
 app.get('/api/history/candles',(req,res)=>{const symbol=(req.query.symbol||'EURUSD').toUpperCase(),timeframe=String(req.query.timeframe||'1h'),limit=Math.max(1,Math.min(5000,Number(req.query.limit||500)));if(!SYMBOLS.includes(symbol))return res.status(400).json({error:'Unsupported symbol'});res.json(db.prepare('SELECT ts,open,high,low,close,volume,provider FROM candles WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT ?').all(symbol,timeframe,limit).reverse());});
 app.post('/api/history/sync',admin,async(req,res)=>{try{const symbols=Array.isArray(req.body?.symbols)?req.body.symbols.map(x=>String(x).toUpperCase()):SYMBOLS;const invalid=symbols.filter(x=>!SYMBOLS.includes(x));if(invalid.length)return res.status(400).json({error:`Unsupported symbols: ${invalid.join(', ')}`});const timeframes=Array.isArray(req.body?.timeframes)?req.body.timeframes:history.DEFAULT_TIMEFRAMES;res.json({results:await history.syncHistory({symbols,timeframes,outputsize:req.body?.outputsize})});}catch(e){res.status(500).json({error:e.message});}});
+app.post('/api/history/backfill',admin,async(req,res)=>{try{const symbols=Array.isArray(req.body?.symbols)?req.body.symbols.map(x=>String(x).toUpperCase()):SYMBOLS;const invalid=symbols.filter(x=>!SYMBOLS.includes(x));if(invalid.length)return res.status(400).json({error:`Unsupported symbols: ${invalid.join(', ')}`});const timeframes=Array.isArray(req.body?.timeframes)?req.body.timeframes:history.DEFAULT_TIMEFRAMES;res.json({results:await history.backfillHistory({symbols,timeframes,targetBars:Number(req.body?.targetBars||process.env.HISTORY_BACKFILL_TARGET_BARS||5000),maxPages:Number(req.body?.maxPages||process.env.HISTORY_BACKFILL_PAGES||1)})});}catch(e){res.status(500).json({error:e.message});}});
 app.post('/api/macro/sync',admin,async(req,res)=>{try{res.json({results:await syncMacro(req.body?.seriesIds)});}catch(e){res.status(500).json({error:e.message});}});
 app.get('/api/macro/vintages/status',(req,res)=>res.json(vintageStatus()));
 app.post('/api/macro/vintages/sync',admin,async(req,res)=>{try{res.json({results:await syncPointInTimeMacro(req.body?.seriesIds,req.body?.options||{})});}catch(e){res.status(500).json({error:e.message});}});
@@ -102,8 +103,11 @@ function compactLearning(rows){
   }));
 }
 
+let syncing=false;
 async function bootstrapMonitoring(){
+  if(syncing)return;syncing=true;
   try{
+    const historyBackfill=process.env.HISTORY_BACKFILL_ENABLED==='true'?await history.backfillHistory({targetBars:Number(process.env.HISTORY_BACKFILL_TARGET_BARS||5000),maxPages:Number(process.env.HISTORY_BACKFILL_PAGES||1)}):[];
     let macroVintages=[];
     if(process.env.FRED_API_KEY&&vintageStatus().length<5){
       macroVintages=await syncPointInTimeMacro();
@@ -121,18 +125,16 @@ async function bootstrapMonitoring(){
     for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){
       try{
         const s=research.signal(symbol,timeframe,e);generatedSignals.push(s);
-        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,setupProbability:s.setupProbability,setupProbability:s.setupProbability,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
+        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,setupProbability:s.setupProbability,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
       }catch(err){recordedSignals.push({symbol,timeframe,error:err.message});}
     }
     const autoDemoRuns=await autoDemoStrict(generatedSignals);
     const learningSummary=compactLearning(learning);
     console.log(JSON.stringify({event:'model-summary',version:research.VERSION,learning:learningSummary}));
-    console.log(JSON.stringify({event:'signal-bootstrap',macroVintages,learning:learningSummary,settledSignals,brokerReconcile,recordedSignals,autoDemoRuns,signalMetrics:signalMonitor.metrics()}));
-  }catch(e){console.error('Signal bootstrap failed:',e.message);}
+    console.log(JSON.stringify({event:'signal-bootstrap',historyBackfill,macroVintages,learning:learningSummary,settledSignals,brokerReconcile,recordedSignals,autoDemoRuns,signalMetrics:signalMonitor.metrics()}));
+  }catch(e){console.error('Signal bootstrap failed:',e.message);}finally{syncing=false;}
 }
 setTimeout(bootstrapMonitoring,3000);
-
-let syncing=false;
 async function scheduledSync(){
   if(syncing)return;syncing=true;
   try{
@@ -156,7 +158,7 @@ async function scheduledSync(){
     for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){
       try{
         const s=research.signal(symbol,timeframe,signalEvents);generatedSignals.push(s);
-        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,setupProbability:s.setupProbability,setupProbability:s.setupProbability,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
+        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,setupProbability:s.setupProbability,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
       }catch(err){recordedSignals.push({symbol,timeframe,error:err.message});}
     }
     const autoDemoRuns=await autoDemoStrict(generatedSignals);
