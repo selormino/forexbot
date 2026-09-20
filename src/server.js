@@ -114,7 +114,7 @@ async function bootstrapMonitoring(){
     }
     const learning=[];
     if(process.env.MODEL_AUTO_TRAIN==='true'){
-      for(const symbol of SYMBOLS)for(const tf of ['1h','4h']){
+      for(const tf of ['1h','4h'])for(const symbol of SYMBOLS){
         try{learning.push(research.trainSeries(symbol,tf));}catch(e){learning.push({symbol,timeframe:tf,error:e.message});}
         await new Promise(resolve=>setImmediate(resolve));
       }
@@ -148,7 +148,7 @@ async function scheduledSync(){
     const brokerReconcile=process.env.BROKER_RECONCILE_ENABLED==='true'?await brokerBridge.reconcile().catch(e=>({checked:0,error:e.message})):{checked:0,disabled:true};
     const learning=[];
     if(process.env.MODEL_AUTO_TRAIN==='true'){
-      for(const symbol of SYMBOLS)for(const tf of ['1h','4h']){
+      for(const tf of ['1h','4h'])for(const symbol of SYMBOLS){
         try{learning.push(research.trainSeries(symbol,tf));}catch(e){learning.push({symbol,timeframe:tf,error:e.message});}
         await new Promise(resolve=>setImmediate(resolve));
       }
