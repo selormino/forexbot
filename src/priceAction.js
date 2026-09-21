@@ -35,7 +35,7 @@ function detectClassicalPatterns(rows,atr){
     if(sep>=4&&similar<=.65){
       const neck=segmentExtreme(c,a.i,b.i,'low','min');
       const confirmed=!!neck&&x.close<neck.price-.05*atrSafe;
-      const confidence=.56+.20*(1-similar/.65)+.12*Math.min(1,sep/14)+(confirmed?.10:0);
+      const confidence=.56+.20*(1-similar/.65)+.12*Math.min(1,sep/14)+(confirmed ? .10 : 0);
       patterns.push(makePattern('double-top','Double Top',-1,confidence,confirmed,[{...a,role:'Top 1'},neck&&{...neck,role:'Neckline'},{...b,role:'Top 2'}],'Two comparable swing highs with an intervening neckline; bearish confirmation comes from a neckline break.'));
     }
   }
@@ -44,7 +44,7 @@ function detectClassicalPatterns(rows,atr){
     if(sep>=4&&similar<=.65){
       const neck=segmentExtreme(c,a.i,b.i,'high','max');
       const confirmed=!!neck&&x.close>neck.price+.05*atrSafe;
-      const confidence=.56+.20*(1-similar/.65)+.12*Math.min(1,sep/14)+(confirmed?.10:0);
+      const confidence=.56+.20*(1-similar/.65)+.12*Math.min(1,sep/14)+(confirmed ? .10 : 0);
       patterns.push(makePattern('double-bottom','Double Bottom',1,confidence,confirmed,[{...a,role:'Bottom 1'},neck&&{...neck,role:'Neckline'},{...b,role:'Bottom 2'}],'Two comparable swing lows with an intervening neckline; bullish confirmation comes from a neckline break.'));
     }
   }
@@ -55,7 +55,7 @@ function detectClassicalPatterns(rows,atr){
     if(h.i-a.i>=3&&b.i-h.i>=3&&shoulderDiff<=.75&&prominence>=.25){
       const n1=segmentExtreme(c,a.i,h.i,'low','min'),n2=segmentExtreme(c,h.i,b.i,'low','min');
       const neckline=n1&&n2?(n1.price+n2.price)/2:null,confirmed=neckline!==null&&x.close<neckline-.05*atrSafe;
-      const confidence=.60+.16*(1-shoulderDiff/.75)+.14*Math.min(1,prominence)+(confirmed?.08:0);
+      const confidence=.60+.16*(1-shoulderDiff/.75)+.14*Math.min(1,prominence)+(confirmed ? .08 : 0);
       patterns.push(makePattern('head-and-shoulders','Head & Shoulders',-1,confidence,confirmed,[{...a,role:'Left shoulder'},{...h,role:'Head'},{...b,role:'Right shoulder'},n2&&{...n2,role:'Neckline'}],'Three-peak reversal structure with a dominant center peak and similar shoulders.'));
     }
   }
@@ -65,7 +65,7 @@ function detectClassicalPatterns(rows,atr){
     if(h.i-a.i>=3&&b.i-h.i>=3&&shoulderDiff<=.75&&prominence>=.25){
       const n1=segmentExtreme(c,a.i,h.i,'high','max'),n2=segmentExtreme(c,h.i,b.i,'high','max');
       const neckline=n1&&n2?(n1.price+n2.price)/2:null,confirmed=neckline!==null&&x.close>neckline+.05*atrSafe;
-      const confidence=.60+.16*(1-shoulderDiff/.75)+.14*Math.min(1,prominence)+(confirmed?.08:0);
+      const confidence=.60+.16*(1-shoulderDiff/.75)+.14*Math.min(1,prominence)+(confirmed ? .08 : 0);
       patterns.push(makePattern('inverse-head-and-shoulders','Inverse Head & Shoulders',1,confidence,confirmed,[{...a,role:'Left shoulder'},{...h,role:'Head'},{...b,role:'Right shoulder'},n2&&{...n2,role:'Neckline'}],'Three-trough reversal structure with a dominant center trough and similar shoulders.'));
     }
   }
@@ -74,14 +74,14 @@ function detectClassicalPatterns(rows,atr){
     const recent=hi.slice(-3),spread=(Math.max(...recent.map(x=>x.price))-Math.min(...recent.map(x=>x.price)))/atrSafe;
     if(spread<=.55&&recent[2].i-recent[0].i>=8){
       const floor=segmentExtreme(c,recent[0].i,recent[2].i,'low','min'),confirmed=!!floor&&x.close<floor.price-.05*atrSafe;
-      patterns.push(makePattern('triple-top','Triple Top',-1,.60+.20*(1-spread/.55)+(confirmed?.10:0),confirmed,[...recent.map((p,i)=>({...p,role:`Top ${i+1}`})),floor&&{...floor,role:'Support'}],'Three comparable swing highs forming a repeated resistance zone.'));
+      patterns.push(makePattern('triple-top','Triple Top',-1,.60+.20*(1-spread/.55)+(confirmed ? .10 : 0),confirmed,[...recent.map((p,i)=>({...p,role:`Top ${i+1}`})),floor&&{...floor,role:'Support'}],'Three comparable swing highs forming a repeated resistance zone.'));
     }
   }
   if(lo.length>=3){
     const recent=lo.slice(-3),spread=(Math.max(...recent.map(x=>x.price))-Math.min(...recent.map(x=>x.price)))/atrSafe;
     if(spread<=.55&&recent[2].i-recent[0].i>=8){
       const ceiling=segmentExtreme(c,recent[0].i,recent[2].i,'high','max'),confirmed=!!ceiling&&x.close>ceiling.price+.05*atrSafe;
-      patterns.push(makePattern('triple-bottom','Triple Bottom',1,.60+.20*(1-spread/.55)+(confirmed?.10:0),confirmed,[...recent.map((p,i)=>({...p,role:`Bottom ${i+1}`})),ceiling&&{...ceiling,role:'Resistance'}],'Three comparable swing lows forming a repeated support zone.'));
+      patterns.push(makePattern('triple-bottom','Triple Bottom',1,.60+.20*(1-spread/.55)+(confirmed ? .10 : 0),confirmed,[...recent.map((p,i)=>({...p,role:`Bottom ${i+1}`})),ceiling&&{...ceiling,role:'Resistance'}],'Three comparable swing lows forming a repeated support zone.'));
     }
   }
 
@@ -95,14 +95,14 @@ function detectClassicalPatterns(rows,atr){
 
     if(hSpread<=.75&&lMove>=.45){
       const confirmed=x.close>Math.max(...rh.map(p=>p.price))+.03*atrSafe;
-      patterns.push(makePattern('ascending-triangle','Ascending Triangle',1,.62+.12*Math.min(1,lMove)+(confirmed?.12:0),confirmed,[{...h0,role:'Resistance'},{...h1,role:'Resistance'},{...l0,role:'Rising support'},{...l1,role:'Rising support'}],'Flat resistance with rising swing lows creates bullish compression.'));
+      patterns.push(makePattern('ascending-triangle','Ascending Triangle',1,.62+.12*Math.min(1,lMove)+(confirmed ? .12 : 0),confirmed,[{...h0,role:'Resistance'},{...h1,role:'Resistance'},{...l0,role:'Rising support'},{...l1,role:'Rising support'}],'Flat resistance with rising swing lows creates bullish compression.'));
     }else if(lSpread<=.75&&hMove<=-.45){
       const confirmed=x.close<Math.min(...rl.map(p=>p.price))-.03*atrSafe;
-      patterns.push(makePattern('descending-triangle','Descending Triangle',-1,.62+.12*Math.min(1,-hMove)+(confirmed?.12:0),confirmed,[{...l0,role:'Support'},{...l1,role:'Support'},{...h0,role:'Falling resistance'},{...h1,role:'Falling resistance'}],'Flat support with falling swing highs creates bearish compression.'));
+      patterns.push(makePattern('descending-triangle','Descending Triangle',-1,.62+.12*Math.min(1,-hMove)+(confirmed ? .12 : 0),confirmed,[{...l0,role:'Support'},{...l1,role:'Support'},{...h0,role:'Falling resistance'},{...h1,role:'Falling resistance'}],'Flat support with falling swing highs creates bearish compression.'));
     }else if(hMove<=-.40&&lMove>=.40){
       const upperNow=h1.price,lowerNow=l1.price,mid=(upperNow+lowerNow)/2;
       const bias=x.close>=mid?1:-1,breakout=bias===1?x.close>upperNow+.03*atrSafe:x.close<lowerNow-.03*atrSafe;
-      patterns.push(makePattern('symmetrical-triangle','Symmetrical Triangle',bias,.58+.10*Math.min(1,(Math.abs(hMove)+Math.abs(lMove))/2)+(breakout?.12:0),breakout,[{...h0,role:'Upper trendline'},{...h1,role:'Upper trendline'},{...l0,role:'Lower trendline'},{...l1,role:'Lower trendline'}],'Falling highs and rising lows indicate price compression awaiting directional resolution.'));
+      patterns.push(makePattern('symmetrical-triangle','Symmetrical Triangle',bias,.58+.10*Math.min(1,(Math.abs(hMove)+Math.abs(lMove))/2)+(breakout ? .12 : 0),breakout,[{...h0,role:'Upper trendline'},{...h1,role:'Upper trendline'},{...l0,role:'Lower trendline'},{...l1,role:'Lower trendline'}],'Falling highs and rising lows indicate price compression awaiting directional resolution.'));
     }else{
       const parallel=Math.abs(hMove-lMove)<=.45;
       if(hMove>.35&&lMove>.35){
