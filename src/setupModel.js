@@ -60,7 +60,16 @@ function calibrateModel(model,rows){
   }
   return {a,b};
 }
-const predict=(model,z)=>sigmoid((model.calibration?.a??1)*rawScore(model,z)+(model.calibration?.b??0));
+function resolvePredictModel(model,z){
+  if(model?.kind!=='side-composite')return model;
+  const side=Number(z?.[0]||0)>=0?'LONG':'SHORT';
+  return model.sideModels?.[side]||model.base||null;
+}
+const predict=(model,z)=>{
+  const resolved=resolvePredictModel(model,z);
+  if(!resolved)return .5;
+  return sigmoid((resolved.calibration?.a??1)*rawScore(resolved,z)+(resolved.calibration?.b??0));
+};
 function fitBoosted(rows,{rounds=30,learningRate=.12,lambda=1}={}){
   if(rows.length<100)throw new Error('Insufficient triggered setup samples');
   const dim=rows[0].z.length,mean=Math.max(.01,Math.min(.99,rows.reduce((s,r)=>s+r.y,0)/rows.length));
@@ -169,7 +178,10 @@ function fitSideDistributionGates(rows,options={}){
   const out={};
   for(const side of ['LONG','SHORT']){
     const part=rows.filter(x=>x.side===side);
-    if(part.length>=20)out[side]=fitDistributionGate(part,options);
+    if(part.length>=20){
+      const model=options.model?.kind==='side-composite'?(options.model.sideModels?.[side]||options.model.base):options.model;
+      out[side]=fitDistributionGate(part,{...options,model});
+    }
   }
   return out;
 }
@@ -324,4 +336,4 @@ function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
   const report={status:'trained',modelCompetition:competition.comparison,trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold),calibrationRecommendedThreshold,recommendedTest:calibrationRecommendedThreshold===null?null:statsAt(model,testExamples,calibrationRecommendedThreshold)};
   return {model,report};
 }
-module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,modelFeatureIndices,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,bestSideSelections,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
+module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,resolvePredictModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,modelFeatureIndices,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,bestSideSelections,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
