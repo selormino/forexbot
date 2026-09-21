@@ -423,3 +423,33 @@ test('best calibration chooses only platt or isotonic using chronological valida
   assert.ok(out.comparison.fitSamples>0);
   assert.ok(out.comparison.validationSamples>0);
 });
+
+
+test('score gate promotes only a stable top-ranked subset above the 60% policy floor',()=>{
+  const base={kind:'logistic',weights:[0,0,1]};
+  const rows=Array.from({length:120},(_,i)=>{
+    const score=i/119;
+    const high=i>=72;
+    const y=high?(i%5!==0?1:0):(i%5===0?1:0);
+    return {z:[1,score],side:'LONG',y,realizedR:y?.8:-1,at:i};
+  });
+  const gate=setup.fitScoreGate(base,rows,{threshold:.60,minSamples:12});
+  assert.ok(gate);
+  assert.ok(gate.model.bySide.LONG);
+  assert.ok(gate.model.bySide.LONG.highProbability>.60);
+  const hi=setup.predict(gate.model,[1,.98]);
+  const lo=setup.predict(gate.model,[1,.05]);
+  assert.ok(hi>.60);
+  assert.ok(lo<.60);
+});
+
+test('score gate refuses a high-ranked subset with negative expectancy',()=>{
+  const base={kind:'logistic',weights:[0,0,1]};
+  const rows=Array.from({length:120},(_,i)=>{
+    const score=i/119;
+    const y=i>=72?(i%2===0?1:0):(i%4===0?1:0);
+    return {z:[1,score],side:'LONG',y,realizedR:y?.2:-1,at:i};
+  });
+  const gate=setup.fitScoreGate(base,rows,{threshold:.60,minSamples:12});
+  assert.equal(gate,null);
+});
