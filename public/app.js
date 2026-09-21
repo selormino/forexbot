@@ -1,20 +1,25 @@
 const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function get(u){const r=await fetch(u);const d=await r.json();if(!r.ok)throw new Error(d.error||'Request failed');return d}
 const pct=x=>x==null?'—':(Number(x)*100).toFixed(1)+'%';const fmt=x=>x==null?'—':Number(x).toFixed(Math.abs(Number(x))>=100?2:5);const cls=x=>x==='LONG'?'long':x==='SHORT'?'short':'wait';
+const signalStatusMeta=code=>({
+ STRICT:{label:'Ready — strict setup',detail:'All required signal gates passed.'},
+ FILTERED:{label:'Filtered — setup blocked',detail:'A possible setup was found, but one or more quality or safety gates rejected it.'},
+ WATCH:{label:'Watching — no setup yet',detail:'The market is being monitored, but there is no qualified entry setup yet.'}
+}[String(code||'').toUpperCase()]||{label:String(code||'—').replaceAll('_',' '),detail:''});
 function box(title,body){return `<div class="analysis-box"><h3>${esc(title)}</h3>${body}</div>`}
 function renderSignal(s){
- const p=s.tradePlan||{},a=s.analysis||{},status=s.direction!=='WAIT'?'STRICT':s.candidateDirection!=='WAIT'?'FILTERED':'WATCH',conf=a.confluence?.agreement;
+ const p=s.tradePlan||{},a=s.analysis||{},status=s.direction!=='WAIT'?'STRICT':s.candidateDirection!=='WAIT'?'FILTERED':'WATCH',statusMeta=signalStatusMeta(status),conf=a.confluence?.agreement;
  $('hero').innerHTML=`
   <div class="card metric"><span class="label">${esc(s.symbol)} · ${esc(s.timeframe)}</span><div class="big">${fmt(s.price)}</div><b class="${cls(s.leanDirection)}">${esc(s.leanDirection)} bias</b></div>
   <div class="card metric"><span class="label">Model probability</span><div class="big">${pct(s.directionalProbability)}</div><span class="muted">strict min ${pct(s.minProbability)}</span></div>
-  <div class="card metric"><span class="label">Evidence agreement</span><div class="big">${conf==null?'—':conf+'%'}</div><span class="muted">${status}</span></div>`;
+  <div class="card metric"><span class="label">Evidence agreement</span><div class="big">${conf==null?'—':conf+'%'}</div><span class="muted">${esc(statusMeta.label)}</span></div>`;
  const fund=a.fundamentals||{},pa=a.priceAction||{};
  $('analysis').innerHTML=
   box('Technical',`<p>Bias <b>${a.technicalBias==null?'—':Number(a.technicalBias).toFixed(2)}</b></p><p>${esc((a.technical||[]).slice(0,3).join(' · '))}</p>`)+
   box('Price action',`<p>Structure <b>${esc(pa.structure||'—')}</b></p><p>${esc((pa.patterns||[]).join(', ')||'No major candle pattern')}</p>`)+
   box('Fundamentals',`<p>Combined bias <b>${fund.bias==null?'—':Number(fund.bias).toFixed(2)}</b></p><p>Macro ${a.macro?.bias==null?'—':Number(a.macro.bias).toFixed(2)} · News ${a.news?.sentiment==null?'—':Number(a.news.sentiment).toFixed(2)}</p>`);
- $('planState').textContent=status;
- $('plan').innerHTML=`<div class="kv"><div><small>Entry</small><b>${fmt(p.entry)}</b></div><div><small>Stop</small><b>${fmt(p.stop)}</b></div><div><small>Target</small><b>${fmt(p.target)}</b></div><div><small>R:R</small><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></div></div><div class="notice">${esc((s.filters||[])[0]||'All strict gates passed.')}</div><a class="btn primary" href="/signals.html">Open signal board</a>`;
+ $('planState').textContent=statusMeta.label;
+ $('plan').innerHTML=`<div class="kv"><div><small>Entry</small><b>${fmt(p.entry)}</b></div><div><small>Stop</small><b>${fmt(p.stop)}</b></div><div><small>Target</small><b>${fmt(p.target)}</b></div><div><small>R:R</small><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></div></div><div class="notice">${esc(statusMeta.detail)}${(s.filters||[]).length?' '+esc((s.filters||[])[0]):''}</div><a class="btn primary" href="/signals.html">Open signal board</a>`;
  $('updated').textContent=new Date(s.generatedAt).toLocaleTimeString();
 }
 function renderNews(a){$('news').innerHTML=(a||[]).slice(0,5).map(n=>`<div class="article"><b>${esc(n.headline)}</b><small>${esc(n.source||'')} · ${n.time?new Date(n.time).toLocaleString():''}</small></div>`).join('')||'<p class="muted">No recent news.</p>'}
