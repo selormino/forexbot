@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v34-isotonic-calibration';
+const VERSION='technical-fundamental-v35-score-gate';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -218,6 +218,9 @@ function poolSplitRows(rows,cutoff){
 }
 function stripCalibration(model){
   if(!model)return null;
+  if(model.kind==='score-gate'){
+    return {kind:'score-gate',base:stripCalibration(model.base),bySide:model.bySide};
+  }
   if(model.kind==='side-composite'){
     return {
       kind:'side-composite',
@@ -230,6 +233,7 @@ function stripCalibration(model){
 }
 function calibrateRawModel(raw,rows){
   if(!raw)return null;
+  if(raw.kind==='score-gate')return raw;
   if(raw.kind==='side-composite'){
     const baseRows=rows||[];
     const base=raw.base?{...raw.base,calibration:setupModel.fitBestCalibration(raw.base,baseRows).calibration}:null;
@@ -373,6 +377,18 @@ function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
     const specialized=sideSpecializedRaw(pooledRaw,trainExamples,fitCal);
     if(specialized)rawCandidates.push({name:'side-specialized',raw:specialized.raw,complexity:3,sideDiagnostics:specialized.diagnostics});
   }
+  const scoreGateBases=[...rawCandidates];
+  const scoreGateMinSamples=Math.max(10,Math.floor(fitCal.length*.05));
+  for(const candidate of scoreGateBases){
+    const gate=setupModel.fitScoreGate(candidate.raw,fitCal,{threshold,minSamples:scoreGateMinSamples});
+    if(gate)rawCandidates.push({
+      name:candidate.name+'-score-gate',
+      raw:gate.model,
+      complexity:Number(candidate.complexity||0)+.5,
+      scoreGateDiagnostics:gate.diagnostics,
+      parentCandidate:candidate.name
+    });
+  }
   const evaluated=rawCandidates.map(candidate=>{
     const calibrated=calibrateRawModel(candidate.raw,fitCal);
     const probability=setupModel.probabilityMetrics(calibrated,validation);
@@ -412,7 +428,9 @@ function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
         selectedWins:x.operating.selectedWins,averageR:x.operating.averageR,profitFactorR:x.operating.profitFactorR,
         wilsonLower:x.operating.wilsonLower,allowedSides:x.operating.sideValidation.allowedSides
       },
-      sideDiagnostics:x.sideDiagnostics||null
+      sideDiagnostics:x.sideDiagnostics||null,
+      scoreGateDiagnostics:x.scoreGateDiagnostics||null,
+      parentCandidate:x.parentCandidate||null
     }))
   }};
 }
@@ -571,7 +589,7 @@ function trainSeries(symbol,tf){
   const setupApproved=setupReport.status==='trained'&&setupReport.selected>=30&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss;
   const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||(f.setupProbability.recommendedTest.averageR||0)>0));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Policy-aligned adaptive setup model may specialize LONG and SHORT separately using pre-test data only. A broadly validated side is vetoed only when the recent validation slice has enough qualifying setups and those setups fail the 60%/positive-expectancy side gate. Final approval still requires at least 30 market-specific out-of-sample selections at the configured threshold, the unchanged accuracy target, positive average R, baseline-beating log loss, and chronological fold stability',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Policy-aligned adaptive setup model may specialize LONG and SHORT separately and may use a raw-score empirical gate learned only on early pre-test calibration data. The later pre-test slice must independently reproduce at least 60% accuracy and positive expectancy before the candidate survives. Final approval still requires at least 30 market-specific out-of-sample selections at the configured threshold, the unchanged accuracy target, positive average R, baseline-beating log loss, and chronological fold stability',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
