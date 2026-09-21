@@ -158,3 +158,15 @@ test('conservative plan profiles include positive-expectancy 0.8R choices',()=>{
   assert.ok(names.includes('base-0.8r'));
   assert.ok(names.includes('wide-0.8r'));
 });
+
+
+test('side validation can allow only the statistically stronger direction',()=>{
+  const model={kind:'logistic',weights:[0,2],calibration:{a:1,b:0}};
+  const rows=[];
+  for(let i=0;i<20;i++)rows.push({side:'LONG',z:[1],y:i<14?1:0,realizedR:i<14?.8:-1});
+  for(let i=0;i<20;i++)rows.push({side:'SHORT',z:[-1],y:i<8?1:0,realizedR:i<8?.8:-1});
+  const gate=research.chooseValidatedSides(model,rows,.6);
+  assert.deepEqual(gate.allowedSides,['LONG']);
+  assert.equal(gate.diagnostics.LONG.passed,true);
+  assert.equal(gate.diagnostics.SHORT.passed,false);
+});
