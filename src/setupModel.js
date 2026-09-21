@@ -113,6 +113,34 @@ function fitCompetitive(trainRows,calRows){
   return {model:selected==='boosted-stumps'?boosted:logistic,comparison:{selected,logistic:logisticMetrics,boosted:boostedMetrics,minimumBoostedImprovement:.005}};
 }
 
+function fitDistributionGate(rows,{dims=20,quantile=.80}={}){
+  if(!rows?.length)return null;
+  const n=Math.min(dims,rows[0].z.length),mean=Array(n).fill(0),scale=Array(n).fill(0);
+  for(const row of rows)for(let j=0;j<n;j++)mean[j]+=Number(row.z[j]||0)/rows.length;
+  for(const row of rows)for(let j=0;j<n;j++)scale[j]+=(Number(row.z[j]||0)-mean[j])**2/rows.length;
+  for(let j=0;j<n;j++)scale[j]=Math.max(.05,Math.sqrt(scale[j]));
+  const distance=z=>Math.sqrt(mean.reduce((sum,m,j)=>sum+((Number(z[j]||0)-m)/scale[j])**2,0)/n);
+  const distances=rows.map(row=>distance(row.z)).sort((a,b)=>a-b);
+  const q=Math.max(0.5,Math.min(.98,Number(quantile)||.80));
+  const threshold=distances[Math.min(distances.length-1,Math.floor((distances.length-1)*q))];
+  return {dims:n,mean,scale,threshold,quantile:q};
+}
+function distributionDistance(gate,z){
+  if(!gate)return 0;
+  let sum=0;
+  for(let j=0;j<gate.dims;j++)sum+=((Number(z[j]||0)-gate.mean[j])/gate.scale[j])**2;
+  return Math.sqrt(sum/gate.dims);
+}
+function inDistribution(gate,z){return !gate||distributionDistance(gate,z)<=gate.threshold;}
+function fitSideDistributionGates(rows,options){
+  const out={};
+  for(const side of ['LONG','SHORT']){
+    const part=rows.filter(x=>x.side===side);
+    if(part.length>=20)out[side]=fitDistributionGate(part,options);
+  }
+  return out;
+}
+
 function eligible(row,side,costBps){
   const sign=side==='LONG'?1:-1;
   if(row.regime!=='trend'||sign*Number(row.trend||0)<=0)return false;
@@ -254,4 +282,4 @@ function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
   const report={status:'trained',modelCompetition:competition.comparison,trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold),calibrationRecommendedThreshold,recommendedTest:calibrationRecommendedThreshold===null?null:statsAt(model,testExamples,calibrationRecommendedThreshold)};
   return {model,report};
 }
-module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
+module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
