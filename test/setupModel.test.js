@@ -170,3 +170,21 @@ test('side validation can allow only the statistically stronger direction',()=>{
   assert.equal(gate.diagnostics.LONG.passed,true);
   assert.equal(gate.diagnostics.SHORT.passed,false);
 });
+
+
+test('distribution gate rejects unfamiliar feature regimes',()=>{
+  const rows=Array.from({length:60},(_,i)=>({z:[1,(i%10)/10,((i*3)%10)/10],side:'LONG'}));
+  const gate=setup.fitDistributionGate(rows,{dims:3,quantile:.8});
+  assert.ok(gate);
+  assert.equal(setup.inDistribution(gate,[1,.4,.4]),true);
+  assert.equal(setup.inDistribution(gate,[1,8,8]),false);
+});
+test('side distribution gates are fit independently',()=>{
+  const rows=[];
+  for(let i=0;i<30;i++)rows.push({z:[1,i/30],side:'LONG'});
+  for(let i=0;i<30;i++)rows.push({z:[-1,-i/30],side:'SHORT'});
+  const gates=setup.fitSideDistributionGates(rows,{dims:2,quantile:.8});
+  assert.ok(gates.LONG&&gates.SHORT);
+  assert.equal(setup.inDistribution(gates.LONG,[1,.4]),true);
+  assert.equal(setup.inDistribution(gates.SHORT,[-1,-.4]),true);
+});
