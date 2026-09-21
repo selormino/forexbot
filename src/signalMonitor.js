@@ -177,7 +177,10 @@ function aggregate(rows){
     averageProbability:settled.length?settled.reduce((s,r)=>s+Number(r.setup_probability??r.directional_probability),0)/settled.length:null,
     averageR:settled.length?settled.reduce((s,r)=>s+Number(r.realized_r||0),0)/settled.length:null};
 }
-function currentVersion(){return db.prepare('SELECT version FROM research_models ORDER BY id DESC LIMIT 1').get()?.version||null;}
+function currentVersion(){
+  const exists=db.prepare("SELECT 1 ok FROM sqlite_master WHERE type='table' AND name='research_models'").get();
+  return exists?db.prepare('SELECT version FROM research_models ORDER BY id DESC LIMIT 1').get()?.version||null:null;
+}
 function metrics(){
   const version=currentVersion();
   const research=version?db.prepare('SELECT * FROM signal_records WHERE qualified=1 AND model_version=? ORDER BY created_at').all(version):[];
