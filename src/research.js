@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v26-deeper-regimes';
+const VERSION='technical-fundamental-v27-policy-ood';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -387,23 +387,32 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
   }
   const adapted=adaptSetupModel(baseModel,targetTrainExamples,targetCalExamples,threshold);
   const sideGate=chooseValidatedSides(adapted.model,targetCalExamples,threshold);
-  const sideCalibration=targetCalExamples.filter(x=>sideGate.allowedSides.includes(x.side));
-  const distributionGates=setupModel.fitSideDistributionGates(sideCalibration,{dims:20,quantile:.80});
-  const finalModel={...adapted.model,allowedSides:sideGate.allowedSides,distributionGates};
-  const targetExamples=rawTargetExamples.filter(x=>sideGate.allowedSides.includes(x.side)&&setupModel.inDistribution(distributionGates[x.side],x.z));
-  const targetCalSelected=sideCalibration.filter(x=>setupModel.inDistribution(distributionGates[x.side],x.z));
+  const allowedCalibration=targetCalExamples.filter(x=>sideGate.allowedSides.includes(x.side));
+  const policyCalibration=allowedCalibration.filter(x=>setupModel.predict(adapted.model,x.z)>=threshold);
+  const distributionGates=setupModel.fitSideDistributionGates(policyCalibration,{model:adapted.model,maxFeatures:10,quantile:.90});
+  const distributionAllowedSides=sideGate.allowedSides.filter(side=>!!distributionGates[side]);
+  const finalModel={...adapted.model,allowedSides:distributionAllowedSides,distributionGates};
+  const allowedTest=rawTargetExamples.filter(x=>distributionAllowedSides.includes(x.side));
+  const targetExamples=allowedTest.filter(x=>setupModel.inDistribution(distributionGates[x.side],x.z));
+  const targetCalSelected=policyCalibration.filter(x=>distributionAllowedSides.includes(x.side)&&setupModel.inDistribution(distributionGates[x.side],x.z));
   const distributionReport={
-    quantile:.80,
-    calibrationBefore:sideCalibration.length,calibrationAfter:targetCalSelected.length,
+    type:'policy-aligned-robust',
+    quantile:.90,maxFeatures:10,
+    allowedSidesBefore:sideGate.allowedSides,allowedSidesAfter:distributionAllowedSides,
+    calibrationBefore:allowedCalibration.length,policyCalibration:policyCalibration.length,calibrationAfter:targetCalSelected.length,
     testBefore:rawTargetExamples.filter(x=>sideGate.allowedSides.includes(x.side)).length,testAfter:targetExamples.length,
     bySide:Object.fromEntries(sideGate.allowedSides.map(side=>[side,{
       threshold:distributionGates[side]?.threshold??null,
-      calibration:sideCalibration.filter(x=>x.side===side).length,
+      features:distributionGates[side]?.features??[],
+      policyCalibration:policyCalibration.filter(x=>x.side===side).length,
+      calibrationKept:targetCalSelected.filter(x=>x.side===side).length,
+      testBefore:rawTargetExamples.filter(x=>x.side===side).length,
       testKept:targetExamples.filter(x=>x.side===side).length
     }]))
   };
-  if(!sideGate.allowedSides.length||targetExamples.length<30){
-    return {model:finalModel,report:{status:!sideGate.allowedSides.length?'no-validated-side':'insufficient-in-distribution-setups',pooled:trainingSource==='pooled-family',trainingSource,poolSymbols:pooled.used,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:baseCompetition,adaptation:adapted.selection,sideGate,distributionGate:distributionReport,
+  if(!sideGate.allowedSides.length||!distributionAllowedSides.length||targetExamples.length<30){
+    const status=!sideGate.allowedSides.length?'no-validated-side':!distributionAllowedSides.length?'insufficient-distribution-calibration':'insufficient-in-distribution-setups';
+    return {model:finalModel,report:{status,pooled:trainingSource==='pooled-family',trainingSource,poolSymbols:pooled.used,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:baseCompetition,adaptation:adapted.selection,sideGate,distributionGate:distributionReport,
       trainSamples:pooled.trainSamples,targetTrainSamples:targetTrainExamples.length,targetCalibrationSamples:targetCalExamples.length,selectionPolicy:{mode:'best-setup-side',trainExamples:targetTrainExamples.length,calibrationExamples:targetCalExamples.length,testExamples:rawTargetExamples.length,maxOneTradePerTimestamp:true},tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples,testSamples:targetExamples.length,
       selected:0,selectedAccuracy:null,averageR:null,logLoss:null,baselineLoss:null}};
   }
@@ -446,7 +455,7 @@ function trainSeries(symbol,tf){
   const setupApproved=setupReport.status==='trained'&&setupReport.selected>=30&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss;
   const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||(f.setupProbability.recommendedTest.averageR||0)>0));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Best-side adaptive setup model must select at most one in-distribution side per timestamp, have at least 30 market-specific out-of-sample selections at the configured threshold, meet the unchanged accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Best-side adaptive setup model must select at most one policy-aligned robust in-distribution side per timestamp, have at least 30 market-specific out-of-sample selections at the configured threshold, meet the unchanged accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
@@ -492,7 +501,7 @@ function signal(symbol,tf='1h',events=null){
     const vector=m?.model?.setup?setupModel.vector(f,side):null;
     const allowed=!m?.model?.setup?.allowedSides||m.model.setup.allowedSides.includes(side);
     const gate=m?.model?.setup?.distributionGates?.[side]||null;
-    const inDistribution=vector?setupModel.inDistribution(gate,vector):false;
+    const inDistribution=!!(vector&&gate&&setupModel.inDistribution(gate,vector));
     setupScores[side]={vector,allowed,inDistribution,probability:m?.model?.setup&&allowed&&inDistribution?setupModel.predict(m.model.setup,vector):null};
   }
   const scoredSides=['LONG','SHORT'].filter(side=>Number.isFinite(setupScores[side].probability)).sort((a,b)=>setupScores[b].probability-setupScores[a].probability);
