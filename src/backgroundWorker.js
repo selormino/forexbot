@@ -147,7 +147,7 @@ async function runCycle({bootstrap=false}={}){
   try{
     const historyBackfill=bootstrap&&process.env.HISTORY_BACKFILL_ENABLED==='true'
       ?await history.backfillHistory({
-          targetBars:Number(process.env.HISTORY_BACKFILL_TARGET_BARS||5000),
+          targetBars:Number(process.env.HISTORY_BACKFILL_TARGET_BARS||7500),
           maxPages:Number(process.env.HISTORY_BACKFILL_PAGES||1)
         })
       :[];
