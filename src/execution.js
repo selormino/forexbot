@@ -52,7 +52,7 @@ function status(){
     autoDemoStrict:process.env.AUTO_DEMO_STRICT==='true',
     autoDemoResearch:process.env.AUTO_DEMO_RESEARCH==='true',
     autoDemoResearchRiskPct:Number(process.env.AUTO_DEMO_RESEARCH_RISK_PCT||0.25),
-    autoMinConfluence:Number(process.env.AUTO_MIN_CONFLUENCE||65),
+    autoMinConfluence:Number(process.env.AUTO_MIN_CONFLUENCE||60),
     liveAutomation:false,
     brokerBridge:String(process.env.BROKER_BRIDGE||'none'),
     pending:db.prepare("SELECT COUNT(*) n FROM execution_intents WHERE status='PENDING'").get().n,
@@ -80,7 +80,7 @@ function createAutoDemoIntent(signal,{riskPct=Number(process.env.RISK_PER_TRADE_
   if(process.env.AUTO_DEMO_STRICT!=='true')return {created:false,reason:'Automatic strict demo execution is disabled'};
   if(String(process.env.BROKER_BRIDGE_MODE||'demo').toLowerCase()!=='demo')return {created:false,reason:'Automatic execution is restricted to demo bridge mode'};
   const side=signal.direction,prob=Number(signal.setupProbability??signal.probability??0),threshold=Number(signal.minProbability||0.7);
-  const agreement=Number(signal.analysis?.confluence?.agreement||0),minAgreement=Number(process.env.AUTO_MIN_CONFLUENCE||65);
+  const agreement=Number(signal.analysis?.confluence?.agreement||0),minAgreement=Number(process.env.AUTO_MIN_CONFLUENCE||60);
   if(!['LONG','SHORT'].includes(side)||!signal.modelApproved||(signal.filters||[]).length||prob<threshold)return {created:false,reason:'Signal is not STRICT and model-approved'};
   if(!Number.isFinite(agreement)||agreement<minAgreement)return {created:false,reason:`Evidence agreement below automatic demo minimum (${minAgreement}%)`};
   const plan=signal.tradePlan;
@@ -108,7 +108,7 @@ function createAutoResearchDemoIntent(signal,{riskPct=Number(process.env.AUTO_DE
   const blockers=(signal.filters||[]).filter(x=>x!=='Model has not passed out-of-sample validation gates');
   if(blockers.length)return {created:false,reason:'Research candidate still has safety/quality blockers',blockers};
   if(signal.eventRisk)return {created:false,reason:'Research candidate has event risk'};
-  const agreement=Number(signal.analysis?.confluence?.agreement||0),minAgreement=Number(process.env.AUTO_MIN_CONFLUENCE||65);
+  const agreement=Number(signal.analysis?.confluence?.agreement||0),minAgreement=Number(process.env.AUTO_MIN_CONFLUENCE||60);
   if(!Number.isFinite(agreement)||agreement<minAgreement)return {created:false,reason:`Evidence agreement below automatic demo minimum (${minAgreement}%)`};
   const plan=signal.tradePlan;
   if(!plan||![plan.entry,plan.stop,plan.target].every(Number.isFinite))return {created:false,reason:'Signal has no valid trade plan'};
