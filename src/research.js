@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v22-best-side-policy';
+const VERSION='technical-fundamental-v23-local-fallback';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -296,6 +296,15 @@ function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
   }};
 }
 
+function fitTargetSetupFallback(trainExamples,calExamples,planOptions={}){
+  if((trainExamples||[]).length<100||(calExamples||[]).length<30)return null;
+  const competition=setupModel.fitCompetitive(trainExamples,calExamples);
+  return {
+    model:{...competition.model,planOptions,meaning:'P(success | confirmation entry triggered), target-market fallback trained only on pre-test history'},
+    comparison:competition.comparison
+  };
+}
+
 function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,directionalFloor=.55){
   const poolSymbols=assetFamily(symbol),cutoff=targetParts.test[0]?.at;
   if(!Number.isFinite(cutoff))return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols,trainSamples:0,tuneSamples:0,calibrationSamples:0,testSamples:0}};
@@ -346,11 +355,16 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
   const targetTrainExamples=targetTrainAll;
   const targetCalExamples=targetCalAll;
   const rawTargetExamples=rawTargetAll;
-  if(!pooled.model||rawTargetExamples.length<30){
-    return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols:pooled.used||poolSymbols,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:pooled.modelCompetition,
+  let baseModel=pooled.model,baseCompetition=pooled.modelCompetition,trainingSource='pooled-family';
+  if(!baseModel){
+    const local=fitTargetSetupFallback(targetTrainExamples,targetCalExamples,pooled.planOptions||{});
+    if(local){baseModel=local.model;baseCompetition=local.comparison;trainingSource='target-market-fallback';}
+  }
+  if(!baseModel||rawTargetExamples.length<30){
+    return {model:null,report:{status:'insufficient-triggered-setups',pooled:trainingSource==='pooled-family',trainingSource,poolSymbols:pooled.used||poolSymbols,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:baseCompetition,
       trainSamples:pooled.trainSamples||0,targetTrainSamples:targetTrainExamples.length,targetCalibrationSamples:targetCalExamples.length,selectionPolicy:{mode:'best-setup-side',trainExamples:targetTrainExamples.length,calibrationExamples:targetCalExamples.length,testExamples:rawTargetExamples.length,maxOneTradePerTimestamp:true},tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples||0,testSamples:rawTargetExamples.length}};
   }
-  const adapted=adaptSetupModel(pooled.model,targetTrainExamples,targetCalExamples,threshold);
+  const adapted=adaptSetupModel(baseModel,targetTrainExamples,targetCalExamples,threshold);
   const sideGate=chooseValidatedSides(adapted.model,targetCalExamples,threshold);
   const sideCalibration=targetCalExamples.filter(x=>sideGate.allowedSides.includes(x.side));
   const distributionGates=setupModel.fitSideDistributionGates(sideCalibration,{dims:20,quantile:.80});
@@ -368,12 +382,12 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
     }]))
   };
   if(!sideGate.allowedSides.length||targetExamples.length<30){
-    return {model:finalModel,report:{status:!sideGate.allowedSides.length?'no-validated-side':'insufficient-in-distribution-setups',pooled:true,poolSymbols:pooled.used,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:pooled.modelCompetition,adaptation:adapted.selection,sideGate,distributionGate:distributionReport,
+    return {model:finalModel,report:{status:!sideGate.allowedSides.length?'no-validated-side':'insufficient-in-distribution-setups',pooled:trainingSource==='pooled-family',trainingSource,poolSymbols:pooled.used,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:baseCompetition,adaptation:adapted.selection,sideGate,distributionGate:distributionReport,
       trainSamples:pooled.trainSamples,targetTrainSamples:targetTrainExamples.length,targetCalibrationSamples:targetCalExamples.length,selectionPolicy:{mode:'best-setup-side',trainExamples:targetTrainExamples.length,calibrationExamples:targetCalExamples.length,testExamples:rawTargetExamples.length,maxOneTradePerTimestamp:true},tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples,testSamples:targetExamples.length,
       selected:0,selectedAccuracy:null,averageR:null,logLoss:null,baselineLoss:null}};
   }
   const calibrationRecommendedThreshold=setupModel.recommendThreshold(finalModel,targetCalSelected,Math.max(12,Math.floor(targetCalSelected.length*.08)));
-  const report={status:'trained',pooled:true,poolSymbols:pooled.used,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:pooled.modelCompetition,adaptation:adapted.selection,sideGate,distributionGate:distributionReport,
+  const report={status:'trained',pooled:trainingSource==='pooled-family',trainingSource,poolSymbols:pooled.used,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:baseCompetition,adaptation:adapted.selection,sideGate,distributionGate:distributionReport,
     trainSamples:pooled.trainSamples,targetTrainSamples:targetTrainExamples.length,targetCalibrationSamples:targetCalExamples.length,tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples,testSamples:targetExamples.length,
     ...setupModel.evaluate(finalModel,targetExamples,threshold),calibrationRecommendedThreshold,
     recommendedTest:calibrationRecommendedThreshold===null?null:setupModel.statsAt(finalModel,targetExamples,calibrationRecommendedThreshold)};
@@ -537,4 +551,4 @@ function signal(symbol,tf='1h',events=null){
   return {...base,tradePlan:buildTradePlan(base,{side:lean,...(m?.model?.setup?.planOptions||{})})};
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
-module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseValidatedSides,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
+module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseValidatedSides,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
