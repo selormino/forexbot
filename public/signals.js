@@ -45,10 +45,54 @@ const outcomeMeta=code=>({
 const stateHtml=(meta,css='neutral')=>`<span class="pill ${css}" title="${esc(meta.detail)}">${esc(meta.label)}</span>${meta.detail?`<small>${esc(meta.detail)}</small>`:''}`;
 const friendly=e=>{const m=String(e?.message||e||'Unknown error');if(/Market closed/i.test(m))return 'This market is currently closed. No order was sent.';if(/Preview stale/i.test(m))return 'Price moved after the preview. Refresh the trade preview and try again.';if(/Autotrading disabled/i.test(m))return 'MT5 Algo Trading is disabled. Enable Algo Trading and external Python API trading in MT5.';return m.replace(/^MT5 order_send failed:\s*/,'');};
 
-function modal(title,body,actions=''){ $('modalTitle').textContent=title;$('modalBody').innerHTML=body;$('modalActions').innerHTML=actions;$('modalBackdrop').classList.add('open');}
-window.closeModal=()=>$('modalBackdrop').classList.remove('open');
+function modal(title,body,actions='',wide=false){ $('modalTitle').textContent=title;$('modalBody').innerHTML=body;$('modalActions').innerHTML=actions;document.querySelector('.modal')?.classList.toggle('wide',!!wide);$('modalBackdrop').classList.add('open');}
+window.closeModal=()=>{document.querySelector('.modal')?.classList.remove('wide');$('modalBackdrop').classList.remove('open');};
 window.backdropClose=e=>{if(e.target===$('modalBackdrop'))closeModal()};
 function toast(msg){$('toast').textContent=msg;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),2800)}
+
+function chartPath(values,x,y){
+ const parts=[];let open=false;
+ values.forEach((v,i)=>{if(v==null||!Number.isFinite(Number(v))){open=false;return}const p=(open?'L':'M')+x(i).toFixed(1)+' '+y(Number(v)).toFixed(1);parts.push(p);open=true});
+ return parts.join(' ');
+}
+function mainChartSvg(data,sig){
+ const c=data.candles||[],ind=data.indicators||{},p=sig.tradePlan||{};if(!c.length)return '<div class="notice">No candle data available.</div>';
+ const W=1000,H=460,L=68,R=34,T=24,B=42,plotW=W-L-R,plotH=H-T-B,step=plotW/Math.max(1,c.length-1);
+ const levels=[p.entry,p.stop,p.target,data.levels?.support,data.levels?.resistance].filter(Number.isFinite);
+ const prices=[...c.flatMap(x=>[x.low,x.high]),...levels];let min=Math.min(...prices),max=Math.max(...prices);const pad=Math.max((max-min)*.07,Math.abs(max)*.0005,1e-6);min-=pad;max+=pad;
+ const x=i=>L+i*step,y=v=>T+(max-v)/(max-min)*plotH;
+ const grid=Array.from({length:6},(_,i)=>{const v=max-(max-min)*i/5,yy=y(v);return '<line class="chart-grid" x1="'+L+'" y1="'+yy+'" x2="'+(W-R)+'" y2="'+yy+'"/><text class="chart-axis" x="'+(L-8)+'" y="'+(yy+4)+'" text-anchor="end">'+esc(fmt(v))+'</text>'}).join('');
+ const candles=c.map((b,i)=>{const xx=x(i),up=b.close>=b.open,top=y(Math.max(b.open,b.close)),bot=y(Math.min(b.open,b.close)),h=Math.max(1.5,bot-top),w=Math.max(2,Math.min(9,step*.55)),klass=up?'chart-up':'chart-down';return '<line class="'+klass+'" x1="'+xx+'" y1="'+y(b.high)+'" x2="'+xx+'" y2="'+y(b.low)+'"/><rect class="'+klass+' fill" x="'+(xx-w/2)+'" y="'+top+'" width="'+w+'" height="'+h+'"/>'}).join('');
+ const ema20=chartPath(ind.ema20||[],x,y),ema50=chartPath(ind.ema50||[],x,y),ema200=chartPath(ind.ema200||[],x,y);
+ const hline=(v,label,klass)=>Number.isFinite(v)?'<line class="'+klass+'" x1="'+L+'" y1="'+y(v)+'" x2="'+(W-R)+'" y2="'+y(v)+'"/><text class="chart-level-label '+klass+'" x="'+(W-R-3)+'" y="'+(y(v)-4)+'" text-anchor="end">'+esc(label)+' '+esc(fmt(v))+'</text>':'';
+ const tsIndex=new Map(c.map((r,i)=>[Number(r.ts),i]));
+ const patterns=(data.priceAction?.patterns||[]).slice(0,3).map((ptn,pi)=>{const pts=(ptn.points||[]).map(q=>({i:tsIndex.get(Number(q.ts)),price:Number(q.price),role:q.role})).filter(q=>Number.isFinite(q.i)&&Number.isFinite(q.price));if(pts.length<2)return '';const points=pts.map(q=>x(q.i)+','+y(q.price)).join(' ');const labels=pts.map(q=>'<text class="chart-pattern-label" x="'+x(q.i)+'" y="'+(y(q.price)-8)+'" text-anchor="middle">'+esc(q.role||ptn.label)+'</text>').join('');return '<polyline class="chart-pattern p'+pi+'" points="'+points+'"/>'+labels+'<text class="chart-pattern-title" x="'+(L+8)+'" y="'+(T+18+pi*18)+'">'+esc(ptn.label)+' · '+Math.round(Number(ptn.confidence||0)*100)+'%'+(ptn.confirmed?' · confirmed':'')+'</text>'}).join('');
+ const tickEvery=Math.max(1,Math.floor(c.length/7));const timeLabels=c.map((b,i)=>i%tickEvery===0||i===c.length-1?'<text class="chart-axis" x="'+x(i)+'" y="'+(H-12)+'" text-anchor="middle">'+esc(new Date(b.ts).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit'}))+'</text>':'').join('');
+ return '<div class="chart-frame"><svg class="trade-chart" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+esc(sig.symbol+' '+sig.timeframe+' price chart')+'">'+grid+candles+'<path class="chart-line ema20" d="'+ema20+'"/><path class="chart-line ema50" d="'+ema50+'"/><path class="chart-line ema200" d="'+ema200+'"/>'+hline(data.levels?.support,'Support','support')+hline(data.levels?.resistance,'Resistance','resistance')+hline(p.entry,'Entry','entry')+hline(p.stop,'Stop','stop')+hline(p.target,'Target','target')+patterns+timeLabels+'<text class="chart-title" x="'+L+'" y="18">'+esc(sig.symbol+' · '+sig.timeframe.toUpperCase())+'</text></svg><div class="chart-legend"><span class="ema20">EMA20</span><span class="ema50">EMA50</span><span class="ema200">EMA200</span><span class="entry">Entry</span><span class="stop">SL</span><span class="target">TP</span></div></div>';
+}
+function oscillatorSvg(values,{min=0,max=100,lines=[],label=''}={}){
+ const W=1000,H=132,L=48,R=25,T=18,B=22,w=W-L-R,h=H-T-B,x=i=>L+i*w/Math.max(1,values.length-1),y=v=>T+(max-v)/(max-min)*h;
+ const path=chartPath(values,x,y),refs=lines.map(v=>'<line class="chart-grid strong" x1="'+L+'" y1="'+y(v)+'" x2="'+(W-R)+'" y2="'+y(v)+'"/><text class="chart-axis" x="'+(L-7)+'" y="'+(y(v)+4)+'" text-anchor="end">'+v+'</text>').join('');
+ return '<svg class="indicator-chart" viewBox="0 0 '+W+' '+H+'"><text class="chart-title" x="'+L+'" y="14">'+esc(label)+'</text>'+refs+'<path class="chart-line oscillator" d="'+path+'"/></svg>';
+}
+function macdSvg(data){
+ const a=data.indicators?.macd||[],b=data.indicators?.macdSignal||[],hist=data.indicators?.macdHist||[],all=[...a,...b,...hist].filter(v=>v!=null&&Number.isFinite(Number(v)));if(!all.length)return '';
+ const W=1000,H=150,L=48,R=25,T=18,B=22,w=W-L-R,h=H-T-B,min=Math.min(0,...all),max=Math.max(0,...all),span=Math.max(max-min,1e-9),x=i=>L+i*w/Math.max(1,a.length-1),y=v=>T+(max-v)/span*h,zero=y(0),bw=Math.max(1,w/Math.max(1,a.length)*.65);
+ const bars=hist.map((v,i)=>v==null?'':'<rect class="macd-bar '+(v>=0?'pos':'neg')+'" x="'+(x(i)-bw/2)+'" y="'+Math.min(zero,y(v))+'" width="'+bw+'" height="'+Math.max(1,Math.abs(y(v)-zero))+'"/>').join('');
+ return '<svg class="indicator-chart" viewBox="0 0 '+W+' '+H+'"><text class="chart-title" x="'+L+'" y="14">MACD (12,26,9)</text><line class="chart-grid strong" x1="'+L+'" y1="'+zero+'" x2="'+(W-R)+'" y2="'+zero+'"/>'+bars+'<path class="chart-line macd" d="'+chartPath(a,x,y)+'"/><path class="chart-line macd-signal" d="'+chartPath(b,x,y)+'"/></svg>';
+}
+function patternCards(data){
+ const pts=data.priceAction?.patterns||[];if(!pts.length)return '<div class="analysis-box"><h3>Pattern formations</h3><p>No high-quality classical formation detected in the current window.</p></div>';
+ return pts.slice(0,6).map(p=>'<div class="analysis-box pattern-card"><h3>'+esc(p.label)+' <span class="pill '+(p.bias>0?'good':'bad')+'">'+(p.bias>0?'Bullish':'Bearish')+'</span></h3><p><b>'+Math.round(Number(p.confidence||0)*100)+'% pattern confidence</b> · '+(p.confirmed?'Confirmed':'Forming')+'</p><p>'+esc(p.description||'')+'</p></div>').join('');
+}
+window.showChart=async i=>{
+ const sig=board[i];if(!sig)return;modal(sig.symbol+' · '+sig.timeframe+' chart analysis','<div class="notice">Loading closed candles and indicators…</div>','<button onclick="closeModal()">Close</button>',true);
+ try{
+  const data=await get('/api/signals/chart?symbol='+encodeURIComponent(sig.symbol)+'&timeframe='+encodeURIComponent(sig.timeframe)+'&limit=90');
+  const sum=data.indicatorSummary||{},pa=data.priceAction||{},conf=sig.analysis?.confluence||{};
+  $('modalBody').innerHTML='<div class="chart-summary"><div><span class="label">Setup probability</span><b>'+pct(sig.setupProbability)+'</b></div><div><span class="label">Evidence</span><b>'+((conf.agreement??0)+'%')+'</b></div><div><span class="label">Structure</span><b>'+esc(pa.structure||'—')+'</b></div><div><span class="label">Pattern bias</span><b class="'+(pa.patternBias>0?'long':pa.patternBias<0?'short':'wait')+'">'+Number(pa.patternBias||0).toFixed(2)+'</b></div></div>'+mainChartSvg(data,sig)+'<div class="indicator-stack">'+oscillatorSvg(data.indicators?.rsi||[],{min:0,max:100,lines:[30,50,70],label:'RSI (14)'})+macdSvg(data)+'</div><div class="analysis-grid chart-analysis-grid"><div class="analysis-box"><h3>Indicator interpretation</h3>'+(data.explanations||[]).map(x=>'<p>'+esc(x)+'</p>').join('')+'</div><div class="analysis-box"><h3>Evidence components</h3><p>Technical: '+Number(conf.components?.technical||0).toFixed(2)+'</p><p>Structure: '+Number(conf.components?.structure||0).toFixed(2)+'</p><p>Pattern: '+Number(conf.components?.pattern||0).toFixed(2)+'</p><p>Higher timeframe: '+Number(conf.components?.higherTimeframe||0).toFixed(2)+'</p><p>Fundamental: '+Number(conf.components?.fundamental||0).toFixed(2)+'</p></div><div class="analysis-box"><h3>Current indicators</h3><p>EMA alignment: <b>'+esc(sum.emaAlignment||'—')+'</b></p><p>RSI: <b>'+num(sum.rsi)+'</b> · '+esc(sum.rsiState||'')+'</p><p>MACD: <b>'+esc(sum.macdState||'—')+'</b></p><p>ADX: <b>'+num(sum.adx)+'</b> · '+esc(sum.trendStrength||'')+'</p></div>'+patternCards(data)+'</div>';
+ }catch(e){$('modalBody').innerHTML='<div class="notice">'+esc(friendly(e))+'</div>';}
+};
 
 function renderAccuracy(m){
  const strict=m.strict||m.actionable,research=m.researchCandidates||m.qualified,all=m.allTimeActionable||strict;
@@ -79,7 +123,7 @@ function renderBoard(rows){
    <td><b>${fmt(p.entry)}</b><small>SL ${fmt(p.stop)} · TP ${fmt(p.target)} · ${num(p.targetPips)} ${esc(unit)}</small></td>
    <td><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></td>
    <td>${stateHtml(signalStatusMeta(status),status==='STRICT'?'good':'neutral')}<small>${esc((s.filters||[])[0]||'All gates passed')}</small>${['LONG','SHORT'].includes(s.candidateDirection)?stateHtml(brokerTrackingMeta(executionForSignal(s)),brokerTrackingMeta(executionForSignal(s)).css):''}</td>
-   <td><div class="action-stack"><button class="small-btn" onclick="explain(${i})">Details</button><button class="small-btn primary" onclick="trade(${i})">Trade</button></div></td>
+   <td><div class="action-stack"><button class="small-btn" onclick="showChart(${i})">Chart</button><button class="small-btn" onclick="explain(${i})">Details</button><button class="small-btn primary" onclick="trade(${i})">Trade</button></div></td>
   </tr>`;
  }).join('');
  $('boardUpdated').textContent=new Date().toLocaleTimeString();
