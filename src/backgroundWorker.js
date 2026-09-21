@@ -105,6 +105,15 @@ async function trainAll(){
         baselineLoss:report.setupProbability.baselineLoss??null,
         plan:report.setupProbability.planOptions?.name||null,
         adaptation:report.setupProbability.adaptation?.selected||null,
+        adaptationCandidates:(report.setupProbability.adaptation?.candidates||[]).map(candidate=>({
+          name:candidate.name,passesUserFloor:!!candidate.passesUserFloor,
+          logLoss:candidate.probability?.logLoss??null,
+          selected:candidate.operating?.selected??0,
+          accuracy:candidate.operating?.selectedAccuracy??null,
+          averageR:candidate.operating?.averageR??null,
+          wilsonLower:candidate.operating?.wilsonLower??null,
+          allowedSides:candidate.operating?.allowedSides||[]
+        })),
         allowedSides:report.setupProbability.sideGate?.allowedSides||[],
         rawPolicyTest:report.setupProbability.distributionGate?.rawPolicyTest??null,
         distributionGate:report.setupProbability.distributionGate?{
