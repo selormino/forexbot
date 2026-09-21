@@ -186,14 +186,29 @@ function fitSideDistributionGates(rows,options={}){
   return out;
 }
 
-function eligible(row,side,costBps){
+function rangeReversionScore(row,side){
   const sign=side==='LONG'?1:-1;
-  if(row.regime!=='trend'||sign*Number(row.trend||0)<=0)return false;
-  if(side==='LONG'&&Number(row.priceAction?.bias||0)<-.34)return false;
-  if(side==='SHORT'&&Number(row.priceAction?.bias||0)>.34)return false;
+  const rsiBias=Number(row.x?.[3]||0);
+  const momentum=Number(row.x?.[2]||0);
+  const bbBias=Number(row.x?.[11]||0);
+  const raw=-.45*rsiBias-.35*bbBias-.20*Math.tanh(momentum);
+  return sign*raw;
+}
+function eligible(row,side,costBps,family='trend'){
+  const sign=side==='LONG'?1:-1;
   if(Number(row.atr||0)/Math.max(Number(row.price||0),1e-12)*10000<costBps*2)return false;
   if(row.context?.newsAvailable&&((side==='LONG'&&Number(row.context.newsSentiment||0)<-.25)||(side==='SHORT'&&Number(row.context.newsSentiment||0)>.25)))return false;
   if(row.context?.macroAvailable&&((side==='LONG'&&Number(row.context.macroBias||0)<-.35)||(side==='SHORT'&&Number(row.context.macroBias||0)>.35)))return false;
+  if(family==='range'){
+    if(row.regime!=='range')return false;
+    if(rangeReversionScore(row,side)<.25)return false;
+    if(side==='LONG'&&Number(row.priceAction?.bias||0)<-.70)return false;
+    if(side==='SHORT'&&Number(row.priceAction?.bias||0)>.70)return false;
+    return true;
+  }
+  if(row.regime!=='trend'||sign*Number(row.trend||0)<=0)return false;
+  if(side==='LONG'&&Number(row.priceAction?.bias||0)<-.34)return false;
+  if(side==='SHORT'&&Number(row.priceAction?.bias||0)>.34)return false;
   const fundamentalBias=.6*Number(row.context?.macroBias||0)+.4*Number(row.context?.newsSentiment||0);
   const confluence=sign*(.58*Number(row.technicalBias||0)+.22*Number(row.priceAction?.bias||0)+.20*fundamentalBias);
   return confluence>=.10;
@@ -232,7 +247,8 @@ function examples(rows,symbol,costBps,planOptions={}){
   const out=[];
   for(const row of rows){
     for(const side of ['LONG','SHORT']){
-      if(!eligible(row,side,costBps))continue;
+      const family=planOptions.strategyFamily||'trend';
+      if(!eligible(row,side,costBps,family))continue;
       const result=outcome(row,symbol,side,costBps,planOptions);
       if(!result.triggered||!result.settled)continue;
       out.push({z:vector(row,side),directionalX:row.x,y:result.y,realizedR:result.realizedR,side,at:row.at,outcome:result.outcome});
@@ -241,6 +257,10 @@ function examples(rows,symbol,costBps,planOptions={}){
   return out;
 }
 const PLAN_PROFILES=[
+  {name:'range-tight-0.7r',strategyFamily:'range',entryBufferAtr:.05,stopAtr:1.0,targetR:.7,entryExpiryBars:3,holdBars:5},
+  {name:'range-base-0.8r',strategyFamily:'range',entryBufferAtr:.08,stopAtr:1.2,targetR:.8,entryExpiryBars:3,holdBars:6},
+  {name:'range-wide-0.8r',strategyFamily:'range',entryBufferAtr:.12,stopAtr:1.4,targetR:.8,entryExpiryBars:3,holdBars:6},
+  {name:'range-patient-0.9r',strategyFamily:'range',entryBufferAtr:.08,stopAtr:1.4,targetR:.9,entryExpiryBars:3,holdBars:8},
   {name:'tight-0.8r',entryBufferAtr:.08,stopAtr:1.0,targetR:.8,entryExpiryBars:4,holdBars:6},
   {name:'base-0.8r',entryBufferAtr:.12,stopAtr:1.2,targetR:.8,entryExpiryBars:4,holdBars:6},
   {name:'wide-0.8r',entryBufferAtr:.18,stopAtr:1.4,targetR:.8,entryExpiryBars:4,holdBars:6},
@@ -336,4 +356,4 @@ function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
   const report={status:'trained',modelCompetition:competition.comparison,trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold),calibrationRecommendedThreshold,recommendedTest:calibrationRecommendedThreshold===null?null:statsAt(model,testExamples,calibrationRecommendedThreshold)};
   return {model,report};
 }
-module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,resolvePredictModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,modelFeatureIndices,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,bestSideSelections,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
+module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,resolvePredictModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,modelFeatureIndices,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,rangeReversionScore,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,bestSideSelections,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
