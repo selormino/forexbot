@@ -2,7 +2,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signals · ForexBot</title><link rel="stylesheet" href="/app.css"><script src="/theme.js"></script></head>
 <body><div class="shell"><aside><div class="brand"><span>FB</span><div><b>ForexBot</b><small>MARKET INTELLIGENCE</small></div></div><nav><a href="/">Dashboard</a><a class="active" href="/signals.html">Signals</a></nav><div class="side-note">Strict signals require the configured setup-success threshold plus model validation and cross-factor confirmation. Manual demo trades remain separate.</div></aside>
 <main>
-<header><div><p class="eyebrow">SIGNALS</p><h1>Clean setups. Measured outcomes.</h1><p class="muted">Triggered-setup probability + directional model + technicals + price action + fundamentals, with every outcome tracked.</p></div><div class="header-actions"><button class="ghost" data-theme-toggle>☀ Light</button><button onclick="load()">Refresh</button></div></header>
+<header><div><p class="eyebrow">SIGNALS</p><h1>Clean setups. Measured outcomes.</h1><p class="muted">Triggered-setup probability + directional model + indicators + classical chart patterns + fundamentals, with every outcome tracked.</p></div><div class="header-actions"><button class="ghost" data-theme-toggle>☀ Light</button><button onclick="load()">Refresh</button></div></header>
 
 <div class="controls card">
   <div class="control-group"><span class="label">Setup threshold</span><div class="threshold-control"><input id="thresholdInput" type="number" min="50" max="95" step="1"><span>%</span><button class="primary" onclick="openThreshold()">Save</button></div><small id="thresholdSource" class="muted"></small></div>
@@ -20,7 +20,7 @@
 <details class="research"><summary>XM activity</summary><div class="details-body"><div class="table-wrap"><table><thead><tr><th>Created</th><th>Market</th><th>Mode</th><th>Signal</th><th>Ticket</th><th>Broker status</th><th>Fill</th><th>P/L</th></tr></thead><tbody id="brokerActivity"></tbody></table></div></div></details>
 <details class="research"><summary>What each signal status means</summary><div class="details-body">
   <div class="analysis-grid">
-    <div class="analysis-box"><h3>Filtered — not qualified</h3><p>A possible setup was found, but one or more model, quality, confluence or risk gates rejected it. No entry is tracked.</p></div>
+    <div class="analysis-box"><h3>Filtered — not qualified</h3><p>A possible setup was found, but one or more model, quality, confluence or risk gates rejected it. ForexBot shadow-tracks the planned entry/SL/TP so the rejected idea can still be evaluated.</p></div>
     <div class="analysis-box"><h3>Waiting for entry</h3><p>The setup qualified. ForexBot is waiting for price to reach the planned confirmation entry.</p></div>
     <div class="analysis-box"><h3>Entry triggered — active</h3><p>Price reached the planned entry. ForexBot is now monitoring the stop, target and holding-time limit.</p></div>
     <div class="analysis-box"><h3>Expired — entry never triggered</h3><p>The allowed entry window closed before price reached the planned entry, so the setup was discarded without a trade result.</p></div>
