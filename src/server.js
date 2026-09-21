@@ -84,14 +84,24 @@ process.on('SIGTERM',()=>shutdown('SIGTERM'));
 process.on('SIGINT',()=>shutdown('SIGINT'));
 
 let brokerReconciling=false;
+async function runBrokerReconcile(){
+  if(brokerReconciling)return;brokerReconciling=true;
+  try{
+    const [health,reconcile]=await Promise.all([brokerBridge.health(),brokerBridge.reconcile()]);
+    console.log(JSON.stringify({
+      event:'broker-reconcile',
+      health:{
+        type:health.type,configured:health.configured,mode:health.mode,reachable:health.reachable,
+        accountConnected:health.bridge?.accountConnected??null,tradeAllowed:health.bridge?.tradeAllowed??null,
+        tradeApiDisabled:health.bridge?.tradeApiDisabled??null,reason:health.reason||null
+      },
+      ...reconcile
+    }));
+  }catch(e){console.error('Broker reconcile failed:',e.message);}
+  finally{brokerReconciling=false;}
+}
 if(process.env.BROKER_RECONCILE_ENABLED==='true'){
   const seconds=Math.max(30,Number(process.env.BROKER_RECONCILE_SECONDS||60));
-  setTimeout(async()=>{
-    if(brokerReconciling)return;brokerReconciling=true;
-    try{console.log(JSON.stringify({event:'broker-reconcile',...(await brokerBridge.reconcile())}));}catch(e){console.error('Broker reconcile failed:',e.message);}finally{brokerReconciling=false;}
-  },20000);
-  setInterval(async()=>{
-    if(brokerReconciling)return;brokerReconciling=true;
-    try{console.log(JSON.stringify({event:'broker-reconcile',...(await brokerBridge.reconcile())}));}catch(e){console.error('Broker reconcile failed:',e.message);}finally{brokerReconciling=false;}
-  },seconds*1000);
+  setTimeout(runBrokerReconcile,20000);
+  setInterval(runBrokerReconcile,seconds*1000);
 }
