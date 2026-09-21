@@ -69,11 +69,56 @@ function resolvePredictModel(model,z){
   const side=Number(z?.[0]||0)>=0?'LONG':'SHORT';
   return model.sideModels?.[side]||model.base||null;
 }
+function applyCalibration(calibration,score){
+  if(calibration?.kind==='isotonic'){
+    const cuts=calibration.cuts||[],probs=calibration.probs||[];
+    if(!probs.length)return .5;
+    let i=0;while(i<cuts.length-1&&score>cuts[i])i++;
+    return Math.max(.001,Math.min(.999,Number(probs[Math.min(i,probs.length-1)])||.5));
+  }
+  return sigmoid((calibration?.a??1)*score+(calibration?.b??0));
+}
 const predict=(model,z)=>{
   const resolved=resolvePredictModel(model,z);
   if(!resolved)return .5;
-  return sigmoid((resolved.calibration?.a??1)*rawScore(resolved,z)+(resolved.calibration?.b??0));
+  return applyCalibration(resolved.calibration,rawScore(resolved,z));
 };
+function fitIsotonicCalibration(model,rows,{minBin=12,maxBins=8}={}){
+  if(!rows?.length)return {kind:'isotonic',cuts:[Infinity],probs:[.5],bins:1};
+  const sorted=rows.map(r=>({score:rawScore(model,r.z),y:r.y})).sort((a,b)=>a.score-b.score);
+  const binCount=Math.max(1,Math.min(maxBins,Math.floor(sorted.length/Math.max(4,minBin))));
+  const bins=[];
+  for(let b=0;b<binCount;b++){
+    const start=Math.floor(b*sorted.length/binCount),end=Math.floor((b+1)*sorted.length/binCount);
+    const part=sorted.slice(start,end);if(!part.length)continue;
+    bins.push({n:part.length,wins:part.reduce((s,x)=>s+x.y,0),maxScore:part.at(-1).score});
+  }
+  for(const bin of bins)bin.p=(bin.wins+1)/(bin.n+2);
+  let i=1;
+  while(i<bins.length){
+    if(bins[i-1].p<=bins[i].p){i++;continue;}
+    const left=bins[i-1],right=bins[i],merged={n:left.n+right.n,wins:left.wins+right.wins,maxScore:right.maxScore};
+    merged.p=(merged.wins+1)/(merged.n+2);
+    bins.splice(i-1,2,merged);i=Math.max(1,i-1);
+  }
+  return {kind:'isotonic',cuts:bins.map(x=>x.maxScore),probs:bins.map(x=>x.p),bins:bins.length,minBin};
+}
+function fitBestCalibration(model,rows){
+  if((rows||[]).length<60)return {calibration:calibrateModel(model,rows||[]),comparison:{selected:'platt',reason:'small-calibration-sample'}};
+  const ordered=[...rows].sort((a,b)=>(a.at||0)-(b.at||0));
+  const cut=Math.max(30,Math.min(ordered.length-20,Math.floor(ordered.length*.70)));
+  const fitRows=ordered.slice(0,cut),validation=ordered.slice(cut);
+  const platt=calibrateModel(model,fitRows),iso=fitIsotonicCalibration(model,fitRows);
+  const plattMetrics=probabilityMetrics({...model,calibration:platt},validation);
+  const isoMetrics=probabilityMetrics({...model,calibration:iso},validation);
+  const useIso=iso.bins>=2&&Number.isFinite(isoMetrics.logLoss)&&isoMetrics.logLoss+.01<plattMetrics.logLoss;
+  const selected=useIso?'isotonic':'platt';
+  return {
+    calibration:selected==='isotonic'?fitIsotonicCalibration(model,ordered):calibrateModel(model,ordered),
+    comparison:{selected,fitSamples:fitRows.length,validationSamples:validation.length,platt:plattMetrics,isotonic:isoMetrics,requiredImprovement:.01}
+  };
+}
+
 function fitBoosted(rows,{rounds=30,learningRate=.12,lambda=1}={}){
   if(rows.length<100)throw new Error('Insufficient triggered setup samples');
   const dim=rows[0].z.length,mean=Math.max(.01,Math.min(.99,rows.reduce((s,r)=>s+r.y,0)/rows.length));
@@ -118,12 +163,13 @@ function probabilityMetrics(model,rows){
   return {samples:rows.length,logLoss:ll/rows.length,brier:brier/rows.length,accuracy:correct/rows.length};
 }
 function fitCompetitive(trainRows,calRows){
-  const logisticBase={kind:'logistic',weights:fit(trainRows)};
-  const logistic={...logisticBase,calibration:calibrateModel(logisticBase,calRows)};
-  const boostedBase=fitBoosted(trainRows),boosted={...boostedBase,calibration:calibrateModel(boostedBase,calRows)};
+  const logisticBase={kind:'logistic',weights:fit(trainRows)},logisticCal=fitBestCalibration(logisticBase,calRows);
+  const logistic={...logisticBase,calibration:logisticCal.calibration};
+  const boostedBase=fitBoosted(trainRows),boostedCal=fitBestCalibration(boostedBase,calRows);
+  const boosted={...boostedBase,calibration:boostedCal.calibration};
   const trainWins=trainRows.reduce((s,r)=>s+r.y,0);
-  const constantBase={kind:'constant',probability:(trainWins+1)/(trainRows.length+2)};
-  const constant={...constantBase,calibration:calibrateModel(constantBase,calRows)};
+  const constantBase={kind:'constant',probability:(trainWins+1)/(trainRows.length+2)},constantCal=fitBestCalibration(constantBase,calRows);
+  const constant={...constantBase,calibration:constantCal.calibration};
   const logisticMetrics=probabilityMetrics(logistic,calRows),boostedMetrics=probabilityMetrics(boosted,calRows),constantMetrics=probabilityMetrics(constant,calRows);
   const complexBest=boostedMetrics.logLoss+0.005<logisticMetrics.logLoss
     ?{name:'boosted-stumps',model:boosted,metrics:boostedMetrics}
@@ -133,6 +179,7 @@ function fitCompetitive(trainRows,calRows){
   const model=preferConstant?constant:complexBest.model;
   return {model,comparison:{
     selected,logistic:logisticMetrics,boosted:boostedMetrics,constant:constantMetrics,
+    calibration:{logistic:logisticCal.comparison,boosted:boostedCal.comparison,constant:constantCal.comparison},
     minimumBoostedImprovement:.005,constantSimplicityTolerance:.003
   }};
 }
@@ -371,4 +418,4 @@ function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
   const report={status:'trained',modelCompetition:competition.comparison,trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold),calibrationRecommendedThreshold,recommendedTest:calibrationRecommendedThreshold===null?null:statsAt(model,testExamples,calibrationRecommendedThreshold)};
   return {model,report};
 }
-module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,resolvePredictModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,modelFeatureIndices,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,rangeReversionScore,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,bestSideSelections,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
+module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,applyCalibration,fitIsotonicCalibration,fitBestCalibration,resolvePredictModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,modelFeatureIndices,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,rangeReversionScore,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,bestSideSelections,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
