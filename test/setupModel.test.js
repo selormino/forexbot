@@ -224,3 +224,19 @@ test('directional model competition returns a calibrated model',()=>{
   assert.ok(Number.isFinite(out.comparison.logistic.logLoss));
   assert.ok(Number.isFinite(out.comparison.boosted.logLoss));
 });
+
+
+test('best-side selection takes at most one trade per timestamp',()=>{
+  const model={kind:'logistic',weights:[0,1],calibration:{a:1,b:0}};
+  const rows=[
+    {at:1,side:'LONG',z:[2],y:1,realizedR:.8},
+    {at:1,side:'SHORT',z:[1],y:0,realizedR:-1},
+    {at:2,side:'LONG',z:[-.5],y:0,realizedR:-1},
+    {at:2,side:'SHORT',z:[1.5],y:1,realizedR:.8}
+  ];
+  const chosen=setup.bestSideSelections(model,rows,.6);
+  assert.equal(chosen.length,2);
+  assert.equal(chosen[0].side,'LONG');
+  assert.equal(chosen[1].side,'SHORT');
+  assert.equal(new Set(chosen.map(x=>x.at)).size,chosen.length);
+});
