@@ -33,7 +33,12 @@ function compactLearning(rows){
   return (rows||[]).map(x=>({
     symbol:x.symbol,timeframe:x.timeframe,status:x.status||'trained',error:x.error||null,approved:!!x.approved,
     fundamentalCoverage:x.fundamentalCoverage??null,newsCoverage:x.newsCoverage??null,
-    directional:{accuracy:x.qualifiedAccuracy??null,minProbability:x.directionalMinProbability??null},
+    directional:{
+      accuracy:x.qualifiedAccuracy??null,minProbability:x.directionalMinProbability??null,
+      model:x.directionalModelCompetition?.selected??null,
+      logisticLogLoss:x.directionalModelCompetition?.logistic?.logLoss??null,
+      boostedLogLoss:x.directionalModelCompetition?.boosted?.logLoss??null
+    },
     setup:x.setupProbability?{
       status:x.setupProbability.status,testSamples:x.setupProbability.testSamples??x.setupProbability.samples??null,
       baseRate:x.setupProbability.baseRate??null,accuracy:x.setupProbability.accuracy??null,
