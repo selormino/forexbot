@@ -132,3 +132,29 @@ test('competitive setup model reports a calibrated candidate choice',()=>{
   assert.ok(Number.isFinite(out.comparison.boosted.logLoss));
   assert.ok(out.model.calibration);
 });
+
+
+test('adaptive setup selection only needs pre-test train and calibration examples',()=>{
+  const train=Array.from({length:180},(_,i)=>{
+    const a=(i%20)/19,b=((i*7)%17)/16;
+    return {z:[a,b,a*b],y:(a>.58&&b>.35)?1:0,realizedR:(a>.58&&b>.35)?.8:-1,at:i};
+  });
+  const cal=Array.from({length:80},(_,i)=>{
+    const a=((i+4)%20)/19,b=((i*5+1)%17)/16;
+    return {z:[a,b,a*b],y:(a>.58&&b>.35)?1:0,realizedR:(a>.58&&b>.35)?.8:-1,at:1000+i};
+  });
+  const base={kind:'logistic',weights:[0,0,0],calibration:{a:1,b:0},planOptions:{name:'test-profile'}};
+  const out=research.adaptSetupModel(base,train,cal,.6);
+  assert.ok(out.model);
+  assert.equal(out.model.planOptions.name,'test-profile');
+  assert.ok(['pooled-local-cal','target-local','target-recent'].includes(out.selection.selected));
+  assert.equal(out.selection.calibrationSamples,cal.length);
+  assert.ok(Number.isFinite(out.model.calibration.a));
+  assert.ok(Number.isFinite(out.model.calibration.b));
+});
+test('conservative plan profiles include positive-expectancy 0.8R choices',()=>{
+  const names=setup.PLAN_PROFILES.map(x=>x.name);
+  assert.ok(names.includes('tight-0.8r'));
+  assert.ok(names.includes('base-0.8r'));
+  assert.ok(names.includes('wide-0.8r'));
+});
