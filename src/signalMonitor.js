@@ -180,12 +180,19 @@ function aggregate(rows){
 function currentVersion(){return db.prepare('SELECT version FROM research_models ORDER BY id DESC LIMIT 1').get()?.version||null;}
 function metrics(){
   const version=currentVersion();
-  const qualified=version?db.prepare('SELECT * FROM signal_records WHERE qualified=1 AND model_version=? ORDER BY created_at').all(version):[],actionable=qualified.filter(r=>r.actionable===1),groups={};
-  for(const r of qualified){const k=r.symbol+':'+r.timeframe;(groups[k]||(groups[k]=[])).push(r);}
-  const q=aggregate(qualified);
-  return {targetAccuracy:Number(process.env.SIGNAL_TARGET_ACCURACY||.70),minProbability:minProbability(),qualified:q,actionable:aggregate(actionable),
-    bySeries:Object.fromEntries(Object.entries(groups).map(([k,v])=>[k,aggregate(v)])),
-    readyForBrokerValidation:q.settled>=Number(process.env.SIGNAL_MIN_SETTLED||50)&&(q.accuracy||0)>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&q.confidence95.lower>=Number(process.env.SIGNAL_MIN_CONFIDENCE_LOWER||.60)};
+  const research=version?db.prepare('SELECT * FROM signal_records WHERE qualified=1 AND model_version=? ORDER BY created_at').all(version):[];
+  const actionable=research.filter(r=>r.actionable===1),researchGroups={},strictGroups={};
+  for(const r of research){const k=r.symbol+':'+r.timeframe;(researchGroups[k]||(researchGroups[k]=[])).push(r);}
+  for(const r of actionable){const k=r.symbol+':'+r.timeframe;(strictGroups[k]||(strictGroups[k]=[])).push(r);}
+  const researchAgg=aggregate(research),strictAgg=aggregate(actionable);
+  return {
+    targetAccuracy:Number(process.env.SIGNAL_TARGET_ACCURACY||.70),minProbability:minProbability(),
+    qualified:researchAgg,researchCandidates:researchAgg,
+    actionable:strictAgg,strict:strictAgg,
+    bySeries:Object.fromEntries(Object.entries(strictGroups).map(([k,v])=>[k,aggregate(v)])),
+    researchBySeries:Object.fromEntries(Object.entries(researchGroups).map(([k,v])=>[k,aggregate(v)])),
+    readyForBrokerValidation:strictAgg.settled>=Number(process.env.SIGNAL_MIN_SETTLED||50)&&(strictAgg.accuracy||0)>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&strictAgg.confidence95.lower>=Number(process.env.SIGNAL_MIN_CONFIDENCE_LOWER||.60)
+  };
 }
 function history(limit=300){
   const version=currentVersion();if(!version)return [];
