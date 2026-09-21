@@ -149,8 +149,13 @@ test('adaptive setup selection only needs pre-test train and calibration example
   assert.equal(out.model.planOptions.name,'test-profile');
   assert.ok(['pooled-local-cal','target-local','target-recent','side-specialized'].includes(out.selection.selected));
   assert.equal(out.selection.calibrationSamples,cal.length);
-  assert.ok(Number.isFinite(out.model.calibration.a));
-  assert.ok(Number.isFinite(out.model.calibration.b));
+  if(out.model.kind==='side-composite'){
+    const calibrated=Object.values(out.model.sideModels||{}).filter(m=>Number.isFinite(m?.calibration?.a)&&Number.isFinite(m?.calibration?.b));
+    assert.ok(calibrated.length>0);
+  }else{
+    assert.ok(Number.isFinite(out.model.calibration.a));
+    assert.ok(Number.isFinite(out.model.calibration.b));
+  }
 });
 test('conservative plan profiles include positive-expectancy 0.8R choices',()=>{
   const names=setup.PLAN_PROFILES.map(x=>x.name);
