@@ -351,3 +351,15 @@ test('policy operating stats ignore sides that fail validation',()=>{
   assert.equal(out.selectedAccuracy,.7);
   assert.ok(out.averageR>0);
 });
+
+
+test('recent stability gate requires both broad and recent side approval',()=>{
+  const broad={allowedSides:['LONG','SHORT'],diagnostics:{LONG:{passed:true},SHORT:{passed:true}}};
+  const recentOnlyLong={recentAllowedSides:['LONG'],recentPassesUserFloor:true};
+  const stable=research.stableSideGate(broad,recentOnlyLong);
+  assert.deepEqual(stable.allowedSides,['LONG']);
+  assert.deepEqual(stable.broadAllowedSides,['LONG','SHORT']);
+  assert.deepEqual(stable.recentAllowedSides,['LONG']);
+  const none=research.stableSideGate(broad,{recentAllowedSides:[],recentPassesUserFloor:false});
+  assert.deepEqual(none.allowedSides,[]);
+});
