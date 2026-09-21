@@ -104,6 +104,10 @@ async function trainAll(){
         averageR:report.setupProbability.averageR??null,logLoss:report.setupProbability.logLoss??null,
         baselineLoss:report.setupProbability.baselineLoss??null,
         plan:report.setupProbability.planOptions?.name||null,
+        planCandidates:[
+          ...(report.setupProbability.planSelection?.pooledCandidates||[]).map(x=>({source:'pooled',name:x.planOptions?.name,samples:x.stats?.samples,accuracy:x.stats?.accuracy,averageR:x.stats?.averageR,wilsonLower:x.stats?.wilsonLower})),
+          ...(report.setupProbability.planSelection?.targetCandidates||[]).map(x=>({source:'target',name:x.planOptions?.name,samples:x.stats?.samples,accuracy:x.stats?.accuracy,averageR:x.stats?.averageR,wilsonLower:x.stats?.wilsonLower}))
+        ].filter(x=>x.name).sort((a,b)=>(b.wilsonLower??-1)-(a.wilsonLower??-1)).slice(0,8),
         adaptation:report.setupProbability.adaptation?.selected||null,
         adaptationCandidates:(report.setupProbability.adaptation?.candidates||[]).map(candidate=>({
           name:candidate.name,passesUserFloor:!!candidate.passesUserFloor,
@@ -126,10 +130,14 @@ async function trainAll(){
           allowedSidesAfter:report.setupProbability.distributionGate.allowedSidesAfter
         }:null,
         sideHighProbability:Object.fromEntries(Object.entries(report.setupProbability.sideGate?.diagnostics||{}).map(([side,d])=>[side,{
+          samples:d.samples??0,
+          overallAccuracy:d.accuracy??null,
+          overallAverageR:d.averageR??null,
           selected:d.highProbability?.selected||0,
           accuracy:d.highProbability?.accuracy??null,
           averageR:d.highProbability?.averageR??null,
           wilsonLower:d.highProbability?.wilsonLower??null,
+          minSamples:d.highProbability?.minSamples??null,
           passed:!!d.passed
         }]))
       }:null
