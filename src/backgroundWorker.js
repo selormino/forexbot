@@ -106,6 +106,16 @@ async function trainAll(){
         plan:report.setupProbability.planOptions?.name||null,
         adaptation:report.setupProbability.adaptation?.selected||null,
         allowedSides:report.setupProbability.sideGate?.allowedSides||[],
+        rawPolicyTest:report.setupProbability.distributionGate?.rawPolicyTest??null,
+        distributionGate:report.setupProbability.distributionGate?{
+          type:report.setupProbability.distributionGate.type,
+          calibrationBefore:report.setupProbability.distributionGate.calibrationBefore,
+          policyCalibration:report.setupProbability.distributionGate.policyCalibration,
+          calibrationAfter:report.setupProbability.distributionGate.calibrationAfter,
+          testBefore:report.setupProbability.distributionGate.testBefore,
+          testAfter:report.setupProbability.distributionGate.testAfter,
+          allowedSidesAfter:report.setupProbability.distributionGate.allowedSidesAfter
+        }:null,
         sideHighProbability:Object.fromEntries(Object.entries(report.setupProbability.sideGate?.diagnostics||{}).map(([side,d])=>[side,{
           selected:d.highProbability?.selected||0,
           accuracy:d.highProbability?.accuracy??null,
