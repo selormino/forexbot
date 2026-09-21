@@ -769,5 +769,47 @@ function signal(symbol,tf='1h',events=null){
     eventRisk:reasons.some(r=>r.includes('event'))?1:0,generatedAt:now,sourceCandleTs:rows.at(-1).ts,horizonBars:m?.model?.horizon||4,modelId:m?.id||null,modelVersion:VERSION,modelApproved:!!m?.approved,execution:'gated'};
   return {...base,tradePlan:buildTradePlan(base,{side:lean,...planOptions})};
 }
+function alignSeries(length,values,map=x=>x){
+  const out=Array(Math.max(0,length-values.length)).fill(null);
+  return out.concat(values.map(v=>v===undefined||v===null?null:map(v))).slice(-length);
+}
+function chartSnapshot(symbol,tf='1h',{limit=90}={}){
+  const step=ms(tf);if(!step)throw new Error('Invalid timeframe');
+  const now=Date.now();
+  const rows=db.prepare('SELECT ts,open,high,low,close,volume,provider FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 240')
+    .all(symbol,tf,step,now).reverse();
+  if(rows.length<60)throw new Error('Insufficient closed candles for chart analysis');
+  const close=rows.map(r=>r.close),high=rows.map(r=>r.high),low=rows.map(r=>r.low);
+  const ema20=alignSeries(rows.length,ti.EMA.calculate({period:20,values:close}),Number);
+  const ema50=alignSeries(rows.length,ti.EMA.calculate({period:50,values:close}),Number);
+  const ema200=alignSeries(rows.length,ti.EMA.calculate({period:200,values:close}),Number);
+  const rsi=alignSeries(rows.length,ti.RSI.calculate({period:14,values:close}),Number);
+  const macdRaw=ti.MACD.calculate({values:close,fastPeriod:12,slowPeriod:26,signalPeriod:9,SimpleMAOscillator:false,SimpleMASignal:false});
+  const macd=alignSeries(rows.length,macdRaw,x=>Number(x.MACD||0));
+  const macdSignal=alignSeries(rows.length,macdRaw,x=>Number(x.signal||0));
+  const macdHist=alignSeries(rows.length,macdRaw,x=>Number(x.histogram||0));
+  const atr=Number(ti.ATR.calculate({period:14,high,low,close}).at(-1)||0);
+  const adxRaw=ti.ADX.calculate({period:14,high,low,close});
+  const adx=alignSeries(rows.length,adxRaw,x=>Number(x.adx||0));
+  const analysisRows=rows.slice(-60),pa=analyzePriceAction(analysisRows,atr);
+  const patterns=(pa.classicalPatterns||[]).map(p=>({...p,points:(p.points||[]).map(pt=>({...pt,ts:analysisRows[pt.i]?.ts??null})).filter(pt=>Number.isFinite(pt.ts))}));
+  const take=Math.max(50,Math.min(120,Number(limit)||90)),start=Math.max(0,rows.length-take);
+  const candles=rows.slice(start),slice=a=>a.slice(start);
+  const lastE20=ema20.at(-1),lastE50=ema50.at(-1),lastE200=ema200.at(-1),lastRsi=rsi.at(-1),lastMacd=macd.at(-1),lastMacdSignal=macdSignal.at(-1),lastAdx=adx.at(-1);
+  const emaAlignment=lastE20&&lastE50&&lastE200?(lastE20>lastE50&&lastE50>lastE200?'bullish':lastE20<lastE50&&lastE50<lastE200?'bearish':'mixed'):'partial';
+  const rsiState=lastRsi>=70?'overbought':lastRsi<=30?'oversold':lastRsi>=55?'bullish momentum':lastRsi<=45?'bearish momentum':'neutral';
+  return {symbol,timeframe:tf,generatedAt:now,candles,
+    indicators:{ema20:slice(ema20),ema50:slice(ema50),ema200:slice(ema200),rsi:slice(rsi),macd:slice(macd),macdSignal:slice(macdSignal),macdHist:slice(macdHist),adx:slice(adx)},
+    levels:{support:pa.supportPrice,resistance:pa.resistancePrice,swingSupport:pa.swingSupportPrice,swingResistance:pa.swingResistancePrice},
+    priceAction:{structure:pa.structure,bias:pa.bias,baseBias:pa.baseBias,patternBias:pa.patternBias,patternConfidence:pa.patternConfidence,patterns},
+    indicatorSummary:{close:close.at(-1),ema20:lastE20,ema50:lastE50,ema200:lastE200,emaAlignment,rsi:lastRsi,rsiState,macd:lastMacd,macdSignal:lastMacdSignal,macdState:lastMacd>lastMacdSignal?'bullish':'bearish',adx:lastAdx,trendStrength:lastAdx>=25?'strong':lastAdx>=18?'developing':'weak'},
+    explanations:[
+      'EMA alignment is '+emaAlignment+'; EMA20 '+Number(lastE20||0).toFixed(5)+', EMA50 '+Number(lastE50||0).toFixed(5)+(lastE200?', EMA200 '+Number(lastE200).toFixed(5):'')+'.',
+      'RSI(14) is '+Number(lastRsi||0).toFixed(1)+' ('+rsiState+').',
+      'MACD is '+(lastMacd>lastMacdSignal?'above':'below')+' its signal line; ADX is '+Number(lastAdx||0).toFixed(1)+'.',
+      patterns.length?patterns.slice(0,3).map(p=>p.label+': '+Math.round(p.confidence*100)+'% confidence'+(p.confirmed?', confirmed':'')+'. '+p.description).join(' '):'No high-quality classical chart pattern is currently detected.'
+    ]
+  };
+}
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
-module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,stableSideGate,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
+module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,stableSideGate,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,chartSnapshot,status,setupModel};
