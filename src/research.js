@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v36-xauusd-4h-long-regime';
+const VERSION='technical-fundamental-v37-pattern-chart';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -645,13 +645,18 @@ function eventFundamentalBias(events,symbol,now){
 function confluenceFor(side,f,higherTimeframe,fundamentalBias){
   const sign=side==='LONG'?1:-1;
   const higher=higherTimeframe?Math.tanh(Number(higherTimeframe.trend||0)):0;
-  const raw=.40*Number(f.technicalBias||0)+.20*Number(f.priceAction?.bias||0)+.15*higher+.25*Number(fundamentalBias||0);
+  const structure=Number(f.priceAction?.baseBias??f.priceAction?.bias??0);
+  const pattern=Number(f.priceAction?.patternBias||0);
+  const raw=.35*Number(f.technicalBias||0)+.15*structure+.15*pattern+.15*higher+.20*Number(fundamentalBias||0);
   const aligned=Math.max(-1,Math.min(1,sign*raw));
-  return {score:aligned,agreement:Math.round((aligned+1)*50),raw};
+  return {score:aligned,agreement:Math.round((aligned+1)*50),raw,components:{technical:Number(f.technicalBias||0),structure,pattern,higherTimeframe:higher,fundamental:Number(fundamentalBias||0)}};
 }
 function rangeConfluenceFor(side,f){
-  const score=Math.max(-1,Math.min(1,setupModel.rangeReversionScore(f,side)));
-  return {score,agreement:Math.round((score+1)*50),raw:score};
+  const sign=side==='LONG'?1:-1;
+  const meanReversion=Math.max(-1,Math.min(1,setupModel.rangeReversionScore(f,side)));
+  const patternAligned=sign*Number(f.priceAction?.patternBias||0);
+  const score=Math.max(-1,Math.min(1,.72*meanReversion+.28*patternAligned));
+  return {score,agreement:Math.round((score+1)*50),raw:score,components:{meanReversion,pattern:patternAligned}};
 }
 function signal(symbol,tf='1h',events=null){
   const now=Date.now(),step=ms(tf);if(!step)throw new Error('Invalid timeframe');
@@ -711,6 +716,8 @@ function signal(symbol,tf='1h',events=null){
   const eventFundamentals=eventFundamentalBias(events,symbol,now);
   const fundamentalBias=Math.max(-1,Math.min(1,.50*Number(f.context.macroBias||0)+.30*Number(f.context.newsSentiment||0)+.20*eventFundamentals.bias));
   const confluence=strategyFamily==='range'?rangeConfluenceFor(lean,f):confluenceFor(lean,f,higherTimeframe,fundamentalBias);
+  const strongestPattern=(f.priceAction.classicalPatterns||[])[0]||null;
+  if(strongestPattern&&strongestPattern.confirmed&&strongestPattern.confidence>=.70&&((lean==='LONG'?1:-1)*strongestPattern.bias<0))reasons.push('Confirmed '+strongestPattern.label+' pattern conflicts with '+lean+' bias');
   if(strategyFamily==='range'){
     if(confluence.score<.25)reasons.push('RSI/Bollinger/momentum reversal evidence lacks range confluence');
   }else if(confluence.score<.12)reasons.push('Technical and fundamental evidence lacks directional confluence');
@@ -720,6 +727,7 @@ function signal(symbol,tf='1h',events=null){
   if(!Array.isArray(events)||!events.length)reasons.push('Economic calendar unavailable');
   else if(relevantEvents.some(e=>String(e.impact).toLowerCase()==='high'&&Math.abs(new Date(e.time).getTime()-now)<=3600000))reasons.push('High-impact event within one hour');
   const paSummary=[f.priceAction.structure,...f.priceAction.patterns].filter(Boolean).join(', ');
+  const patternSummary=(f.priceAction.classicalPatterns||[]).slice(0,3).map(p=>p.label+' '+Math.round(p.confidence*100)+'%'+(p.confirmed?' confirmed':''));
   const technicalReasons=[
     `EMA trend score ${f.trend.toFixed(2)} ATR (${f.trend>0?'bullish':'bearish'})`,
     `RSI(14) ${f.rsi.toFixed(1)}`,
@@ -740,6 +748,7 @@ function signal(symbol,tf='1h',events=null){
   if((lean==='LONG'&&f.context.newsSentiment>0)||(lean==='SHORT'&&f.context.newsSentiment<0))confirmations.push('Recent news sentiment confirms direction');
   if((lean==='LONG'&&f.context.macroBias>0)||(lean==='SHORT'&&f.context.macroBias<0))confirmations.push('Macro backdrop confirms direction');
   if((lean==='LONG'&&eventFundamentals.bias>0)||(lean==='SHORT'&&eventFundamentals.bias<0))confirmations.push('Recent economic surprise confirms direction');
+  if(strongestPattern&&((lean==='LONG'?1:-1)*strongestPattern.bias>0)&&strongestPattern.confidence>=.60)confirmations.push(strongestPattern.label+' pattern supports '+lean+' ('+Math.round(strongestPattern.confidence*100)+'% pattern confidence)');
   if(strategyFamily==='trend'&&higherTimeframe&&(lean==='LONG'?1:-1)*higherTimeframe.trend>0)confirmations.push('4H trend confirms 1H direction');
   if(strategyFamily==='range'&&confluence.score>=.45)confirmations.push('Mean-reversion confluence is strong');
   else if(strategyFamily==='trend'&&confluence.score>=.35)confirmations.push('Technical + fundamental confluence is strong');
@@ -750,7 +759,7 @@ function signal(symbol,tf='1h',events=null){
     confidence:setupProbability??0,strategyFamily,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,
     analysis:{strategyFamily,thesis:`${strategyFamily==='range'?'Range mean-reversion':'Trend continuation'} ${lean} setup; directional lean ${(directionalProbability*100).toFixed(1)}%; triggered setup success probability is ${setupProbability===null?'unavailable':(setupProbability*100).toFixed(1)+'%'}; evidence agreement is ${confluence.agreement}%.`,
       directionalModel:{lean:directionalLean,probability:directionalProbability,agreesWithSetup:directionalLean===lean},
-      technical:technicalReasons,technicalBias:f.technicalBias,priceAction:{structure:f.priceAction.structure,patterns:f.priceAction.patterns,bias:f.priceAction.bias},
+      technical:technicalReasons,technicalBias:f.technicalBias,priceAction:{structure:f.priceAction.structure,patterns:f.priceAction.patterns,bias:f.priceAction.bias,baseBias:f.priceAction.baseBias,patternBias:f.priceAction.patternBias,patternConfidence:f.priceAction.patternConfidence,classicalPatterns:f.priceAction.classicalPatterns,summary:patternSummary},
       news:{available:f.context.newsAvailable,count:f.context.newsCount,sentiment:f.context.newsSentiment,headlines:f.context.newsHeadlines},
       macro:{available:f.context.macroAvailable,bias:f.context.macroBias,series:f.context.macro},
       fundamentals:{bias:fundamentalBias,eventBias:eventFundamentals.bias,eventSurprises:eventFundamentals.surprises},
