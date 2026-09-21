@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let board=[],settings=null,adminToken='';
+let board=[],settings=null,adminToken='',executionIntents=[];
 
 async function get(u){const r=await fetch(u);const d=await r.json();if(!r.ok)throw new Error(d.error||'Request failed');return d}
 async function post(u,body,token=adminToken){const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json','x-admin-token':token||''},body:JSON.stringify(body||{})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Request failed');return d}
@@ -14,6 +14,20 @@ const signalStatusMeta=code=>({
  FILTERED:{label:'Filtered — setup blocked',detail:'A possible setup was found, but one or more quality or safety gates rejected it.'},
  WATCH:{label:'Watching — no setup yet',detail:'The market is being monitored, but there is no qualified entry setup yet.'}
 }[String(code||'').toUpperCase()]||{label:String(code||'—').replaceAll('_',' '),detail:''});
+const executionForSignal=s=>{
+ const key=[s.symbol,s.timeframe,s.source_ts??s.sourceCandleTs].join(':');
+ return executionIntents.find(x=>!x.manual&&[x.symbol,x.timeframe,x.source_ts].join(':')===key)||null;
+};
+const brokerTrackingMeta=intent=>{
+ if(!intent)return {label:'Internal monitoring',detail:'This setup has not been sent to XM. ForexBot will confirm entry from refreshed candle data.',css:'neutral'};
+ const broker=String(intent.broker_status||'').toUpperCase(),status=String(intent.status||'').toUpperCase();
+ if(status==='DEMO_FILLED'||broker==='OPEN')return {label:'XM entry filled',detail:`XM filled this demo order${intent.broker_order_id?' · ticket '+intent.broker_order_id:''}.`,css:'good'};
+ if(status==='DEMO_CLOSED'||broker==='CLOSED')return {label:'XM trade closed',detail:`XM reports this demo trade closed${intent.broker_order_id?' · ticket '+intent.broker_order_id:''}.`,css:'good'};
+ if(['DEMO_CANCELLED','BROKER_NOT_FOUND'].includes(status)||['CANCELLED','EXPIRED','REJECTED','NOT_FOUND'].includes(broker))return {label:'XM order inactive',detail:`The broker-side order is no longer pending${intent.broker_order_id?' · ticket '+intent.broker_order_id:''}.`,css:'bad'};
+ if(intent.broker_order_id||status==='DEMO_SENT'||broker==='PENDING')return {label:'XM monitoring live price',detail:`Pending demo order is at XM and can trigger intrabar${intent.broker_order_id?' · ticket '+intent.broker_order_id:''}.`,css:'good'};
+ return {label:'Preparing XM order',detail:'A demo execution intent exists but has not yet received a broker ticket.',css:'neutral'};
+};
+
 const lifecycleMeta=code=>({
  FILTERED:{label:'Filtered — not qualified',detail:'The setup failed one or more quality gates, so no entry was tracked.'},
  PENDING_ENTRY:{label:'Waiting for entry',detail:'The setup qualified, but price has not reached the planned entry yet.'},
@@ -63,7 +77,7 @@ function renderBoard(rows){
    <td><b>${conf==null?'—':conf+'%'}</b><small>cross-factor agreement</small></td>
    <td><b>${fmt(p.entry)}</b><small>SL ${fmt(p.stop)} · TP ${fmt(p.target)} · ${num(p.targetPips)} ${esc(unit)}</small></td>
    <td><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></td>
-   <td>${stateHtml(signalStatusMeta(status),status==='STRICT'?'good':'neutral')}<small>${esc((s.filters||[])[0]||'All gates passed')}</small></td>
+   <td>${stateHtml(signalStatusMeta(status),status==='STRICT'?'good':'neutral')}<small>${esc((s.filters||[])[0]||'All gates passed')}</small>${['LONG','SHORT'].includes(s.candidateDirection)?stateHtml(brokerTrackingMeta(executionForSignal(s)),brokerTrackingMeta(executionForSignal(s)).css):''}</td>
    <td><div class="action-stack"><button class="small-btn" onclick="explain(${i})">Details</button><button class="small-btn primary" onclick="trade(${i})">Trade</button></div></td>
   </tr>`;
  }).join('');
@@ -152,12 +166,12 @@ window.sendTrade=async(id,mode)=>{
 function renderSeries(m){const rows=Object.entries(m.bySeries||{}).sort((a,b)=>a[0].localeCompare(b[0]));$('seriesAccuracy').innerHTML=rows.map(([k,v])=>{const [symbol,tf]=k.split(':');return `<tr><td><b>${esc(symbol)}</b></td><td>${esc(tf)}</td><td>${v.pendingEntry}<small>waiting for entry</small></td><td>${v.active}<small>entry triggered</small></td><td>${v.settled}<small>finished</small></td><td>${v.wins}</td><td>${pct(v.accuracy)}</td><td>${v.averageR==null?'—':Number(v.averageR).toFixed(2)}</td></tr>`}).join('')||'<tr><td colspan="8">No strict setups yet.</td></tr>'}
 function renderEdge(e){const out=(e.series||[]).map(s=>({symbol:s.symbol,timeframe:s.timeframe,approved:s.approved,direction:s.setupBacktest,setup:s.setupProbability}));$('edgeDiagnostics').innerHTML=out.map(x=>`<tr><td><b>${esc(x.symbol)}</b></td><td>${esc(x.timeframe)}</td><td>${pct(x.setup?.threshold)}</td><td>${x.setup?.testSamples||0}</td><td>${pct(x.setup?.accuracy)}</td><td>${x.setup?.selected||0}</td><td>${pct(x.setup?.selectedAccuracy)}</td><td>${x.setup?.averageR==null?'—':Number(x.setup.averageR).toFixed(2)}</td></tr>`).join('')}
 function renderBrokerActivity(rows){$('brokerActivity').innerHTML=(rows||[]).filter(r=>r.broker_order_id||String(r.status||'').startsWith('DEMO_')).map(r=>`<tr><td>${new Date(r.created_at).toLocaleString()}</td><td><b>${esc(r.symbol)}</b><small>${esc(r.timeframe)}</small></td><td>${r.manual?'MANUAL':'AUTO'}<small>${esc(String(r.mode||'').toUpperCase())}</small></td><td class="${cls(r.side)}">${esc(r.side)}<small>${pct(r.probability)} · conf ${r.confluence==null?'—':Number(r.confluence).toFixed(0)+'%'}</small></td><td>${esc(r.broker_order_id||'—')}</td><td><span class="pill neutral">${esc(r.broker_status||r.status||'—')}</span></td><td>${r.broker_fill_price==null?'—':fmt(r.broker_fill_price)}<small>${r.broker_close_price==null?'':'close '+fmt(r.broker_close_price)}</small></td><td>${r.broker_profit==null?'—':Number(r.broker_profit).toFixed(2)}</td></tr>`).join('')||'<tr><td colspan="8">No broker executions recorded yet.</td></tr>'}
-function renderHistory(rows){$('signalHistory').innerHTML=rows.map(r=>{const st=lifecycleMeta(r.status),out=outcomeMeta(r.outcome),scope=r.actionable===1?'Approved trade':'Research only';return `<tr><td>${new Date(r.created_at).toLocaleString()}</td><td><b>${esc(r.symbol)}</b><small>${esc(r.timeframe)} · ${scope} · ${esc(r.model_version||'legacy')}</small></td><td class="${cls(r.lean_direction)}">${esc(r.lean_direction||r.candidate_direction)}</td><td>${pct(r.setup_probability)}<small>dir ${pct(r.directional_probability)}</small></td><td>${fmt(r.entry_price)}</td><td>${stateHtml(st,r.status==='SETTLED'?'good':'neutral')}</td><td>${r.outcome?stateHtml(out,r.success===1?'good':r.status==='EXPIRED'?'neutral':'bad'):'—'}</td><td>${r.outcome_pips==null?'—':Number(r.outcome_pips).toFixed(1)+' '+esc(r.unit_label||'')}<small>${r.realized_r==null?'':Number(r.realized_r).toFixed(2)+'R'}</small></td></tr>`}).join('')||'<tr><td colspan="8">No monitored history yet.</td></tr>'}
+function renderHistory(rows){$('signalHistory').innerHTML=rows.map(r=>{const st=lifecycleMeta(r.status),out=outcomeMeta(r.outcome),scope=r.actionable===1?'Approved trade':'Research only',tracking=brokerTrackingMeta(executionForSignal(r));return `<tr><td>${new Date(r.created_at).toLocaleString()}</td><td><b>${esc(r.symbol)}</b><small>${esc(r.timeframe)} · ${scope} · ${esc(r.model_version||'legacy')}</small></td><td class="${cls(r.lean_direction)}">${esc(r.lean_direction||r.candidate_direction)}</td><td>${pct(r.setup_probability)}<small>dir ${pct(r.directional_probability)}</small></td><td>${fmt(r.entry_price)}</td><td>${stateHtml(st,r.status==='SETTLED'?'good':'neutral')}${r.status==='PENDING_ENTRY'||r.status==='ACTIVE'?stateHtml(tracking,tracking.css):''}</td><td>${r.outcome?stateHtml(out,r.success===1?'good':r.status==='EXPIRED'?'neutral':'bad'):'—'}</td><td>${r.outcome_pips==null?'—':Number(r.outcome_pips).toFixed(1)+' '+esc(r.unit_label||'')}<small>${r.realized_r==null?'':Number(r.realized_r).toFixed(2)+'R'}</small></td></tr>`}).join('')||'<tr><td colspan="8">No monitored history yet.</td></tr>'}
 
 window.load=async()=>{
  try{
   const [m,b,h,e,s,broker,x]=await Promise.all([get('/api/signals/metrics'),get('/api/signals/board'),get('/api/signals/history?limit=200'),get('/api/research/edge'),get('/api/settings'),get('/api/broker/status'),get('/api/execution/intents?limit=100')]);
-  renderAccuracy(m);renderBoard(b);renderHistory(h);renderEdge(e);renderSeries(m);renderSettings(s);renderBroker(broker);renderBrokerActivity(x);
+  executionIntents=x||[];renderAccuracy(m);renderBoard(b);renderHistory(h);renderEdge(e);renderSeries(m);renderSettings(s);renderBroker(broker);renderBrokerActivity(x);
  }catch(e){toast(friendly(e))}
 };
 load();setInterval(load,60000);
