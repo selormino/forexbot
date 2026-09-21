@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v30-recent-stability';
+const VERSION='technical-fundamental-v31-range-family';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -152,7 +152,7 @@ function evaluateTradePlans(m,rows,symbol,costBps,threshold=MIN_PROB(),planOptio
   for(const r of rows){
     const p=predict(m,r.x),directionalProbability=Math.max(p,1-p);if(directionalProbability<threshold)continue;
     const side=p>=.5?'LONG':'SHORT',sgn=side==='LONG'?1:-1;
-    if(!setupModel.eligible(r,side,costBps))continue;
+    if(!setupModel.eligible(r,side,costBps,planOptions.strategyFamily||'trend'))continue;
     candidates++;
     const pseudo={symbol,price:r.price,leanDirection:side,candidateDirection:side,directionalProbability,features:r,priceAction:r.priceAction};
     const plan=buildTradePlan(pseudo,{side,...planOptions}),future=r.futureBars||[];let trigger=-1;
@@ -585,6 +585,10 @@ function confluenceFor(side,f,higherTimeframe,fundamentalBias){
   const aligned=Math.max(-1,Math.min(1,sign*raw));
   return {score:aligned,agreement:Math.round((aligned+1)*50),raw};
 }
+function rangeConfluenceFor(side,f){
+  const score=Math.max(-1,Math.min(1,setupModel.rangeReversionScore(f,side)));
+  return {score,agreement:Math.round((score+1)*50),raw:score};
+}
 function signal(symbol,tf='1h',events=null){
   const now=Date.now(),step=ms(tf);if(!step)throw new Error('Invalid timeframe');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,tf,step,now).reverse();
@@ -601,6 +605,9 @@ function signal(symbol,tf='1h',events=null){
   const scoredSides=['LONG','SHORT'].filter(side=>Number.isFinite(setupScores[side].probability)).sort((a,b)=>setupScores[b].probability-setupScores[a].probability);
   const lean=scoredSides[0]||directionalLean,setupProbability=scoredSides.length?setupScores[scoredSides[0]].probability:null;
   const setupAllowed=setupScores[lean]?.allowed??false,distributionAllowed=setupScores[lean]?.inDistribution??false;
+  const planOptions=m?.model?.setup?.planOptions||{};
+  const strategyFamily=planOptions.strategyFamily==='range'?'range':'trend';
+  const rangeScore=strategyFamily==='range'?setupModel.rangeReversionScore(f,lean):null;
   const candidate=setupProbability!==null&&setupProbability>=threshold?lean:'WAIT';
   if(!m?.approved)reasons.push('Model has not passed out-of-sample validation gates');
   if(now-(rows.at(-1).ts+step)>step*2)reasons.push('Stale closed candles');
@@ -613,10 +620,17 @@ function signal(symbol,tf='1h',events=null){
   if(setupAllowed&&!distributionAllowed)reasons.push('Current setup is outside the model’s validated calibration regime');
   if(setupProbability===null)reasons.push('Triggered setup-success model is unavailable for this side/regime');
   else if(setupProbability<threshold)reasons.push(`Setup success probability below ${Math.round(threshold*100)}% threshold`);
-  if(f.regime!=='trend')reasons.push('Range or high-volatility regime');
-  if((lean==='LONG'?1:-1)*f.trend<=0)reasons.push('Direction conflicts with trend');
-  if(lean==='LONG'&&f.priceAction.bias<-.34)reasons.push('Price action is materially bearish');
-  if(lean==='SHORT'&&f.priceAction.bias>.34)reasons.push('Price action is materially bullish');
+  if(strategyFamily==='range'){
+    if(f.regime!=='range')reasons.push('Range strategy requires a stable range regime');
+    if(!Number.isFinite(rangeScore)||rangeScore<.25)reasons.push('Mean-reversion evidence is too weak');
+    if(lean==='LONG'&&f.priceAction.bias<-.70)reasons.push('Price action is too bearish for a LONG range reversal');
+    if(lean==='SHORT'&&f.priceAction.bias>.70)reasons.push('Price action is too bullish for a SHORT range reversal');
+  }else{
+    if(f.regime!=='trend')reasons.push('Trend strategy requires a trend regime');
+    if((lean==='LONG'?1:-1)*f.trend<=0)reasons.push('Direction conflicts with trend');
+    if(lean==='LONG'&&f.priceAction.bias<-.34)reasons.push('Price action is materially bearish');
+    if(lean==='SHORT'&&f.priceAction.bias>.34)reasons.push('Price action is materially bullish');
+  }
   if(lean==='LONG'&&f.context.newsSentiment<-.25)reasons.push('Recent news sentiment conflicts with LONG bias');
   if(lean==='SHORT'&&f.context.newsSentiment>.25)reasons.push('Recent news sentiment conflicts with SHORT bias');
   if(lean==='LONG'&&f.context.macroBias<-.35)reasons.push('Macro backdrop conflicts with LONG bias');
@@ -626,14 +640,16 @@ function signal(symbol,tf='1h',events=null){
     try{
       const hRows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,'4h',ms('4h'),now).reverse();
       const hf=features(hRows,symbol,now);higherTimeframe={trend:hf.trend,regime:hf.regime,priceAction:hf.priceAction.structure};
-      if((lean==='LONG'?1:-1)*hf.trend<0)reasons.push('4H trend conflicts with 1H directional lean');
+      if(strategyFamily==='trend'&&(lean==='LONG'?1:-1)*hf.trend<0)reasons.push('4H trend conflicts with 1H directional lean');
     }catch{}
   }
   if(f.atr/f.price*10000<cost.total*2)reasons.push('Expected range too small relative to estimated costs');
   const eventFundamentals=eventFundamentalBias(events,symbol,now);
   const fundamentalBias=Math.max(-1,Math.min(1,.50*Number(f.context.macroBias||0)+.30*Number(f.context.newsSentiment||0)+.20*eventFundamentals.bias));
-  const confluence=confluenceFor(lean,f,higherTimeframe,fundamentalBias);
-  if(confluence.score<.12)reasons.push('Technical and fundamental evidence lacks directional confluence');
+  const confluence=strategyFamily==='range'?rangeConfluenceFor(lean,f):confluenceFor(lean,f,higherTimeframe,fundamentalBias);
+  if(strategyFamily==='range'){
+    if(confluence.score<.25)reasons.push('RSI/Bollinger/momentum reversal evidence lacks range confluence');
+  }else if(confluence.score<.12)reasons.push('Technical and fundamental evidence lacks directional confluence');
   const relevantEvents=Array.isArray(events)?events.filter(e=>{
     const t=new Date(e.time).getTime();return Number.isFinite(t)&&t>=now-3600000&&t<=now+24*3600000;
   }).sort((a,b)=>new Date(a.time)-new Date(b.time)).slice(0,5):[];
@@ -650,19 +666,25 @@ function signal(symbol,tf='1h',events=null){
     `Volatility regime: ${f.regime}`
   ];
   const confirmations=[];
-  if((lean==='LONG'?1:-1)*f.trend>0)confirmations.push('Primary EMA trend aligns with direction');
-  if((lean==='LONG'&&f.priceAction.bias>0)||(lean==='SHORT'&&f.priceAction.bias<0))confirmations.push('Price action bias confirms direction');
+  if(strategyFamily==='range'){
+    if(rangeScore>=.25)confirmations.push('RSI, Bollinger position and momentum support mean reversion');
+    if((lean==='LONG'&&f.priceAction.bias>0)||(lean==='SHORT'&&f.priceAction.bias<0))confirmations.push('Price action shows reversal confirmation');
+  }else{
+    if((lean==='LONG'?1:-1)*f.trend>0)confirmations.push('Primary EMA trend aligns with direction');
+    if((lean==='LONG'&&f.priceAction.bias>0)||(lean==='SHORT'&&f.priceAction.bias<0))confirmations.push('Price action bias confirms direction');
+  }
   if((lean==='LONG'&&f.context.newsSentiment>0)||(lean==='SHORT'&&f.context.newsSentiment<0))confirmations.push('Recent news sentiment confirms direction');
   if((lean==='LONG'&&f.context.macroBias>0)||(lean==='SHORT'&&f.context.macroBias<0))confirmations.push('Macro backdrop confirms direction');
   if((lean==='LONG'&&eventFundamentals.bias>0)||(lean==='SHORT'&&eventFundamentals.bias<0))confirmations.push('Recent economic surprise confirms direction');
-  if(higherTimeframe&&(lean==='LONG'?1:-1)*higherTimeframe.trend>0)confirmations.push('4H trend confirms 1H direction');
-  if(confluence.score>=.35)confirmations.push('Technical + fundamental confluence is strong');
+  if(strategyFamily==='trend'&&higherTimeframe&&(lean==='LONG'?1:-1)*higherTimeframe.trend>0)confirmations.push('4H trend confirms 1H direction');
+  if(strategyFamily==='range'&&confluence.score>=.45)confirmations.push('Mean-reversion confluence is strong');
+  else if(strategyFamily==='trend'&&confluence.score>=.35)confirmations.push('Technical + fundamental confluence is strong');
   const risks=[...reasons,...softRisks];
-  const explanation=reasons.length?reasons:[`All strict gates passed; price action: ${paSummary||'neutral'}`];
+  const explanation=reasons.length?reasons:[`All strict ${strategyFamily} gates passed; price action: ${paSummary||'neutral'}`];
   const base={symbol,timeframe:tf,price:f.price,leanDirection:lean,candidateDirection:candidate,direction:reasons.length?'WAIT':candidate,probability:setupProbability??directionalProbability,setupProbability,directionalProbability,directionalLean,setupScores:{LONG:setupScores.LONG.probability,SHORT:setupScores.SHORT.probability},minProbability:threshold,directionalMinProbability:directionalFloor,
     probabilityMeaning:'Setup probability estimates P(success | confirmation entry triggers) for this entry/SL/TP structure; directional probability is reported separately',
-    confidence:setupProbability??0,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,
-    analysis:{thesis:`${lean} directional lean at ${(directionalProbability*100).toFixed(1)}%; triggered setup success probability is ${setupProbability===null?'unavailable':(setupProbability*100).toFixed(1)+'%'}; evidence agreement is ${confluence.agreement}%.`,
+    confidence:setupProbability??0,strategyFamily,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,
+    analysis:{strategyFamily,thesis:`${strategyFamily==='range'?'Range mean-reversion':'Trend continuation'} ${lean} setup; directional lean ${(directionalProbability*100).toFixed(1)}%; triggered setup success probability is ${setupProbability===null?'unavailable':(setupProbability*100).toFixed(1)+'%'}; evidence agreement is ${confluence.agreement}%.`,
       directionalModel:{lean:directionalLean,probability:directionalProbability,agreesWithSetup:directionalLean===lean},
       technical:technicalReasons,technicalBias:f.technicalBias,priceAction:{structure:f.priceAction.structure,patterns:f.priceAction.patterns,bias:f.priceAction.bias},
       news:{available:f.context.newsAvailable,count:f.context.newsCount,sentiment:f.context.newsSentiment,headlines:f.context.newsHeadlines},
@@ -672,7 +694,7 @@ function signal(symbol,tf='1h',events=null){
       calendar:relevantEvents.map(e=>({time:e.time,event:e.event,currency:e.currency||e.country,impact:e.impact,actual:e.actual,forecast:e.forecast??e.estimate,previous:e.previous})),
       confirmations,risks},
     eventRisk:reasons.some(r=>r.includes('event'))?1:0,generatedAt:now,sourceCandleTs:rows.at(-1).ts,horizonBars:m?.model?.horizon||4,modelId:m?.id||null,modelVersion:VERSION,modelApproved:!!m?.approved,execution:'gated'};
-  return {...base,tradePlan:buildTradePlan(base,{side:lean,...(m?.model?.setup?.planOptions||{})})};
+  return {...base,tradePlan:buildTradePlan(base,{side:lean,...planOptions})};
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
 module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,stableSideGate,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
