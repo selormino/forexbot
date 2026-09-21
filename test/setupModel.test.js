@@ -188,3 +188,22 @@ test('side distribution gates are fit independently',()=>{
   assert.equal(setup.inDistribution(gates.LONG,[1,.4]),true);
   assert.equal(setup.inDistribution(gates.SHORT,[-1,-.4]),true);
 });
+
+
+test('joint policy meta-label keeps only the directional side',()=>{
+  const directional={weights:[0,2],calibration:{a:1,b:0}};
+  const examples=[
+    {side:'LONG',directionalX:[1],z:[1],y:1,realizedR:.8},
+    {side:'SHORT',directionalX:[1],z:[-1],y:0,realizedR:-1},
+    {side:'SHORT',directionalX:[-1],z:[1],y:1,realizedR:.8}
+  ];
+  const kept=research.jointPolicyExamples(examples,directional,.55);
+  assert.equal(kept.length,2);
+  assert.equal(kept[0].side,'LONG');
+  assert.equal(kept[1].side,'SHORT');
+});
+test('joint policy meta-label rejects low directional confidence',()=>{
+  const directional={weights:[0,.05],calibration:{a:1,b:0}};
+  const examples=[{side:'LONG',directionalX:[1],z:[1],y:1,realizedR:.8}];
+  assert.equal(research.jointPolicyExamples(examples,directional,.60).length,0);
+});
