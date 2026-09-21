@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v24-policy-side-gate';
+const VERSION='technical-fundamental-v25-local-plan-fallback';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -313,14 +313,26 @@ function fitTargetSetupFallback(trainExamples,calExamples,planOptions={}){
   };
 }
 
+function chooseTargetPlanFallback(symbol,rows,costBps){
+  if(!Array.isArray(rows)||rows.length<240)return null;
+  const start=Math.floor(rows.length*.70),tuneRows=rows.slice(start);
+  const candidates=setupModel.PLAN_PROFILES.map(planOptions=>({
+    planOptions,
+    stats:setupModel.summarizeExamples(setupModel.examples(tuneRows,symbol,costBps,planOptions))
+  }));
+  const chosen=setupModel.choosePlan(candidates,30);
+  return chosen?{chosen,candidates,tuneRows:tuneRows.length}:null;
+}
+
 function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,directionalFloor=.55){
-  const poolSymbols=assetFamily(symbol),cutoff=targetParts.test[0]?.at;
+  const poolSymbols=assetFamily(symbol),cutoff=targetParts.test[0]?.at,targetCost=costs(symbol).total;
   if(!Number.isFinite(cutoff))return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols,trainSamples:0,tuneSamples:0,calibrationSamples:0,testSamples:0}};
+  const targetPlanFallback=chooseTargetPlanFallback(symbol,targetParts.train,targetCost);
   const fingerprints=poolSymbols.map(peer=>{
     const m=db.prepare('SELECT COUNT(*) n,MAX(ts) maxTs FROM candles WHERE symbol=? AND timeframe=?').get(peer,tf);
     return peer+':'+String(m?.n||0)+':'+String(m?.maxTs||0);
   }).join('|');
-  const cacheKey=[VERSION,tf,poolSymbols.join(','),cutoff,threshold,fingerprints].join(':');
+  const cacheKey=[VERSION,symbol,tf,poolSymbols.join(','),cutoff,threshold,targetPlanFallback?.chosen?.planOptions?.name||'none',fingerprints].join(':');
   let pooled=setupPoolCache.get(cacheKey);
   if(!pooled){
     const peerParts=[],used=[];
@@ -335,7 +347,9 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
       for(const peer of peerParts)tuneExamples.push(...setupModel.examples(peer.parts.tune,peer.peer,peer.cost,planOptions));
       candidates.push({planOptions,stats:setupModel.summarizeExamples(tuneExamples)});
     }
-    const chosen=setupModel.choosePlan(candidates,Math.max(40,Math.floor(peerParts.reduce((sum,peer)=>sum+peer.parts.tune.length,0)*.02)));
+    const pooledChosen=setupModel.choosePlan(candidates,Math.max(40,Math.floor(peerParts.reduce((sum,peer)=>sum+peer.parts.tune.length,0)*.02)));
+    const chosen=pooledChosen||targetPlanFallback?.chosen||null;
+    const planSource=pooledChosen?'pooled-family':targetPlanFallback?.chosen?'target-local-fallback':'generic-default';
     const planOptions=chosen?.planOptions||{name:'default',entryBufferAtr:.12,stopAtr:1.4,targetR:1.6,entryExpiryBars:4,holdBars:6};
     const trainExamples=[],calExamples=[];
     for(const peer of peerParts){
@@ -352,11 +366,10 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
     pooled={
       model,used,planOptions,modelCompetition,calibrationRecommendedThreshold,
       trainSamples:trainExamples.length,calibrationSamples:calExamples.length,
-      planSelection:{chosen:chosen||null,candidates}
+      planSelection:{source:planSource,chosen:chosen||null,pooledCandidates:candidates,targetCandidates:targetPlanFallback?.candidates||[],targetTuneRows:targetPlanFallback?.tuneRows||0}
     };
     boundedSet(setupPoolCache,cacheKey,pooled,12);
   }
-  const targetCost=costs(symbol).total;
   const targetTrainAll=setupModel.examples(targetParts.train,symbol,targetCost,pooled.planOptions||{});
   const targetCalAll=setupModel.examples(targetParts.cal,symbol,targetCost,pooled.planOptions||{});
   const rawTargetAll=setupModel.examples(targetParts.test,symbol,targetCost,pooled.planOptions||{});
@@ -559,4 +572,4 @@ function signal(symbol,tf='1h',events=null){
   return {...base,tradePlan:buildTradePlan(base,{side:lean,...(m?.model?.setup?.planOptions||{})})};
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
-module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseValidatedSides,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
+module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
