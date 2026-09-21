@@ -1,5 +1,5 @@
 require('dotenv').config();
-const path=require('path');const express=require('express');const cors=require('cors');const helmet=require('helmet');
+const path=require('path');const {fork}=require('child_process');const express=require('express');const cors=require('cors');const helmet=require('helmet');
 const db=require('./db');const {SYMBOLS,candles,news,calendar,providerStatus}=require('./providers');const {makeSignal}=require('./analysis');const model=require('./model');const {planTrade}=require('./risk');
 const research=require('./research');
 const history=require('./history');const {syncMacro,syncPointInTimeMacro,macroStatus,vintageStatus}=require('./macro');
@@ -53,132 +53,35 @@ app.post('/api/model/train',(req,res)=>{try{res.json(research.trainSeries(String
 app.get('/api/model/status',(req,res)=>{const models=research.status();res.json({version:research.VERSION,trained:models.length>0,models,legacyModelNotUsed:true});});
 app.get('/api/paper-trades',(req,res)=>res.json(db.prepare('SELECT * FROM paper_trades ORDER BY id DESC LIMIT 100').all()));
 app.post('/api/paper-trades',(req,res)=>{try{if(enabled())return res.status(403).json({error:'Live execution is not implemented in this release. Keep TRADING_ENABLED=false'});const {symbol,side,entry,stop,target,units}=req.body;if(!symbol||!['LONG','SHORT'].includes(side)||!entry||!units)return res.status(400).json({error:'symbol, side, entry and units are required'});const r=db.prepare('INSERT INTO paper_trades(created_at,symbol,side,entry,stop,target,units) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,side,entry,stop||null,target||null,units);res.json({ok:true,id:r.lastInsertRowid});}catch(e){res.status(400).json({error:e.message});}});
-const port=Number(process.env.PORT||3000);app.listen(port,()=>console.log(`ForexBot AI listening on ${port}`));
+const port=Number(process.env.PORT||3000);
+const httpServer=app.listen(port,()=>console.log(`ForexBot AI listening on ${port}`));
 
-async function autoDemoStrict(signals){
-  if(process.env.AUTO_DEMO_STRICT!=='true')return [];
-  if(String(process.env.BROKER_BRIDGE_MODE||'demo').toLowerCase()!=='demo')return [{skipped:'Automatic strict execution is demo-only'}];
-  const runs=[];
-  for(const signal of signals){
-    if(!['LONG','SHORT'].includes(signal.direction))continue;
-    try{
-      const intent=execution.createAutoDemoIntent(signal,{riskPct:Number(process.env.RISK_PER_TRADE_PCT||0.5)});
-      if(!intent.created){runs.push({symbol:signal.symbol,timeframe:signal.timeframe,...intent});continue;}
-      const broker=await brokerBridge.previewAndDispatchDemo(intent.id);
-      runs.push({symbol:signal.symbol,timeframe:signal.timeframe,intentId:intent.id,brokerOrderId:broker.sent.brokerOrderId,status:'DEMO_SENT'});
-    }catch(e){
-      runs.push({symbol:signal.symbol,timeframe:signal.timeframe,error:e.response?.data?.detail||e.message});
-    }
-  }
-  return runs;
+let backgroundWorker=null,restartTimer=null,shuttingDown=false;
+function startBackgroundWorker(){
+  if(process.env.BACKGROUND_WORKER_ENABLED==='false')return;
+  backgroundWorker=fork(path.join(__dirname,'backgroundWorker.js'),[],{
+    env:{...process.env,FOREXBOT_PROCESS_ROLE:'background-worker'},
+    stdio:'inherit'
+  });
+  console.log(JSON.stringify({event:'background-worker-spawned',pid:backgroundWorker.pid}));
+  backgroundWorker.on('exit',(code,signal)=>{
+    console.log(JSON.stringify({event:'background-worker-exit',code,signal,shuttingDown}));
+    backgroundWorker=null;
+    if(!shuttingDown)restartTimer=setTimeout(startBackgroundWorker,5000);
+  });
 }
+startBackgroundWorker();
 
-function compactLearning(rows){
-  return (rows||[]).map(x=>({
-    symbol:x.symbol,timeframe:x.timeframe,status:x.status||'trained',error:x.error||null,approved:!!x.approved,
-    fundamentalCoverage:x.fundamentalCoverage??null,newsCoverage:x.newsCoverage??null,
-    directional:{accuracy:x.qualifiedAccuracy??null,minProbability:x.directionalMinProbability??null},
-    setup:x.setupProbability?{
-      status:x.setupProbability.status,testSamples:x.setupProbability.testSamples??x.setupProbability.samples??null,
-      baseRate:x.setupProbability.baseRate??null,accuracy:x.setupProbability.accuracy??null,
-      logLoss:x.setupProbability.logLoss??null,baselineLoss:x.setupProbability.baselineLoss??null,
-      selected:x.setupProbability.selected??0,selectedAccuracy:x.setupProbability.selectedAccuracy??null,
-      averageR:x.setupProbability.averageR??null,p90:x.setupProbability.prediction?.p90??null,max:x.setupProbability.prediction?.max??null,
-      calibrationRecommendedThreshold:x.setupProbability.calibrationRecommendedThreshold??null,
-      recommendedTest:x.setupProbability.recommendedTest??null,
-      planOptions:x.setupProbability.planOptions??null,
-      planTune:x.setupProbability.planSelection?.chosen?.stats??null,
-      modelCompetition:x.setupProbability.modelCompetition??null
-    }:null,
-    folds:(x.folds||[]).map(f=>({
-      directionalLogLoss:f.logLoss??null,
-      setup:f.setupProbability?{
-        status:f.setupProbability.status,
-        logLoss:f.setupProbability.logLoss??null,
-        baselineLoss:f.setupProbability.baselineLoss??null,
-        calibrationRecommendedThreshold:f.setupProbability.calibrationRecommendedThreshold??null,
-        recommendedTest:f.setupProbability.recommendedTest??null
-      }:null
-    }))
-  }));
+function shutdown(signal){
+  if(shuttingDown)return;shuttingDown=true;
+  console.log(JSON.stringify({event:'server-shutdown',signal}));
+  if(restartTimer)clearTimeout(restartTimer);
+  if(backgroundWorker)backgroundWorker.kill('SIGTERM');
+  const force=setTimeout(()=>process.exit(0),5000);force.unref();
+  httpServer.close(()=>process.exit(0));
 }
-
-let syncing=false;
-async function bootstrapMonitoring(){
-  if(syncing)return;syncing=true;
-  try{
-    const historyBackfill=process.env.HISTORY_BACKFILL_ENABLED==='true'?await history.backfillHistory({targetBars:Number(process.env.HISTORY_BACKFILL_TARGET_BARS||5000),maxPages:Number(process.env.HISTORY_BACKFILL_PAGES||1)}):[];
-    let macroVintages=[];
-    if(process.env.FRED_API_KEY&&vintageStatus().length<5){
-      macroVintages=await syncPointInTimeMacro();
-    }
-    const learning=[];
-    if(process.env.MODEL_AUTO_TRAIN==='true'){
-      for(const tf of ['1h','4h'])for(const symbol of SYMBOLS){
-        try{learning.push(research.trainSeries(symbol,tf));}catch(e){learning.push({symbol,timeframe:tf,error:e.message});}
-        await new Promise(resolve=>setImmediate(resolve));
-      }
-    }
-    const settledSignals=signalMonitor.settle();
-    const brokerReconcile=process.env.BROKER_RECONCILE_ENABLED==='true'?await brokerBridge.reconcile().catch(e=>({checked:0,error:e.message})):{checked:0,disabled:true};
-    const e=await calendar().catch(()=>null),recordedSignals=[],generatedSignals=[];
-    for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){
-      try{
-        const s=research.signal(symbol,timeframe,e);generatedSignals.push(s);
-        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,setupProbability:s.setupProbability,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
-      }catch(err){recordedSignals.push({symbol,timeframe,error:err.message});}
-    }
-    const autoDemoRuns=await autoDemoStrict(generatedSignals);
-    const learningSummary=compactLearning(learning);
-    console.log(JSON.stringify({event:'model-summary',version:research.VERSION,learning:learningSummary}));
-    console.log(JSON.stringify({event:'signal-bootstrap',historyBackfill,macroVintages,learning:learningSummary,settledSignals,brokerReconcile,recordedSignals,autoDemoRuns,signalMetrics:signalMonitor.metrics()}));
-  }catch(e){console.error('Signal bootstrap failed:',e.message);}finally{syncing=false;}
-}
-setTimeout(bootstrapMonitoring,3000);
-async function scheduledSync(){
-  if(syncing)return;syncing=true;
-  try{
-    const macro=process.env.FRED_API_KEY?await syncMacro():[];
-    const macroVintages=process.env.FRED_API_KEY?await syncPointInTimeMacro():[];
-    research.captureMacro();
-    const newsRuns=[];
-    for(const symbol of SYMBOLS){try{const articles=await news(symbol);research.recordNews(symbol,articles);newsRuns.push({symbol,articles:articles.length});}catch(e){newsRuns.push({symbol,error:'News collection failed'});}}
-    const market=await history.syncHistory();
-    const settledSignals=signalMonitor.settle();
-    const brokerReconcile=process.env.BROKER_RECONCILE_ENABLED==='true'?await brokerBridge.reconcile().catch(e=>({checked:0,error:e.message})):{checked:0,disabled:true};
-    const learning=[];
-    if(process.env.MODEL_AUTO_TRAIN==='true'){
-      for(const tf of ['1h','4h'])for(const symbol of SYMBOLS){
-        try{learning.push(research.trainSeries(symbol,tf));}catch(e){learning.push({symbol,timeframe:tf,error:e.message});}
-        await new Promise(resolve=>setImmediate(resolve));
-      }
-    }
-    const recordedSignals=[],generatedSignals=[];
-    const signalEvents=await calendar().catch(()=>null);
-    for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){
-      try{
-        const s=research.signal(symbol,timeframe,signalEvents);generatedSignals.push(s);
-        recordedSignals.push({symbol,timeframe,id:signalMonitor.record(s).id,direction:s.direction,candidateDirection:s.candidateDirection,setupProbability:s.setupProbability,directionalProbability:s.directionalProbability,confluence:s.analysis?.confluence?.agreement});
-      }catch(err){recordedSignals.push({symbol,timeframe,error:err.message});}
-    }
-    const autoDemoRuns=await autoDemoStrict(generatedSignals);
-    const executionRuns=[];
-    if(process.env.AUTO_PAPER_TRADING==='true'&&String(process.env.EXECUTION_MODE||'off').toLowerCase()==='paper'){
-      for(const signal of generatedSignals.filter(x=>x.timeframe==='1h')){
-        try{executionRuns.push({symbol:signal.symbol,...execution.createIntent(signal,{riskPct:Number(process.env.RISK_PER_TRADE_PCT||0.5),equity:Number(process.env.PAPER_EQUITY||10000),maxPositionUnits:Number(process.env.MAX_POSITION_UNITS||100000)})});}
-        catch(err){executionRuns.push({symbol:signal.symbol,error:err.message});}
-      }
-    }
-    const learningSummary=compactLearning(learning);
-    console.log(JSON.stringify({event:'model-summary',version:research.VERSION,learning:learningSummary}));
-    console.log(JSON.stringify({event:'research-sync',macro,macroVintages,newsRuns,market,settledSignals,brokerReconcile,learning:learningSummary,recordedSignals,autoDemoRuns,signalMetrics:signalMonitor.metrics(),executionRuns}));
-  }catch(e){console.error('Research sync failed:',e.message);}finally{syncing=false;}
-}
-if(process.env.HISTORY_AUTO_SYNC==='true'){
-  const minutes=Math.max(15,Number(process.env.HISTORY_SYNC_MINUTES||60));
-  setTimeout(scheduledSync,15000);
-  setInterval(scheduledSync,minutes*60000);
-}
+process.on('SIGTERM',()=>shutdown('SIGTERM'));
+process.on('SIGINT',()=>shutdown('SIGINT'));
 
 let brokerReconciling=false;
 if(process.env.BROKER_RECONCILE_ENABLED==='true'){
