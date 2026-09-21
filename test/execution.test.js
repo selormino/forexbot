@@ -26,3 +26,20 @@ test('automatic demo intent rejects weak evidence agreement',()=>{
   assert.equal(out.created,false);
   assert.match(out.reason,/Evidence agreement/);
 });
+
+
+test('automatic research demo accepts threshold-qualified candidate when model approval is the only blocker',()=>{
+  process.env.AUTO_DEMO_RESEARCH='true';
+  const s={...strictSignal(),sourceCandleTs:222222222,direction:'WAIT',candidateDirection:'LONG',modelApproved:false,
+    filters:['Model has not passed out-of-sample validation gates'],setupProbability:.66,minProbability:.60};
+  const out=execution.createAutoResearchDemoIntent(s,{riskPct:.25});
+  assert.equal(out.created,true);
+});
+test('automatic research demo rejects any additional quality blocker',()=>{
+  process.env.AUTO_DEMO_RESEARCH='true';
+  const s={...strictSignal(),sourceCandleTs:333333333,direction:'WAIT',candidateDirection:'LONG',modelApproved:false,
+    filters:['Model has not passed out-of-sample validation gates','Missing fresh macro/news confirmation'],setupProbability:.70,minProbability:.60};
+  const out=execution.createAutoResearchDemoIntent(s,{riskPct:.25});
+  assert.equal(out.created,false);
+  assert.match(out.reason,/blockers/);
+});
