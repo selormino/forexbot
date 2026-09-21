@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v23-local-fallback';
+const VERSION='technical-fundamental-v24-policy-side-gate';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -241,16 +241,24 @@ function chooseValidatedSides(model,examples,threshold){
     const gainR=rows.reduce((sum,x)=>sum+Math.max(0,x.realizedR),0),lossR=rows.reduce((sum,x)=>sum+Math.max(0,-x.realizedR),0);
     const highProb=rows.filter(x=>setupModel.predict(model,x.z)>=threshold);
     const highProbWins=highProb.filter(x=>x.y===1).length;
-    const minSamples=Math.max(20,Math.floor(examples.length*.10));
-    const passed=rows.length>=minSamples&&(accuracy||0)>=.60&&(averageR||0)>0;
+    const highProbAccuracy=highProb.length?highProbWins/highProb.length:null;
+    const highProbAverageR=highProb.length?highProb.reduce((sum,x)=>sum+x.realizedR,0)/highProb.length:null;
+    const highProbGainR=highProb.reduce((sum,x)=>sum+Math.max(0,x.realizedR),0),highProbLossR=highProb.reduce((sum,x)=>sum+Math.max(0,-x.realizedR),0);
+    const highProbWilson=setupModel.wilsonLower(highProbWins,highProb.length);
+    const minHighProbSamples=Math.max(10,Math.floor(examples.length*.05));
+    const passed=highProb.length>=minHighProbSamples&&(highProbAccuracy||0)>=.60&&(highProbAverageR||0)>0&&highProbWilson>=.45;
     diagnostics[side]={
-      samples:rows.length,wins,accuracy,averageR,profitFactorR:lossR?gainR/lossR:null,minSamples,passed,
-      highProbability:{threshold,selected:highProb.length,accuracy:highProb.length?highProbWins/highProb.length:null}
+      samples:rows.length,wins,accuracy,averageR,profitFactorR:lossR?gainR/lossR:null,passed,
+      highProbability:{
+        threshold,selected:highProb.length,wins:highProbWins,accuracy:highProbAccuracy,averageR:highProbAverageR,
+        profitFactorR:highProbLossR?highProbGainR/highProbLossR:null,wilsonLower:highProbWilson,minSamples:minHighProbSamples,
+        policyAligned:true
+      }
     };
     if(passed)allowed.push(side);
   }
   return {allowedSides:allowed,diagnostics,userAccuracyFloor:.60,threshold,
-    meaning:'Side gate uses all pre-test triggered calibration setups; probability threshold remains a separate trade-selection gate.'};
+    meaning:'Side admission is judged only on pre-test setups at or above the configured probability threshold, matching the setups the live policy would actually trade. Final OOS approval remains unchanged.'};
 }
 
 function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
