@@ -397,3 +397,29 @@ test('constant competitor is preferred when complexity adds no meaningful calibr
   const out=setup.fitCompetitive(train,cal);
   assert.equal(out.comparison.selected,'constant');
 });
+
+
+test('isotonic calibration is monotone and bounded',()=>{
+  const raw={kind:'logistic',weights:[0,1]};
+  const rows=Array.from({length:120},(_,i)=>{
+    const z=[(i-60)/20];
+    const y=i<35?0:i<65?(i%3===0?1:0):1;
+    return {z,y,at:i};
+  });
+  const cal=setup.fitIsotonicCalibration(raw,rows,{minBin:12,maxBins:6});
+  assert.equal(cal.kind,'isotonic');
+  assert.ok(cal.probs.every(p=>p>0&&p<1));
+  for(let i=1;i<cal.probs.length;i++)assert.ok(cal.probs[i]>=cal.probs[i-1]);
+  for(const score of [-5,-1,0,1,5]){
+    const p=setup.applyCalibration(cal,score);
+    assert.ok(p>0&&p<1);
+  }
+});
+test('best calibration chooses only platt or isotonic using chronological validation',()=>{
+  const raw={kind:'logistic',weights:[0,1]};
+  const rows=Array.from({length:140},(_,i)=>({z:[(i-70)/20],y:i>80?1:0,at:i}));
+  const out=setup.fitBestCalibration(raw,rows);
+  assert.ok(['platt','isotonic'].includes(out.comparison.selected));
+  assert.ok(out.comparison.fitSamples>0);
+  assert.ok(out.comparison.validationSamples>0);
+});
