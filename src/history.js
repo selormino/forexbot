@@ -93,16 +93,17 @@ async function ingestOne(symbol, timeframe, options = {}) {
   }
 }
 
-async function backfillOne(symbol,timeframe,{targetBars=Math.max(MAX_BARS,Number(process.env.HISTORY_BACKFILL_TARGET_BARS||5000)),maxPages=Math.max(1,Math.min(5,Number(process.env.HISTORY_BACKFILL_PAGES||1)))}={}){
+async function backfillOne(symbol,timeframe,{targetBars=Math.max(MAX_BARS,Number(process.env.HISTORY_BACKFILL_TARGET_BARS||7500)),maxPages=Math.max(1,Math.min(5,Number(process.env.HISTORY_BACKFILL_PAGES||1)))}={}){
   if(!SYMBOLS.includes(symbol))throw new Error(`Unsupported symbol: ${symbol}`);
-  targetBars=Math.max(250,Math.min(20000,Number(targetBars)||5000));
-  const step=timeframeMs(timeframe),result={symbol,timeframe,targetBars,pages:0,fetched:0,upserted:0,status:'SKIPPED'};
+  targetBars=Math.max(250,Math.min(20000,Number(targetBars)||7500));
+  const step=timeframeMs(timeframe),result={symbol,timeframe,targetBars,pages:0,requests:0,fetched:0,upserted:0,status:'SKIPPED'};
   for(let page=0;page<maxPages;page++){
     const meta=db.prepare('SELECT COUNT(*) n,MIN(ts) oldest,MAX(ts) newest,MIN(provider) provider FROM candles WHERE symbol=? AND timeframe=?').get(symbol,timeframe);
     if((meta?.n||0)>=targetBars){result.status='TARGET_REACHED';result.candles=meta.n;break;}
     if(!meta?.oldest){result.status='NO_EXISTING_HISTORY';break;}
     if(meta.provider!=='twelvedata'){result.status='PROVIDER_NO_BACKWARD_PAGING';result.provider=meta.provider;result.candles=meta.n;break;}
     const need=Math.min(5000,Math.max(250,targetBars-meta.n+120));
+    result.requests++;
     const fetched=await historicalCandles(symbol,timeframe,{outputsize:need,endTime:meta.oldest-step});
     if(!fetched.length){result.status='NO_OLDER_DATA';result.candles=meta.n;break;}
     const insert=db.prepare(`INSERT INTO candles(symbol,timeframe,ts,open,high,low,close,volume,provider,ingested_at)
@@ -127,9 +128,12 @@ async function backfillOne(symbol,timeframe,{targetBars=Math.max(MAX_BARS,Number
 async function backfillHistory({symbols=SYMBOLS,timeframes=DEFAULT_TIMEFRAMES,targetBars,maxPages}={}){
   const results=[];let index=0,total=symbols.length*timeframes.length;
   for(const symbol of symbols)for(const timeframe of timeframes){
-    try{results.push(await backfillOne(symbol,timeframe,{targetBars,maxPages}));}
-    catch(error){results.push({symbol,timeframe,status:'FAILED',error:error.message});}
-    index++;if(index<total&&REQUEST_DELAY_MS)await sleep(REQUEST_DELAY_MS);
+    let result;
+    try{result=await backfillOne(symbol,timeframe,{targetBars,maxPages});}
+    catch(error){result={symbol,timeframe,status:'FAILED',requests:1,error:error.message};}
+    results.push(result);
+    index++;
+    if(index<total&&REQUEST_DELAY_MS&&Number(result.requests||0)>0)await sleep(REQUEST_DELAY_MS);
   }
   return results;
 }
