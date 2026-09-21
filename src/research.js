@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v15-side-gated';
+const VERSION='technical-fundamental-v16-structure-confirmed';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -102,7 +102,7 @@ function dataset(symbol,tf){
     const segment=rows.slice(i,i+lookahead+1);
     if(segment.some((row,j)=>row.provider!==rows[i].provider||(j&&row.ts-segment[j-1].ts!==ms(tf))))continue;
     const ret=rows[i+horizon].close/rows[i+1].open-1;
-    const priceAction={bias:Number(f.priceAction?.bias||0),breakoutUp:!!f.priceAction?.breakoutUp,breakoutDown:!!f.priceAction?.breakoutDown};
+    const priceAction={bias:Number(f.priceAction?.bias||0),breakoutUp:!!f.priceAction?.breakoutUp,breakoutDown:!!f.priceAction?.breakoutDown,supportPrice:Number(f.priceAction?.supportPrice),resistancePrice:Number(f.priceAction?.resistancePrice)};
     const context={macroAvailable:!!f.context?.macroAvailable,newsAvailable:!!f.context?.newsAvailable,newsSentiment:Number(f.context?.newsSentiment||0),macroBias:Number(f.context?.macroBias||0)};
     out.push({
       price:f.price,atr:f.atr,trend:f.trend,technicalBias:f.technicalBias,regime:f.regime,
