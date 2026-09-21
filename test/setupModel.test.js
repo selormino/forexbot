@@ -143,7 +143,7 @@ test('adaptive setup selection only needs pre-test train and calibration example
     const a=((i+4)%20)/19,b=((i*5+1)%17)/16;
     return {z:[a,b,a*b],y:(a>.58&&b>.35)?1:0,realizedR:(a>.58&&b>.35)?.8:-1,at:1000+i};
   });
-  const base={kind:'logistic',weights:[0,0,0],calibration:{a:1,b:0},planOptions:{name:'test-profile'}};
+  const base={kind:'logistic',weights:[0,0,0,0],calibration:{a:1,b:0},planOptions:{name:'test-profile'}};
   const out=research.adaptSetupModel(base,train,cal,.6);
   assert.ok(out.model);
   assert.equal(out.model.planOptions.name,'test-profile');
