@@ -113,26 +113,59 @@ function fitCompetitive(trainRows,calRows){
   return {model:selected==='boosted-stumps'?boosted:logistic,comparison:{selected,logistic:logisticMetrics,boosted:boostedMetrics,minimumBoostedImprovement:.005}};
 }
 
-function fitDistributionGate(rows,{dims=20,quantile=.80}={}){
+function modelFeatureIndices(model,maxFeatures=10,featureCount=0){
+  const scores=new Map();
+  if(model?.kind==='boosted-stumps'){
+    for(const stump of model.stumps||[]){
+      const feature=Number(stump.feature);
+      if(!Number.isInteger(feature)||feature<0)continue;
+      const importance=Math.max(1e-9,Number(stump.gain||0)+Math.abs(Number(stump.left||0)-Number(stump.right||0)));
+      scores.set(feature,(scores.get(feature)||0)+importance);
+    }
+  }else if(Array.isArray(model?.weights)){
+    for(let i=1;i<model.weights.length;i++)scores.set(i-1,Math.abs(Number(model.weights[i]||0)));
+  }
+  const ranked=[...scores.entries()].filter(([,score])=>Number.isFinite(score)&&score>0).sort((x,y)=>y[1]-x[1]).map(([feature])=>feature);
+  const fallback=Array.from({length:Math.max(0,Number(featureCount)||0)},(_,i)=>i);
+  return [...new Set([...ranked,...fallback])].slice(0,Math.max(1,Number(maxFeatures)||10));
+}
+function median(values){
+  if(!values.length)return 0;
+  const sorted=[...values].sort((x,y)=>x-y),mid=Math.floor(sorted.length/2);
+  return sorted.length%2?sorted[mid]:(sorted[mid-1]+sorted[mid])/2;
+}
+function fitDistributionGate(rows,{features=null,model=null,maxFeatures=10,quantile=.90}={}){
   if(!rows?.length)return null;
-  const n=Math.min(dims,rows[0].z.length),mean=Array(n).fill(0),scale=Array(n).fill(0);
-  for(const row of rows)for(let j=0;j<n;j++)mean[j]+=Number(row.z[j]||0)/rows.length;
-  for(const row of rows)for(let j=0;j<n;j++)scale[j]+=(Number(row.z[j]||0)-mean[j])**2/rows.length;
-  for(let j=0;j<n;j++)scale[j]=Math.max(.05,Math.sqrt(scale[j]));
-  const distance=z=>Math.sqrt(mean.reduce((sum,m,j)=>sum+((Number(z[j]||0)-m)/scale[j])**2,0)/n);
-  const distances=rows.map(row=>distance(row.z)).sort((a,b)=>a-b);
-  const q=Math.max(0.5,Math.min(.98,Number(quantile)||.80));
+  const indices=(Array.isArray(features)&&features.length?features:modelFeatureIndices(model,maxFeatures,rows[0].z.length))
+    .filter(i=>Number.isInteger(i)&&i>=0&&i<rows[0].z.length);
+  if(!indices.length)return null;
+  const center=indices.map(i=>median(rows.map(row=>Number(row.z[i]||0))));
+  const scale=indices.map((i,j)=>{
+    const mad=median(rows.map(row=>Math.abs(Number(row.z[i]||0)-center[j])));
+    return Math.max(.05,1.4826*mad);
+  });
+  const distance=z=>Math.sqrt(indices.reduce((sum,feature,j)=>sum+((Number(z[feature]||0)-center[j])/scale[j])**2,0)/indices.length);
+  const distances=rows.map(row=>distance(row.z)).sort((x,y)=>x-y);
+  const q=Math.max(.70,Math.min(.98,Number(quantile)||.90));
   const threshold=distances[Math.min(distances.length-1,Math.floor((distances.length-1)*q))];
-  return {dims:n,mean,scale,threshold,quantile:q};
+  return {type:'robust-important-features',features:indices,center,scale,threshold,quantile:q,calibrationSamples:rows.length};
 }
 function distributionDistance(gate,z){
-  if(!gate)return 0;
+  if(!gate)return Infinity;
+  if(Array.isArray(gate.features)&&Array.isArray(gate.center)){
+    let sum=0;
+    for(let j=0;j<gate.features.length;j++){
+      const feature=gate.features[j],scale=Math.max(.05,Number(gate.scale?.[j]||1));
+      sum+=((Number(z[feature]||0)-Number(gate.center[j]||0))/scale)**2;
+    }
+    return Math.sqrt(sum/Math.max(1,gate.features.length));
+  }
   let sum=0;
   for(let j=0;j<gate.dims;j++)sum+=((Number(z[j]||0)-gate.mean[j])/gate.scale[j])**2;
   return Math.sqrt(sum/gate.dims);
 }
-function inDistribution(gate,z){return !gate||distributionDistance(gate,z)<=gate.threshold;}
-function fitSideDistributionGates(rows,options){
+function inDistribution(gate,z){return !!gate&&distributionDistance(gate,z)<=gate.threshold;}
+function fitSideDistributionGates(rows,options={}){
   const out={};
   for(const side of ['LONG','SHORT']){
     const part=rows.filter(x=>x.side===side);
@@ -291,4 +324,4 @@ function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
   const report={status:'trained',modelCompetition:competition.comparison,trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold),calibrationRecommendedThreshold,recommendedTest:calibrationRecommendedThreshold===null?null:statsAt(model,testExamples,calibrationRecommendedThreshold)};
   return {model,report};
 }
-module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,bestSideSelections,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
+module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,modelFeatureIndices,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,bestSideSelections,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
