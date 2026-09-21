@@ -294,3 +294,18 @@ test('target plan fallback can select a market-specific conservative profile',()
   assert.ok(out.chosen.stats.accuracy>.9);
   assert.ok(out.chosen.stats.averageR>0);
 });
+
+
+test('robust distribution gate follows model-important features',()=>{
+  const model={kind:'logistic',weights:[0,.1,4,.2,3],calibration:{a:1,b:0}};
+  const features=setup.modelFeatureIndices(model,2,4);
+  assert.deepEqual(features,[1,3]);
+  const rows=Array.from({length:80},(_,i)=>({side:'LONG',z:[50,1+(i%8)*.02,-40,2+(i%10)*.02]}));
+  const gate=setup.fitDistributionGate(rows,{model,maxFeatures:2,quantile:.9});
+  assert.deepEqual(gate.features,[1,3]);
+  assert.equal(setup.inDistribution(gate,[999,1.05,-999,2.05]),true);
+  assert.equal(setup.inDistribution(gate,[0,8,0,9]),false);
+});
+test('missing distribution gate is not treated as in-distribution',()=>{
+  assert.equal(setup.inDistribution(null,[1,2,3]),false);
+});
