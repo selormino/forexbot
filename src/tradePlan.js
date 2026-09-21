@@ -21,10 +21,11 @@ function buildTradePlan(signal,{side,entryBufferAtr=.12,structureBufferAtr=.03,s
     if(Number.isFinite(support)&&support<price)entry=Math.min(entry,support-structureBuffer);
     else if(pa.breakoutDown)entry=Math.min(entry,price-atr*.05);
   }
-  const stopDistance=atr*Math.max(.5,Number(stopAtr)||1.4),targetDistance=stopDistance*Math.max(1,Number(targetR)||1.6);
+  const stopDistance=atr*Math.max(.5,Number(stopAtr)||1.4),targetDistance=stopDistance*Math.max(.5,Number(targetR)||1.6);
   const stop=direction==='LONG'?entry-stopDistance:entry+stopDistance;
   const target=direction==='LONG'?entry+targetDistance:entry-targetDistance;
-  const tp1=direction==='LONG'?entry+stopDistance:entry-stopDistance;
+  const tp1Distance=Math.min(stopDistance,targetDistance);
+  const tp1=direction==='LONG'?entry+tp1Distance:entry-tp1Distance;
   const s=spec(signal.symbol);
   return {
     side:direction,entry,entryType:'STOP_CONFIRMATION',stop,tp1,target,
