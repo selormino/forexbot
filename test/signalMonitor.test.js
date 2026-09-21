@@ -17,3 +17,15 @@ test('setup-qualified signal is monitored even when directional model is low-con
   assert.equal(row.actionable,0);
   assert.equal(row.status,'PENDING_ENTRY');
 });
+
+
+test('metrics preserve all-time records across research model versions',()=>{
+  monitor.record({
+    symbol:'EURUSD',timeframe:'1h',sourceCandleTs:2_000_000,candidateDirection:'LONG',direction:'LONG',leanDirection:'LONG',
+    probability:.75,setupProbability:.75,directionalProbability:.70,directionalMinProbability:.55,minProbability:.60,price:1.1,
+    modelId:2,modelVersion:'older-v',horizonBars:4,costs:{total:5},filters:[],priceAction:{},analysis:{},
+    tradePlan:{entry:1.101,stop:1.095,target:1.106,tp1:1.103,stopPips:60,targetPips:50,unitLabel:'pips',entryExpiryBars:4,holdBars:6}
+  });
+  const m=monitor.metrics();
+  assert.ok(m.allTimeActionable.total>=1);
+});

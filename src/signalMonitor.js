@@ -177,7 +177,10 @@ function aggregate(rows){
     averageProbability:settled.length?settled.reduce((s,r)=>s+Number(r.setup_probability??r.directional_probability),0)/settled.length:null,
     averageR:settled.length?settled.reduce((s,r)=>s+Number(r.realized_r||0),0)/settled.length:null};
 }
-function currentVersion(){return db.prepare('SELECT version FROM research_models ORDER BY id DESC LIMIT 1').get()?.version||null;}
+function currentVersion(){
+  const exists=db.prepare("SELECT 1 ok FROM sqlite_master WHERE type='table' AND name='research_models'").get();
+  return exists?db.prepare('SELECT version FROM research_models ORDER BY id DESC LIMIT 1').get()?.version||null:null;
+}
 function metrics(){
   const version=currentVersion();
   const research=version?db.prepare('SELECT * FROM signal_records WHERE qualified=1 AND model_version=? ORDER BY created_at').all(version):[];
@@ -185,18 +188,22 @@ function metrics(){
   for(const r of research){const k=r.symbol+':'+r.timeframe;(researchGroups[k]||(researchGroups[k]=[])).push(r);}
   for(const r of actionable){const k=r.symbol+':'+r.timeframe;(strictGroups[k]||(strictGroups[k]=[])).push(r);}
   const researchAgg=aggregate(research),strictAgg=aggregate(actionable);
+  const allRows=db.prepare('SELECT * FROM signal_records ORDER BY created_at').all();
+  const allQualified=allRows.filter(r=>r.qualified===1),allActionable=allQualified.filter(r=>r.actionable===1);
   return {
+    currentVersion:version,
     targetAccuracy:Number(process.env.SIGNAL_TARGET_ACCURACY||.70),minProbability:minProbability(),
     qualified:researchAgg,researchCandidates:researchAgg,
     actionable:strictAgg,strict:strictAgg,
+    allTimeQualified:aggregate(allQualified),
+    allTimeActionable:aggregate(allActionable),
     bySeries:Object.fromEntries(Object.entries(strictGroups).map(([k,v])=>[k,aggregate(v)])),
     researchBySeries:Object.fromEntries(Object.entries(researchGroups).map(([k,v])=>[k,aggregate(v)])),
     readyForBrokerValidation:strictAgg.settled>=Number(process.env.SIGNAL_MIN_SETTLED||50)&&(strictAgg.accuracy||0)>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&strictAgg.confidence95.lower>=Number(process.env.SIGNAL_MIN_CONFIDENCE_LOWER||.60)
   };
 }
 function history(limit=300){
-  const version=currentVersion();if(!version)return [];
-  return db.prepare('SELECT * FROM signal_records WHERE model_version=? ORDER BY id DESC LIMIT ?').all(version,Math.max(1,Math.min(2000,Number(limit)||300))).map(r=>({
+  return db.prepare('SELECT * FROM signal_records ORDER BY id DESC LIMIT ?').all(Math.max(1,Math.min(2000,Number(limit)||300))).map(r=>({
     ...r,filters:JSON.parse(r.filters_json||'[]'),priceAction:JSON.parse(r.price_action_json||'null'),plan:JSON.parse(r.plan_json||'null'),analysis:JSON.parse(r.analysis_json||'null'),
     filters_json:undefined,price_action_json:undefined,plan_json:undefined,analysis_json:undefined
   }));

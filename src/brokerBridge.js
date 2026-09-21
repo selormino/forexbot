@@ -10,6 +10,7 @@ function status(){
     mode:String(process.env.BROKER_BRIDGE_MODE||'demo').toLowerCase(),
     liveDispatchSupported:String(process.env.ALLOW_MANUAL_LIVE||'false')==='true',
     autoDemoStrict:process.env.AUTO_DEMO_STRICT==='true',
+    autoDemoResearch:process.env.AUTO_DEMO_RESEARCH==='true',
     urlConfigured:!!process.env.MT5_BRIDGE_URL
   };
 }
@@ -34,9 +35,10 @@ async function previewIntent(id,{manual=false}={}){
   const r=await axios.post(base()+'/preview',payloadForIntent(intent,bridgeMode),{headers:headers(),timeout:12000});
   const p=r.data||{};
   if(Number.isFinite(Number(p.entry))&&Number.isFinite(Number(p.stop))&&Number.isFinite(Number(p.target))){
+    const automaticLabel=String(intent.reason||'').includes('RESEARCH')?'Automatic RESEARCH demo signal':'Automatic STRICT demo signal';
     const reason=manual
       ?(p.adjusted?'Manual user-selected signal; broker preview adjusted entry/SL/TP to a safe pending-order distance':'Manual user-selected signal; broker preview validated entry/SL/TP')
-      :(p.adjusted?'Automatic STRICT demo signal; broker preview adjusted entry/SL/TP safely':'Automatic STRICT demo signal; broker preview validated entry/SL/TP');
+      :(p.adjusted?`${automaticLabel}; broker preview adjusted entry/SL/TP safely`:`${automaticLabel}; broker preview validated entry/SL/TP`);
     db.prepare("UPDATE execution_intents SET entry=?,stop=?,target=?,reason=?,updated_at=? WHERE id=?")
       .run(Number(p.entry),Number(p.stop),Number(p.target),reason,Date.now(),id);
   }

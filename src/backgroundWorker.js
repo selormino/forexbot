@@ -29,6 +29,24 @@ async function autoDemoStrict(signals){
   return runs;
 }
 
+async function autoDemoResearch(signals){
+  if(process.env.AUTO_DEMO_RESEARCH!=='true')return [];
+  if(String(process.env.BROKER_BRIDGE_MODE||'demo').toLowerCase()!=='demo')return [{skipped:'Automatic research execution is demo-only'}];
+  const runs=[];
+  for(const signal of signals){
+    if(signal.modelApproved||!['LONG','SHORT'].includes(signal.candidateDirection)||['LONG','SHORT'].includes(signal.direction))continue;
+    try{
+      const intent=execution.createAutoResearchDemoIntent(signal,{riskPct:Number(process.env.AUTO_DEMO_RESEARCH_RISK_PCT||0.25)});
+      if(!intent.created){runs.push({symbol:signal.symbol,timeframe:signal.timeframe,...intent});continue;}
+      const broker=await brokerBridge.previewAndDispatchDemo(intent.id);
+      runs.push({symbol:signal.symbol,timeframe:signal.timeframe,intentId:intent.id,brokerOrderId:broker.sent.brokerOrderId,status:'DEMO_SENT',research:true});
+    }catch(e){
+      runs.push({symbol:signal.symbol,timeframe:signal.timeframe,error:e.response?.data?.detail||e.message,research:true});
+    }
+  }
+  return runs;
+}
+
 function compactLearning(rows){
   return (rows||[]).map(x=>({
     symbol:x.symbol,timeframe:x.timeframe,status:x.status||'trained',error:x.error||null,approved:!!x.approved,
@@ -189,6 +207,7 @@ async function runCycle({bootstrap=false}={}){
     if(!bootstrap)learning=await trainAll();
     const {recordedSignals,generatedSignals}=await generateSignals();
     const autoDemoRuns=await autoDemoStrict(generatedSignals);
+    const autoResearchDemoRuns=await autoDemoResearch(generatedSignals);
     const brokerHealth=await brokerBridge.health().catch(e=>({configured:false,reachable:false,reason:e.message}));
     const executionRuns=[];
 
@@ -213,7 +232,7 @@ async function runCycle({bootstrap=false}={}){
       event:bootstrap?'signal-bootstrap':'research-sync',
       role:'background-worker',version:research.VERSION,startedAt,finishedAt:Date.now(),durationMs:Date.now()-startedAt,
       historyBackfill,macro,macroVintages,newsRuns,market,settledSignals,learning:learningSummary,
-      recordedSignals,autoDemoRuns,brokerHealth,signalMetrics:signalMonitor.metrics(),executionRuns
+      recordedSignals,autoDemoRuns,autoResearchDemoRuns,brokerHealth,signalMetrics:signalMonitor.metrics(),executionRuns
     }));
     return {ok:true,approvedCount};
   }catch(error){
