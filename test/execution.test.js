@@ -43,3 +43,15 @@ test('automatic research demo rejects any additional quality blocker',()=>{
   assert.equal(out.created,false);
   assert.match(out.reason,/blockers/);
 });
+
+
+test('automatic research demo accepts 60 percent evidence at the configured floor',()=>{
+  process.env.AUTO_DEMO_RESEARCH='true';
+  process.env.AUTO_MIN_CONFLUENCE='60';
+  const base=strictSignal();
+  const candidate={...base,sourceCandleTs:444444444,direction:'WAIT',candidateDirection:'LONG',modelApproved:false,
+    filters:['Model has not passed out-of-sample validation gates'],setupProbability:.60,minProbability:.60,
+    analysis:{confluence:{agreement:60}}};
+  const out=execution.createAutoResearchDemoIntent(candidate,{riskPct:.25});
+  assert.equal(out.created,true);
+});

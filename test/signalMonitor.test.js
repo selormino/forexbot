@@ -1,6 +1,7 @@
 process.env.DB_PATH=':memory:';
 const test=require('node:test');
 const assert=require('node:assert/strict');
+const db=require('../src/db');
 const monitor=require('../src/signalMonitor');
 
 test('setup-qualified signal is monitored even when directional model is low-confidence',()=>{
@@ -28,4 +29,29 @@ test('metrics preserve all-time records across research model versions',()=>{
   });
   const m=monitor.metrics();
   assert.ok(m.allTimeActionable.total>=1);
+});
+
+
+test('filtered signals are shadow-tracked through entry and outcome',()=>{
+  const source=3_000_000;
+  const row=monitor.record({
+    symbol:'EURUSD',timeframe:'1h',sourceCandleTs:source,
+    candidateDirection:'WAIT',direction:'WAIT',leanDirection:'LONG',
+    probability:.55,setupProbability:.55,directionalProbability:.55,directionalMinProbability:.55,
+    minProbability:.60,price:1.1,modelId:3,modelVersion:'shadow-v1',horizonBars:4,
+    costs:{total:5},filters:['Setup success probability below 60% threshold'],
+    priceAction:{bias:.2},analysis:{confluence:{agreement:58}},
+    tradePlan:{entry:1.101,stop:1.095,target:1.106,tp1:1.103,stopPips:60,targetPips:50,unitLabel:'pips',entryExpiryBars:4,holdBars:6}
+  });
+  assert.equal(row.status,'FILTERED');
+  assert.equal(row.shadow_status,'PENDING_ENTRY');
+  db.prepare('INSERT INTO candles(symbol,timeframe,ts,open,high,low,close,volume,provider,ingested_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
+    .run('EURUSD','1h',source+3_600_000,1.100,1.107,1.100,1.106,1000,'test',Date.now());
+  const result=monitor.advance();
+  assert.equal(result.shadowTriggered,1);
+  assert.equal(result.shadowSettled,1);
+  const latest=monitor.history(20).find(x=>x.signal_key===row.signal_key);
+  assert.equal(latest.shadow_status,'SETTLED');
+  assert.equal(latest.shadow_outcome,'TP');
+  assert.equal(latest.shadow_success,1);
 });
