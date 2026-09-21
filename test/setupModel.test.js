@@ -279,3 +279,18 @@ test('side gate rejects a marginal 60 percent subset with weak statistical suppo
   assert.ok(gate.diagnostics.LONG.highProbability.wilsonLower<.45);
   assert.equal(gate.diagnostics.LONG.passed,false);
 });
+
+
+test('target plan fallback can select a market-specific conservative profile',()=>{
+  const future=Array.from({length:8},()=>({open:100,high:101.0,low:99.9,close:99.9}));
+  const rows=Array.from({length:320},(_,i)=>({
+    price:100,atr:1,trend:1,technicalBias:.7,regime:'trend',
+    priceAction:{bias:.4},context:{macroAvailable:false,newsAvailable:false,macroBias:0,newsSentiment:0},
+    x:[.4,.2,.1],at:i*100,setupEnd:i*100+50,futureBars:future
+  }));
+  const out=research.chooseTargetPlanFallback('EURUSD',rows,0);
+  assert.ok(out?.chosen);
+  assert.equal(out.chosen.planOptions.name,'tight-0.8r');
+  assert.ok(out.chosen.stats.accuracy>.9);
+  assert.ok(out.chosen.stats.averageR>0);
+});
