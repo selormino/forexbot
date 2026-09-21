@@ -450,7 +450,7 @@ function confluenceFor(side,f,higherTimeframe,fundamentalBias){
 function signal(symbol,tf='1h',events=null){
   const now=Date.now(),step=ms(tf);if(!step)throw new Error('Invalid timeframe');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,tf,step,now).reverse();
-  const f=features(rows,symbol,now),m=latest(symbol,tf),p=m?predict(m.model,f.x):.5,cost=costs(symbol),reasons=[];
+  const f=features(rows,symbol,now),m=latest(symbol,tf),p=m?predict(m.model,f.x):.5,cost=costs(symbol),reasons=[],softRisks=[];
   const threshold=MIN_PROB(),directionalFloor=Math.max(.5,Math.min(.9,Number(process.env.DIRECTIONAL_MIN_PROBABILITY||.55))),directionalLean=p>=.5?'LONG':'SHORT',directionalProbability=Math.max(p,1-p);
   const setupScores={};
   for(const side of ['LONG','SHORT']){
@@ -469,7 +469,8 @@ function signal(symbol,tf='1h',events=null){
   if(rows.some((r,i)=>r.provider==='demo'||(i&&r.ts-rows[i-1].ts!==step)))reasons.push('Candle gaps or synthetic data');
   if(rows.some(r=>r.provider==='yahoo'))reasons.push('Research-only fallback feed');
   if(!f.context.macroAvailable||!f.context.newsAvailable)reasons.push('Missing fresh macro/news confirmation');
-  if(directionalProbability<directionalFloor)reasons.push(`Directional model is low-confidence (${Math.round(directionalProbability*100)}%); setup model must carry the decision`);
+  if(directionalProbability<directionalFloor)softRisks.push(`Directional model is low-confidence (${Math.round(directionalProbability*100)}%); setup model carries the decision`);
+  if(directionalLean!==lean)softRisks.push(`Setup model chose ${lean} while directional model leaned ${directionalLean}`);
   if(m?.model?.setup?.allowedSides&&!m.model.setup.allowedSides.includes(lean))reasons.push(`${lean} side has not passed pre-test side validation`);
   if(setupAllowed&&!distributionAllowed)reasons.push('Current setup is outside the model’s validated calibration regime');
   if(setupProbability===null)reasons.push('Triggered setup-success model is unavailable for this side/regime');
@@ -518,7 +519,7 @@ function signal(symbol,tf='1h',events=null){
   if((lean==='LONG'&&eventFundamentals.bias>0)||(lean==='SHORT'&&eventFundamentals.bias<0))confirmations.push('Recent economic surprise confirms direction');
   if(higherTimeframe&&(lean==='LONG'?1:-1)*higherTimeframe.trend>0)confirmations.push('4H trend confirms 1H direction');
   if(confluence.score>=.35)confirmations.push('Technical + fundamental confluence is strong');
-  const risks=[...reasons];
+  const risks=[...reasons,...softRisks];
   const explanation=reasons.length?reasons:[`All strict gates passed; price action: ${paSummary||'neutral'}`];
   const base={symbol,timeframe:tf,price:f.price,leanDirection:lean,candidateDirection:candidate,direction:reasons.length?'WAIT':candidate,probability:setupProbability??directionalProbability,setupProbability,directionalProbability,directionalLean,setupScores:{LONG:setupScores.LONG.probability,SHORT:setupScores.SHORT.probability},minProbability:threshold,directionalMinProbability:directionalFloor,
     probabilityMeaning:'Setup probability estimates P(success | confirmation entry triggers) for this entry/SL/TP structure; directional probability is reported separately',
