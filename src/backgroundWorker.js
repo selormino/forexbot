@@ -86,7 +86,7 @@ async function trainAll(){
   if(process.env.MODEL_AUTO_TRAIN!=='true')return learning;
   const priority=[['XAUUSD','4h']];
   const rest=[];
-  for(const timeframe of ['1h','4h'])for(const symbol of SYMBOLS){
+  for(const timeframe of ['4h','1h'])for(const symbol of SYMBOLS){
     if(symbol==='XAUUSD'&&timeframe==='4h')continue;
     rest.push([symbol,timeframe]);
   }
