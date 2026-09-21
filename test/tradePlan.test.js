@@ -14,3 +14,10 @@ test('short confirmation entry clears nearby support',()=>{
   const p=buildTradePlan(s);
   assert.ok(p.entry<1.098);
 });
+
+test('nearest swing level takes precedence over distant range extreme',()=>{
+  const s={symbol:'EURUSD',price:1.1,leanDirection:'LONG',features:{atr:.001},priceAction:{swingResistancePrice:1.101,resistancePrice:1.105}};
+  const p=buildTradePlan(s);
+  assert.ok(p.entry>1.101);
+  assert.ok(p.entry<1.105);
+});
