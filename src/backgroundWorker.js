@@ -137,13 +137,14 @@ async function runCycle({bootstrap=false}={}){
         })
       :[];
 
+    let learning=bootstrap?await trainAll():[];
     const macro=process.env.FRED_API_KEY?await syncMacro():[];
     const macroVintages=process.env.FRED_API_KEY?await syncPointInTimeMacro():[];
     research.captureMacro();
     const newsRuns=await collectNews();
     const market=process.env.HISTORY_AUTO_SYNC==='true'?await history.syncHistory():[];
     const settledSignals=signalMonitor.settle();
-    const learning=await trainAll();
+    if(!bootstrap)learning=await trainAll();
     const {recordedSignals,generatedSignals}=await generateSignals();
     const autoDemoRuns=await autoDemoStrict(generatedSignals);
     const brokerHealth=await brokerBridge.health().catch(e=>({configured:false,reachable:false,reason:e.message}));
