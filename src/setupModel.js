@@ -78,11 +78,50 @@ function applyCalibration(calibration,score){
   }
   return sigmoid((calibration?.a??1)*score+(calibration?.b??0));
 }
+function predictScoreGate(model,z){
+  const side=Number(z?.[0]||0)>=0?'LONG':'SHORT',gate=model.bySide?.[side];
+  if(!gate)return .5;
+  const base=resolvePredictModel(model.base,z);
+  if(!base)return .5;
+  const score=rawScore(base,z);
+  return score>=gate.cutoff?gate.highProbability:gate.lowProbability;
+}
 const predict=(model,z)=>{
+  if(model?.kind==='score-gate')return predictScoreGate(model,z);
   const resolved=resolvePredictModel(model,z);
   if(!resolved)return .5;
+  if(resolved?.kind==='score-gate')return predictScoreGate(resolved,z);
   return applyCalibration(resolved.calibration,rawScore(resolved,z));
 };
+function fitScoreGate(baseModel,rows,{threshold=.60,minSamples=10}={}){
+  const bySide={},diagnostics={};
+  for(const side of ['LONG','SHORT']){
+    const part=(rows||[]).filter(x=>x.side===side).map(x=>{
+      const base=resolvePredictModel(baseModel,x.z);
+      return {...x,raw:base?rawScore(base,x.z):0};
+    }).sort((a,b)=>b.raw-a.raw);
+    if(part.length<minSamples){
+      diagnostics[side]={available:false,samples:part.length,reason:'insufficient-side-samples'};
+      continue;
+    }
+    const sizes=[.15,.20,.25,.30,.40,.50].map(frac=>Math.max(minSamples,Math.floor(part.length*frac)));
+    const candidates=[...new Set(sizes)].filter(n=>n<=part.length).map(n=>{
+      const selected=part.slice(0,n),stats=summarizeExamples(selected);
+      const highProbability=(stats.wins+2)/(stats.samples+4);
+      return {n,cutoff:selected.at(-1).raw,highProbability,stats,
+        passed:stats.samples>=minSamples&&highProbability>=threshold&&(stats.accuracy||0)>=.60&&(stats.averageR||0)>0&&stats.wilsonLower>=.45};
+    });
+    const passing=candidates.filter(x=>x.passed).sort((a,b)=>(b.stats.wilsonLower-a.stats.wilsonLower)||((b.stats.averageR||0)-(a.stats.averageR||0))||(b.n-a.n));
+    const chosen=passing[0];
+    diagnostics[side]={available:true,samples:part.length,candidates:candidates.map(x=>({n:x.n,cutoff:x.cutoff,highProbability:x.highProbability,accuracy:x.stats.accuracy,averageR:x.stats.averageR,wilsonLower:x.stats.wilsonLower,passed:x.passed})),chosen:chosen?{n:chosen.n,highProbability:chosen.highProbability,accuracy:chosen.stats.accuracy,averageR:chosen.stats.averageR,wilsonLower:chosen.stats.wilsonLower}:null};
+    if(!chosen)continue;
+    const rest=part.slice(chosen.n),restWins=rest.reduce((s,x)=>s+x.y,0);
+    const lowProbability=Math.min(.59,rest.length?(restWins+2)/(rest.length+4):.5);
+    bySide[side]={cutoff:chosen.cutoff,highProbability:Math.max(threshold+.001,Math.min(.95,chosen.highProbability)),lowProbability:Math.max(.05,Math.min(.59,lowProbability)),samples:chosen.n};
+  }
+  if(!Object.keys(bySide).length)return null;
+  return {model:{kind:'score-gate',base:baseModel,bySide},diagnostics};
+}
 function fitIsotonicCalibration(model,rows,{minBin=12,maxBins=8}={}){
   if(!rows?.length)return {kind:'isotonic',cuts:[Infinity],probs:[.5],bins:1};
   const sorted=rows.map(r=>({score:rawScore(model,r.z),y:r.y})).sort((a,b)=>a.score-b.score);
@@ -185,6 +224,7 @@ function fitCompetitive(trainRows,calRows){
 }
 
 function modelFeatureIndices(model,maxFeatures=10,featureCount=0){
+  if(model?.kind==='score-gate')return modelFeatureIndices(model.base,maxFeatures,featureCount);
   const scores=new Map();
   if(model?.kind==='boosted-stumps'){
     for(const stump of model.stumps||[]){
@@ -418,4 +458,4 @@ function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
   const report={status:'trained',modelCompetition:competition.comparison,trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold),calibrationRecommendedThreshold,recommendedTest:calibrationRecommendedThreshold===null?null:statsAt(model,testExamples,calibrationRecommendedThreshold)};
   return {model,report};
 }
-module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,applyCalibration,fitIsotonicCalibration,fitBestCalibration,resolvePredictModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,modelFeatureIndices,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,rangeReversionScore,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,bestSideSelections,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
+module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,applyCalibration,fitIsotonicCalibration,fitBestCalibration,resolvePredictModel,predict,predictScoreGate,fitScoreGate,fitBoosted,probabilityMetrics,fitCompetitive,modelFeatureIndices,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,rangeReversionScore,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,bestSideSelections,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
