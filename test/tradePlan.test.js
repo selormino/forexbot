@@ -21,3 +21,12 @@ test('nearest swing level takes precedence over distant range extreme',()=>{
   assert.ok(p.entry>1.101);
   assert.ok(p.entry<1.105);
 });
+
+
+test('sub-1R target profiles are preserved for higher-win-rate research',()=>{
+  const s={symbol:'XAUUSD',price:2600,leanDirection:'LONG',features:{atr:20},priceAction:{}};
+  const p=buildTradePlan(s,{targetR:.8,stopAtr:1});
+  assert.ok(Math.abs(p.riskReward-.8)<1e-9);
+  assert.ok(p.targetDistance<p.stopDistance);
+  assert.ok(p.tp1<=p.target);
+});
