@@ -256,3 +256,26 @@ test('target setup fallback trains from local pre-test examples',()=>{
   assert.equal(out.model.planOptions.name,'local-test');
   assert.ok(['logistic','boosted-stumps'].includes(out.comparison.selected));
 });
+
+
+test('side gate evaluates the high-probability policy subset instead of untraded low-confidence rows',()=>{
+  const model={kind:'logistic',weights:[0,1],calibration:{a:1,b:0}};
+  const rows=[];
+  for(let i=0;i<11;i++)rows.push({side:'SHORT',z:[2],y:i<9?1:0,realizedR:i<9?.8:-1});
+  for(let i=0;i<20;i++)rows.push({side:'SHORT',z:[0],y:i<5?1:0,realizedR:i<5?.8:-1});
+  const gate=research.chooseValidatedSides(model,rows,.6);
+  assert.ok(gate.diagnostics.SHORT.accuracy<.60);
+  assert.equal(gate.diagnostics.SHORT.highProbability.selected,11);
+  assert.ok(gate.diagnostics.SHORT.highProbability.accuracy>.80);
+  assert.ok(gate.diagnostics.SHORT.highProbability.averageR>0);
+  assert.ok(gate.diagnostics.SHORT.highProbability.wilsonLower>=.45);
+  assert.deepEqual(gate.allowedSides,['SHORT']);
+});
+test('side gate rejects a marginal 60 percent subset with weak statistical support',()=>{
+  const model={kind:'logistic',weights:[0,1],calibration:{a:1,b:0}};
+  const rows=Array.from({length:10},(_,i)=>({side:'LONG',z:[2],y:i<6?1:0,realizedR:i<6?.8:-1}));
+  const gate=research.chooseValidatedSides(model,rows,.6);
+  assert.equal(gate.diagnostics.LONG.highProbability.accuracy,.6);
+  assert.ok(gate.diagnostics.LONG.highProbability.wilsonLower<.45);
+  assert.equal(gate.diagnostics.LONG.passed,false);
+});
