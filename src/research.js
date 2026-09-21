@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v21-nonlinear-direction';
+const VERSION='technical-fundamental-v22-best-side-policy';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -343,12 +343,12 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
   const targetTrainAll=setupModel.examples(targetParts.train,symbol,targetCost,pooled.planOptions||{});
   const targetCalAll=setupModel.examples(targetParts.cal,symbol,targetCost,pooled.planOptions||{});
   const rawTargetAll=setupModel.examples(targetParts.test,symbol,targetCost,pooled.planOptions||{});
-  const targetTrainExamples=jointPolicyExamples(targetTrainAll,directionalModel,directionalFloor);
-  const targetCalExamples=jointPolicyExamples(targetCalAll,directionalModel,directionalFloor);
-  const rawTargetExamples=jointPolicyExamples(rawTargetAll,directionalModel,directionalFloor);
+  const targetTrainExamples=targetTrainAll;
+  const targetCalExamples=targetCalAll;
+  const rawTargetExamples=rawTargetAll;
   if(!pooled.model||rawTargetExamples.length<30){
     return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols:pooled.used||poolSymbols,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:pooled.modelCompetition,
-      trainSamples:pooled.trainSamples||0,targetTrainSamples:targetTrainExamples.length,targetCalibrationSamples:targetCalExamples.length,jointPolicy:{trainBefore:targetTrainAll.length,trainAfter:targetTrainExamples.length,calBefore:targetCalAll.length,calAfter:targetCalExamples.length,testBefore:rawTargetAll.length,testAfter:rawTargetExamples.length,directionalFloor},tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples||0,testSamples:rawTargetExamples.length}};
+      trainSamples:pooled.trainSamples||0,targetTrainSamples:targetTrainExamples.length,targetCalibrationSamples:targetCalExamples.length,selectionPolicy:{mode:'best-setup-side',trainExamples:targetTrainExamples.length,calibrationExamples:targetCalExamples.length,testExamples:rawTargetExamples.length,maxOneTradePerTimestamp:true},tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples||0,testSamples:rawTargetExamples.length}};
   }
   const adapted=adaptSetupModel(pooled.model,targetTrainExamples,targetCalExamples,threshold);
   const sideGate=chooseValidatedSides(adapted.model,targetCalExamples,threshold);
@@ -369,7 +369,7 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
   };
   if(!sideGate.allowedSides.length||targetExamples.length<30){
     return {model:finalModel,report:{status:!sideGate.allowedSides.length?'no-validated-side':'insufficient-in-distribution-setups',pooled:true,poolSymbols:pooled.used,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:pooled.modelCompetition,adaptation:adapted.selection,sideGate,distributionGate:distributionReport,
-      trainSamples:pooled.trainSamples,targetTrainSamples:targetTrainExamples.length,targetCalibrationSamples:targetCalExamples.length,jointPolicy:{trainBefore:targetTrainAll.length,trainAfter:targetTrainExamples.length,calBefore:targetCalAll.length,calAfter:targetCalExamples.length,testBefore:rawTargetAll.length,testAfter:rawTargetExamples.length,directionalFloor},tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples,testSamples:targetExamples.length,
+      trainSamples:pooled.trainSamples,targetTrainSamples:targetTrainExamples.length,targetCalibrationSamples:targetCalExamples.length,selectionPolicy:{mode:'best-setup-side',trainExamples:targetTrainExamples.length,calibrationExamples:targetCalExamples.length,testExamples:rawTargetExamples.length,maxOneTradePerTimestamp:true},tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples,testSamples:targetExamples.length,
       selected:0,selectedAccuracy:null,averageR:null,logLoss:null,baselineLoss:null}};
   }
   const calibrationRecommendedThreshold=setupModel.recommendThreshold(finalModel,targetCalSelected,Math.max(12,Math.floor(targetCalSelected.length*.08)));
@@ -411,7 +411,7 @@ function trainSeries(symbol,tf){
   const setupApproved=setupReport.status==='trained'&&setupReport.selected>=30&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss;
   const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||(f.setupProbability.recommendedTest.averageR||0)>0));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Joint-policy adaptive setup model must have at least 30 in-distribution market-specific out-of-sample selections where the directional model chose the same side, meet the unchanged accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Best-side adaptive setup model must select at most one in-distribution side per timestamp, have at least 30 market-specific out-of-sample selections at the configured threshold, meet the unchanged accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
@@ -451,19 +451,25 @@ function signal(symbol,tf='1h',events=null){
   const now=Date.now(),step=ms(tf);if(!step)throw new Error('Invalid timeframe');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,tf,step,now).reverse();
   const f=features(rows,symbol,now),m=latest(symbol,tf),p=m?predict(m.model,f.x):.5,cost=costs(symbol),reasons=[];
-  const threshold=MIN_PROB(),directionalFloor=Math.max(.5,Math.min(.9,Number(process.env.DIRECTIONAL_MIN_PROBABILITY||.55))),lean=p>=.5?'LONG':'SHORT',directionalProbability=Math.max(p,1-p);
-  const setupVector=m?.model?.setup?setupModel.vector(f,lean):null;
-  const setupAllowed=!m?.model?.setup?.allowedSides||m.model.setup.allowedSides.includes(lean);
-  const distributionGate=m?.model?.setup?.distributionGates?.[lean]||null;
-  const distributionAllowed=!setupVector||setupModel.inDistribution(distributionGate,setupVector);
-  const setupProbability=m?.model?.setup&&setupAllowed&&distributionAllowed?setupModel.predict(m.model.setup,setupVector):null;
-  const candidate=directionalProbability>=directionalFloor&&setupProbability!==null&&setupProbability>=threshold?lean:'WAIT';
+  const threshold=MIN_PROB(),directionalFloor=Math.max(.5,Math.min(.9,Number(process.env.DIRECTIONAL_MIN_PROBABILITY||.55))),directionalLean=p>=.5?'LONG':'SHORT',directionalProbability=Math.max(p,1-p);
+  const setupScores={};
+  for(const side of ['LONG','SHORT']){
+    const vector=m?.model?.setup?setupModel.vector(f,side):null;
+    const allowed=!m?.model?.setup?.allowedSides||m.model.setup.allowedSides.includes(side);
+    const gate=m?.model?.setup?.distributionGates?.[side]||null;
+    const inDistribution=vector?setupModel.inDistribution(gate,vector):false;
+    setupScores[side]={vector,allowed,inDistribution,probability:m?.model?.setup&&allowed&&inDistribution?setupModel.predict(m.model.setup,vector):null};
+  }
+  const scoredSides=['LONG','SHORT'].filter(side=>Number.isFinite(setupScores[side].probability)).sort((a,b)=>setupScores[b].probability-setupScores[a].probability);
+  const lean=scoredSides[0]||directionalLean,setupProbability=scoredSides.length?setupScores[scoredSides[0]].probability:null;
+  const setupAllowed=setupScores[lean]?.allowed??false,distributionAllowed=setupScores[lean]?.inDistribution??false;
+  const candidate=setupProbability!==null&&setupProbability>=threshold?lean:'WAIT';
   if(!m?.approved)reasons.push('Model has not passed out-of-sample validation gates');
   if(now-(rows.at(-1).ts+step)>step*2)reasons.push('Stale closed candles');
   if(rows.some((r,i)=>r.provider==='demo'||(i&&r.ts-rows[i-1].ts!==step)))reasons.push('Candle gaps or synthetic data');
   if(rows.some(r=>r.provider==='yahoo'))reasons.push('Research-only fallback feed');
   if(!f.context.macroAvailable||!f.context.newsAvailable)reasons.push('Missing fresh macro/news confirmation');
-  if(directionalProbability<directionalFloor)reasons.push(`Directional probability below ${Math.round(directionalFloor*100)}% direction floor`);
+  if(directionalProbability<directionalFloor)reasons.push(`Directional model is low-confidence (${Math.round(directionalProbability*100)}%); setup model must carry the decision`);
   if(m?.model?.setup?.allowedSides&&!m.model.setup.allowedSides.includes(lean))reasons.push(`${lean} side has not passed pre-test side validation`);
   if(setupAllowed&&!distributionAllowed)reasons.push('Current setup is outside the model’s validated calibration regime');
   if(setupProbability===null)reasons.push('Triggered setup-success model is unavailable for this side/regime');
@@ -514,10 +520,11 @@ function signal(symbol,tf='1h',events=null){
   if(confluence.score>=.35)confirmations.push('Technical + fundamental confluence is strong');
   const risks=[...reasons];
   const explanation=reasons.length?reasons:[`All strict gates passed; price action: ${paSummary||'neutral'}`];
-  const base={symbol,timeframe:tf,price:f.price,leanDirection:lean,candidateDirection:candidate,direction:reasons.length?'WAIT':candidate,probability:setupProbability??directionalProbability,setupProbability,directionalProbability,minProbability:threshold,directionalMinProbability:directionalFloor,
+  const base={symbol,timeframe:tf,price:f.price,leanDirection:lean,candidateDirection:candidate,direction:reasons.length?'WAIT':candidate,probability:setupProbability??directionalProbability,setupProbability,directionalProbability,directionalLean,setupScores:{LONG:setupScores.LONG.probability,SHORT:setupScores.SHORT.probability},minProbability:threshold,directionalMinProbability:directionalFloor,
     probabilityMeaning:'Setup probability estimates P(success | confirmation entry triggers) for this entry/SL/TP structure; directional probability is reported separately',
     confidence:setupProbability??0,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,
     analysis:{thesis:`${lean} directional lean at ${(directionalProbability*100).toFixed(1)}%; triggered setup success probability is ${setupProbability===null?'unavailable':(setupProbability*100).toFixed(1)+'%'}; evidence agreement is ${confluence.agreement}%.`,
+      directionalModel:{lean:directionalLean,probability:directionalProbability,agreesWithSetup:directionalLean===lean},
       technical:technicalReasons,technicalBias:f.technicalBias,priceAction:{structure:f.priceAction.structure,patterns:f.priceAction.patterns,bias:f.priceAction.bias},
       news:{available:f.context.newsAvailable,count:f.context.newsCount,sentiment:f.context.newsSentiment,headlines:f.context.newsHeadlines},
       macro:{available:f.context.macroAvailable,bias:f.context.macroBias,series:f.context.macro},
