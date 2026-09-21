@@ -50,7 +50,7 @@ footer{color:var(--muted);font-size:11px;padding:10px 0 24px}
 .chart-pattern-label,.chart-pattern-title{fill:var(--warn);font-size:9px;font-weight:750}.chart-pattern-title{font-size:11px}
 .chart-legend{display:flex;gap:14px;flex-wrap:wrap;padding:6px 8px 2px;font-size:11px;font-weight:750}.chart-legend .ema20{color:#d8f36a}.chart-legend .ema50{color:#66b3ff}.chart-legend .ema200{color:#c78cff}
 .macd-bar.pos{fill:var(--good);opacity:.55}.macd-bar.neg{fill:var(--bad);opacity:.55}
-.chart-analysis-grid{grid-template-columns:repeat(3,1fr)}.pattern-card{border:1px solid var(--line)}
+.chart-analysis-grid{grid-template-columns:repeat(3,1fr)}.pattern-card{border:1px solid var(--line)}.history-chart-btn{margin-top:7px;padding:5px 8px}
 
 @media(max-width:900px){.shell{grid-template-columns:1fr}aside{display:none}main{padding:20px}.hero,.two,.analysis-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:620px){main{padding:16px}.hero,.two,.analysis-grid,.chart-summary,.chart-analysis-grid{grid-template-columns:1fr}h1{font-size:23px}.controls{align-items:flex-start}.action-stack{flex-direction:column}.kv{grid-template-columns:1fr}}
