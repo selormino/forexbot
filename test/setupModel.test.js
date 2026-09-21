@@ -453,3 +453,23 @@ test('score gate refuses a high-ranked subset with negative expectancy',()=>{
   const gate=setup.fitScoreGate(base,rows,{threshold:.60,minSamples:12});
   assert.equal(gate,null);
 });
+
+
+test('v36 score gate requires at least 30 discovery examples by default',()=>{
+  const base={kind:'logistic',weights:[0,0,1]};
+  const rows=Array.from({length:100},(_,i)=>{
+    const high=i>=70,y=high?(i%5!==0?1:0):(i%5===0?1:0);
+    return {z:[1,i/99],side:'LONG',y,realizedR:y?.9:-1,at:i};
+  });
+  const gate=setup.fitScoreGate(base,rows,{threshold:.60});
+  assert.ok(gate?.model?.bySide?.LONG);
+  assert.ok(gate.model.bySide.LONG.samples>=30);
+});
+
+test('risk summary reports drawdown and rolling expectancy',()=>{
+  const rows=Array.from({length:60},(_,i)=>({at:i,y:i%3?1:0,realizedR:i%3?.8:-1}));
+  const stats=setup.summarizeExamples(rows);
+  assert.ok(Number.isFinite(stats.maxDrawdownR));
+  assert.ok(Number.isFinite(stats.worstRolling20R));
+  assert.ok(Number.isFinite(stats.worstRolling50R));
+});

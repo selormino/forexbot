@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v35-score-gate';
+const VERSION='technical-fundamental-v36-xauusd-4h-long-regime';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -378,7 +378,7 @@ function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
     if(specialized)rawCandidates.push({name:'side-specialized',raw:specialized.raw,complexity:3,sideDiagnostics:specialized.diagnostics});
   }
   const scoreGateBases=[...rawCandidates];
-  const scoreGateMinSamples=Math.max(10,Math.floor(fitCal.length*.05));
+  const scoreGateMinSamples=Math.max(30,Math.floor(fitCal.length*.10));
   for(const candidate of scoreGateBases){
     const gate=setupModel.fitScoreGate(candidate.raw,fitCal,{threshold,minSamples:scoreGateMinSamples});
     if(gate)rawCandidates.push({
@@ -393,7 +393,7 @@ function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
     const calibrated=calibrateRawModel(candidate.raw,fitCal);
     const probability=setupModel.probabilityMetrics(calibrated,validation);
     const operating=policyOperatingStats(calibrated,validation,threshold);
-    const minSelected=Math.max(8,Math.floor(validation.length*.12));
+    const minSelected=Math.max(20,Math.floor(validation.length*.20));
     const passesUserFloor=operating.selected>=minSelected&&(operating.selectedAccuracy||0)>=.60&&(operating.averageR||0)>0&&operating.sideValidation.allowedSides.length>0;
     return {...candidate,calibrated,probability,operating,minSelected,passesUserFloor};
   });
@@ -455,6 +455,20 @@ function chooseTargetPlanFallback(symbol,rows,costBps){
   return chosen?{chosen,candidates,tuneRows:tuneRows.length}:null;
 }
 
+function fitRegimeValidation(model,examples,threshold,{minSamples=20}={}){
+  const high=(examples||[]).filter(x=>setupModel.predict(model,x.z)>=threshold);
+  const groups={};
+  for(const row of high)(groups[row.regimeKey||'unknown']??=[]).push(row);
+  const diagnostics={},allowedRegimes=[];
+  for(const [regime,rows] of Object.entries(groups)){
+    const stats=setupModel.summarizeExamples(rows);
+    const passed=stats.samples>=minSamples&&(stats.averageR||0)>0&&(stats.profitFactorR===null||stats.profitFactorR>1)&&stats.wilsonLower>=.45;
+    diagnostics[regime]={...stats,passed};
+    if(passed)allowedRegimes.push(regime);
+  }
+  return {allowedRegimes,diagnostics,minSamples,threshold};
+}
+
 function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,directionalFloor=.55){
   const poolSymbols=assetFamily(symbol),cutoff=targetParts.test[0]?.at,targetCost=costs(symbol).total;
   if(!Number.isFinite(cutoff))return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols,trainSamples:0,tuneSamples:0,calibrationSamples:0,testSamples:0}};
@@ -504,9 +518,11 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
   const targetTrainAll=setupModel.examples(targetParts.train,symbol,targetCost,pooled.planOptions||{});
   const targetCalAll=setupModel.examples(targetParts.cal,symbol,targetCost,pooled.planOptions||{});
   const rawTargetAll=setupModel.examples(targetParts.test,symbol,targetCost,pooled.planOptions||{});
-  const targetTrainExamples=targetTrainAll;
-  const targetCalExamples=targetCalAll;
-  const rawTargetExamples=rawTargetAll;
+  const xau4hLongOnly=symbol==='XAUUSD'&&tf==='4h';
+  const specialize=rows=>xau4hLongOnly?rows.filter(x=>x.side==='LONG'):rows;
+  const targetTrainExamples=specialize(targetTrainAll);
+  const targetCalExamples=specialize(targetCalAll);
+  const rawTargetExamples=specialize(rawTargetAll);
   let baseModel=pooled.model,baseCompetition=pooled.modelCompetition,trainingSource='pooled-family';
   if(!baseModel){
     const local=fitTargetSetupFallback(targetTrainExamples,targetCalExamples,pooled.planOptions||{});
@@ -523,15 +539,22 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
   const policyCalibration=allowedCalibration.filter(x=>setupModel.predict(adapted.model,x.z)>=threshold);
   const distributionGates=setupModel.fitSideDistributionGates(policyCalibration,{model:adapted.model,maxFeatures:10,quantile:.90});
   const distributionAllowedSides=sideGate.allowedSides.filter(side=>!!distributionGates[side]);
-  const finalModel={...adapted.model,allowedSides:distributionAllowedSides,distributionGates};
+  const finalModel={...adapted.model,allowedSides:distributionAllowedSides,distributionGates,strategyMode:xau4hLongOnly?'xauusd-4h-long-only':'standard'};
   const allowedTestBeforeGate=rawTargetExamples.filter(x=>sideGate.allowedSides.includes(x.side));
   const rawPolicyTest=setupModel.statsAt(adapted.model,allowedTestBeforeGate,threshold);
   const allowedTest=rawTargetExamples.filter(x=>distributionAllowedSides.includes(x.side));
-  const targetExamples=allowedTest.filter(x=>setupModel.inDistribution(distributionGates[x.side],x.z));
+  const distributionTargetExamples=allowedTest.filter(x=>setupModel.inDistribution(distributionGates[x.side],x.z));
+  let targetExamples=distributionTargetExamples;
   const targetCalSelected=policyCalibration.filter(x=>distributionAllowedSides.includes(x.side)&&setupModel.inDistribution(distributionGates[x.side],x.z));
+  const regimeValidation=fitRegimeValidation(adapted.model,targetCalSelected,threshold,{minSamples:xau4hLongOnly?20:12});
+  const regimeAllowed=xau4hLongOnly?regimeValidation.allowedRegimes:[...new Set(targetCalSelected.map(x=>x.regimeKey||'unknown'))];
+  const regimeFilteredTarget=distributionTargetExamples.filter(x=>regimeAllowed.includes(x.regimeKey||'unknown'));
+  if(xau4hLongOnly)targetExamples=regimeFilteredTarget;
   const distributionReport={
     type:'policy-aligned-robust',
     quantile:.90,maxFeatures:10,rawPolicyTest,
+    strategyMode:xau4hLongOnly?'xauusd-4h-long-only':'standard',
+    regimeValidation:{...regimeValidation,allowedRegimes:regimeAllowed,testAfter:targetExamples.length},
     allowedSidesBefore:sideGate.allowedSides,allowedSidesAfter:distributionAllowedSides,
     calibrationBefore:allowedCalibration.length,policyCalibration:policyCalibration.length,calibrationAfter:targetCalSelected.length,
     testBefore:rawTargetExamples.filter(x=>sideGate.allowedSides.includes(x.side)).length,testAfter:targetExamples.length,
@@ -586,10 +609,11 @@ function trainSeries(symbol,tf){
     folds.push({...evaluate(foldModel,parts.test,cost.total),directionalModelCompetition:directionalFold.comparison,setup:evaluateTradePlans(foldModel,parts.test,symbol,cost.total,threshold,setupFold.planOptions||{}),setupProbability:setupFold});
   }
   const setupReport=setupTraining.report,target=Number(process.env.SIGNAL_TARGET_ACCURACY||.70);
-  const setupApproved=setupReport.status==='trained'&&setupReport.selected>=30&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss;
+  const requiredSelections=symbol==='XAUUSD'&&tf==='4h'?50:30;
+  const setupApproved=setupReport.status==='trained'&&setupReport.selected>=requiredSelections&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss&&(setupReport.worstRolling20R===null||setupReport.worstRolling20R>0);
   const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||(f.setupProbability.recommendedTest.averageR||0)>0));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Policy-aligned adaptive setup model may specialize LONG and SHORT separately and may use a raw-score empirical gate learned only on early pre-test calibration data. The later pre-test slice must independently reproduce at least 60% accuracy and positive expectancy before the candidate survives. Final approval still requires at least 30 market-specific out-of-sample selections at the configured threshold, the unchanged accuracy target, positive average R, baseline-beating log loss, and chronological fold stability',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'v36 keeps the final test window untouched while model, plan, score gate, side policy, distribution gate, and XAUUSD 4H regime policy are learned only from pre-test data. XAUUSD 4H is explicitly LONG-only, score-gate discovery requires at least 30 examples, final approval requires 50 market-specific out-of-sample selections, the unchanged accuracy target, positive average R, non-negative rolling-20R stability, baseline-beating log loss, and chronological fold stability',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
