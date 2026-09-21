@@ -332,3 +332,17 @@ test('side-composite falls back to its base model when a side is unavailable',()
   assert.ok(setup.predict(composite,[1])>.8);
   assert.ok(Math.abs(setup.predict(composite,[-1])-.5)<1e-9);
 });
+
+
+test('policy operating stats ignore sides that fail validation',()=>{
+  const model={kind:'logistic',weights:[0,2],calibration:{a:1,b:0}};
+  const rows=[];
+  for(let i=0;i<20;i++)rows.push({at:i,side:'LONG',z:[1],y:i<14?1:0,realizedR:i<14?.8:-1});
+  for(let i=0;i<20;i++)rows.push({at:100+i,side:'SHORT',z:[-1],y:i<5?1:0,realizedR:i<5?.8:-1});
+  const out=research.policyOperatingStats(model,rows,.6);
+  assert.deepEqual(out.sideValidation.allowedSides,['LONG']);
+  assert.equal(out.selected,20);
+  assert.equal(out.selectedWins,14);
+  assert.equal(out.selectedAccuracy,.7);
+  assert.ok(out.averageR>0);
+});
