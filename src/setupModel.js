@@ -232,8 +232,17 @@ function choosePlan(candidates,minSamples=40){
   return viable[0];
 }
 
+function bestSideSelections(model,rows,threshold){
+  const byAt=new Map();
+  for(const row of rows||[]){
+    const p=predict(model,row.z);
+    const current=byAt.get(row.at);
+    if(!current||p>current.p)byAt.set(row.at,{...row,p});
+  }
+  return [...byAt.values()].filter(row=>row.p>=threshold);
+}
 function statsAt(model,rows,threshold){
-  const chosen=rows.map(r=>({...r,p:predict(model,r.z)})).filter(r=>r.p>=threshold);
+  const chosen=bestSideSelections(model,rows,threshold);
   const wins=chosen.filter(r=>r.y===1).length;
   const averageR=chosen.length?chosen.reduce((s,r)=>s+r.realizedR,0)/chosen.length:null;
   const gainR=chosen.reduce((s,r)=>s+Math.max(0,r.realizedR),0),lossR=chosen.reduce((s,r)=>s+Math.max(0,-r.realizedR),0);
@@ -282,4 +291,4 @@ function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
   const report={status:'trained',modelCompetition:competition.comparison,trainSamples:trainExamples.length,calibrationSamples:calExamples.length,testSamples:testExamples.length,...evaluate(model,testExamples,threshold),calibrationRecommendedThreshold,recommendedTest:calibrationRecommendedThreshold===null?null:statsAt(model,testExamples,calibrationRecommendedThreshold)};
   return {model,report};
 }
-module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
+module.exports={PLAN_PROFILES,vector,fit,calibrate,rawScore,calibrateModel,predict,fitBoosted,probabilityMetrics,fitCompetitive,fitDistributionGate,fitSideDistributionGates,distributionDistance,inDistribution,eligible,outcome,examples,wilsonLower,summarizeExamples,choosePlan,bestSideSelections,evaluate,statsAt,thresholdSweep,recommendThreshold,train};
