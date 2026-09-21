@@ -380,3 +380,20 @@ test('recent stability gate vetoes measurable failures but treats sparse recent 
   assert.deepEqual(sparse.recentVetoSides,[]);
   assert.deepEqual(sparse.insufficientRecentSides,['LONG','SHORT']);
 });
+
+
+test('empirical constant model stays calibrated and bounded',()=>{
+  const train=Array.from({length:200},(_,i)=>({z:[i%2],y:i<130?1:0}));
+  const cal=Array.from({length:80},(_,i)=>({z:[i%2],y:i<52?1:0}));
+  const out=setup.fitCompetitive(train,cal);
+  assert.ok(['constant','logistic','boosted-stumps'].includes(out.comparison.selected));
+  assert.ok(Number.isFinite(out.comparison.constant.logLoss));
+  const p=setup.predict({kind:'constant',probability:.65,calibration:{a:1,b:0}},[1]);
+  assert.ok(p>.64&&p<.66);
+});
+test('constant competitor is preferred when complexity adds no meaningful calibration gain',()=>{
+  const train=Array.from({length:240},(_,i)=>({z:[(i%11)/10],y:i%5<3?1:0}));
+  const cal=Array.from({length:100},(_,i)=>({z:[((i*7)%11)/10],y:i%5<3?1:0}));
+  const out=setup.fitCompetitive(train,cal);
+  assert.equal(out.comparison.selected,'constant');
+});
