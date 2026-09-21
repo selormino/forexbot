@@ -322,15 +322,36 @@ function policyOperatingStats(model,examples,threshold){
 function stableSideGate(fullGate,adaptationSelection){
   const broad=[...(fullGate?.allowedSides||[])];
   const recent=[...(adaptationSelection?.recentAllowedSides||[])];
-  const allowedSides=broad.filter(side=>recent.includes(side));
+  const recentDiagnostics=adaptationSelection?.recentSideDiagnostics||{};
+  const recentVetoSides=[];
+  const insufficientRecentSides=[];
+  const allowedSides=broad.filter(side=>{
+    const hp=recentDiagnostics?.[side]?.highProbability;
+    if(!hp){
+      insufficientRecentSides.push(side);
+      return true;
+    }
+    const enough=(hp.selected||0)>=(hp.minSamples||10);
+    if(!enough){
+      insufficientRecentSides.push(side);
+      return true;
+    }
+    const passed=recent.includes(side)&&recentDiagnostics?.[side]?.passed===true;
+    if(!passed)recentVetoSides.push(side);
+    return passed;
+  });
   return {
     ...(fullGate||{diagnostics:{}}),
     allowedSides,
     broadAllowedSides:broad,
     recentAllowedSides:recent,
+    recentSideDiagnostics:recentDiagnostics,
+    recentVetoSides,
+    insufficientRecentSides,
     recentPassesUserFloor:!!adaptationSelection?.recentPassesUserFloor,
     stabilityRequired:true,
-    meaning:'A side must pass both the broader calibration window and the most recent pre-test validation slice before it can be monitored or traded.'
+    stabilityMode:'veto-when-measurable',
+    meaning:'A broadly validated side is vetoed only when the recent pre-test slice contains enough high-probability opportunities to judge and those recent opportunities fail the accuracy/expectancy gate. Too few recent opportunities are neutral, not evidence of failure.'
   };
 }
 
@@ -380,6 +401,7 @@ function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
   return {model:finalModel,selection:{
     selected:chosen?.name||'pooled-local-cal',
     recentAllowedSides:chosen?.operating?.sideValidation?.allowedSides||[],
+    recentSideDiagnostics:chosen?.operating?.sideValidation?.diagnostics||{},
     recentPassesUserFloor:!!chosen?.passesUserFloor,
     calibrationSamples:calExamples.length,fitSamples:fitCal.length,validationSamples:validation.length,
     userAccuracyFloor:.60,selectionPolicy:'best validated side, maximum one trade per timestamp',
@@ -549,7 +571,7 @@ function trainSeries(symbol,tf){
   const setupApproved=setupReport.status==='trained'&&setupReport.selected>=30&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss;
   const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||(f.setupProbability.recommendedTest.averageR||0)>0));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Policy-aligned adaptive setup model may specialize LONG and SHORT separately using pre-test data only. A side must pass both broad calibration and the most recent validation slice before it is eligible. Final approval still requires at least 30 market-specific out-of-sample selections at the configured threshold, the unchanged accuracy target, positive average R, baseline-beating log loss, and chronological fold stability',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Policy-aligned adaptive setup model may specialize LONG and SHORT separately using pre-test data only. A broadly validated side is vetoed only when the recent validation slice has enough qualifying setups and those setups fail the 60%/positive-expectancy side gate. Final approval still requires at least 30 market-specific out-of-sample selections at the configured threshold, the unchanged accuracy target, positive average R, baseline-beating log loss, and chronological fold stability',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
