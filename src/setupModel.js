@@ -93,7 +93,7 @@ const predict=(model,z)=>{
   if(resolved?.kind==='score-gate')return predictScoreGate(resolved,z);
   return applyCalibration(resolved.calibration,rawScore(resolved,z));
 };
-function fitScoreGate(baseModel,rows,{threshold=.60,minSamples=10}={}){
+function fitScoreGate(baseModel,rows,{threshold=.60,minSamples=30}={}){
   const bySide={},diagnostics={};
   for(const side of ['LONG','SHORT']){
     const part=(rows||[]).filter(x=>x.side===side).map(x=>{
@@ -353,7 +353,8 @@ function examples(rows,symbol,costBps,planOptions={}){
       if(!eligible(row,side,costBps,family))continue;
       const result=outcome(row,symbol,side,costBps,planOptions);
       if(!result.triggered||!result.settled)continue;
-      out.push({z:vector(row,side),directionalX:row.x,y:result.y,realizedR:result.realizedR,side,at:row.at,outcome:result.outcome});
+      const regimeKey=row.regime==='trend'?(Math.abs(Number(row.trend||0))>=1.5?'strong-trend':'trend'):String(row.regime||'unknown');
+      out.push({z:vector(row,side),directionalX:row.x,y:result.y,realizedR:result.realizedR,side,at:row.at,outcome:result.outcome,regimeKey});
     }
   }
   return out;
@@ -386,11 +387,25 @@ function wilsonLower(wins,n,z=1.96){
   const p=wins/n,z2=z*z,den=1+z2/n;
   return (p+z2/(2*n)-z*Math.sqrt((p*(1-p)+z2/(4*n))/n))/den;
 }
+function rollingTotal(values,size){
+  if(values.length<size)return null;
+  let sum=values.slice(0,size).reduce((a,b)=>a+b,0),worst=sum;
+  for(let i=size;i<values.length;i++){sum+=values[i]-values[i-size];if(sum<worst)worst=sum;}
+  return worst;
+}
 function summarizeExamples(rows){
-  const n=rows.length,wins=rows.filter(r=>r.y===1).length;
-  const averageR=n?rows.reduce((s,r)=>s+r.realizedR,0)/n:null;
-  const gainR=rows.reduce((s,r)=>s+Math.max(0,r.realizedR),0),lossR=rows.reduce((s,r)=>s+Math.max(0,-r.realizedR),0);
-  return {samples:n,wins,accuracy:n?wins/n:null,wilsonLower:wilsonLower(wins,n),averageR,profitFactorR:lossR?gainR/lossR:null};
+  const ordered=[...(rows||[])].sort((a,b)=>(a.at||0)-(b.at||0));
+  const n=ordered.length,wins=ordered.filter(r=>r.y===1).length;
+  const rs=ordered.map(r=>Number(r.realizedR)||0);
+  const averageR=n?rs.reduce((s,v)=>s+v,0)/n:null;
+  const gainR=rs.reduce((s,v)=>s+Math.max(0,v),0),lossR=rs.reduce((s,v)=>s+Math.max(0,-v),0);
+  let equity=0,peak=0,maxDrawdownR=0;
+  for(const value of rs){equity+=value;peak=Math.max(peak,equity);maxDrawdownR=Math.max(maxDrawdownR,peak-equity);}
+  return {
+    samples:n,wins,accuracy:n?wins/n:null,wilsonLower:wilsonLower(wins,n),averageR,
+    profitFactorR:lossR?gainR/lossR:null,maxDrawdownR,
+    worstRolling20R:rollingTotal(rs,20),worstRolling50R:rollingTotal(rs,50)
+  };
 }
 function choosePlan(candidates,minSamples=40){
   const viable=(candidates||[]).filter(x=>x.stats.samples>=minSamples&&Number.isFinite(x.stats.averageR)&&x.stats.averageR>0&&(x.stats.profitFactorR===null||x.stats.profitFactorR>1));
@@ -409,11 +424,12 @@ function bestSideSelections(model,rows,threshold){
   return [...byAt.values()].filter(row=>row.p>=threshold);
 }
 function statsAt(model,rows,threshold){
-  const chosen=bestSideSelections(model,rows,threshold);
-  const wins=chosen.filter(r=>r.y===1).length;
-  const averageR=chosen.length?chosen.reduce((s,r)=>s+r.realizedR,0)/chosen.length:null;
-  const gainR=chosen.reduce((s,r)=>s+Math.max(0,r.realizedR),0),lossR=chosen.reduce((s,r)=>s+Math.max(0,-r.realizedR),0);
-  return {threshold,selected:chosen.length,selectedAccuracy:chosen.length?wins/chosen.length:null,selectedWins:wins,averageR,profitFactorR:lossR?gainR/lossR:null};
+  const chosen=bestSideSelections(model,rows,threshold),stats=summarizeExamples(chosen);
+  return {
+    threshold,selected:stats.samples,selectedAccuracy:stats.accuracy,selectedWins:stats.wins,
+    averageR:stats.averageR,profitFactorR:stats.profitFactorR,maxDrawdownR:stats.maxDrawdownR,
+    worstRolling20R:stats.worstRolling20R,worstRolling50R:stats.worstRolling50R
+  };
 }
 function quantile(values,q){
   if(!values.length)return null;
