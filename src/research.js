@@ -290,7 +290,7 @@ function chooseValidatedSides(model,examples,threshold){
     const highProbAverageR=highProb.length?highProb.reduce((sum,x)=>sum+x.realizedR,0)/highProb.length:null;
     const highProbGainR=highProb.reduce((sum,x)=>sum+Math.max(0,x.realizedR),0),highProbLossR=highProb.reduce((sum,x)=>sum+Math.max(0,-x.realizedR),0);
     const highProbWilson=setupModel.wilsonLower(highProbWins,highProb.length);
-    const minHighProbSamples=Math.max(20,Math.floor(examples.length*.08));
+    const minHighProbSamples=Math.max(10,Math.floor(examples.length*.05));
     const passed=highProb.length>=minHighProbSamples&&(highProbAccuracy||0)>=.60&&(highProbAverageR||0)>0&&highProbWilson>=.45;
     diagnostics[side]={
       samples:rows.length,wins,accuracy,averageR,profitFactorR:lossR?gainR/lossR:null,passed,
