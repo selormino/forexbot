@@ -455,14 +455,15 @@ test('score gate refuses a high-ranked subset with negative expectancy',()=>{
 });
 
 
-test('v36 score gate requires a substantial discovery sample by default',()=>{
+test('v36 score gate requires at least 30 discovery examples by default',()=>{
   const base={kind:'logistic',weights:[0,0,1]};
   const rows=Array.from({length:100},(_,i)=>{
-    const high=i>=80,y=high?1:(i%5===0?1:0);
+    const high=i>=70,y=high?(i%5!==0?1:0):(i%5===0?1:0);
     return {z:[1,i/99],side:'LONG',y,realizedR:y?.9:-1,at:i};
   });
   const gate=setup.fitScoreGate(base,rows,{threshold:.60});
-  assert.equal(gate,null);
+  assert.ok(gate?.model?.bySide?.LONG);
+  assert.ok(gate.model.bySide.LONG.samples>=30);
 });
 
 test('risk summary reports drawdown and rolling expectancy',()=>{
