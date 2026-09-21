@@ -44,7 +44,8 @@ function compactLearning(rows){
       recommendedTest:x.setupProbability.recommendedTest??null,
       planOptions:x.setupProbability.planOptions??null,
       planTune:x.setupProbability.planSelection?.chosen?.stats??null,
-      modelCompetition:x.setupProbability.modelCompetition??null
+      modelCompetition:x.setupProbability.modelCompetition??null,
+      adaptation:x.setupProbability.adaptation??null
     }:null,
     folds:(x.folds||[]).map(f=>({
       directionalLogLoss:f.logLoss??null,
