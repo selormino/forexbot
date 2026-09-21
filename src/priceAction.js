@@ -49,7 +49,7 @@ function analyzePriceAction(rows,atr){
     structure,patterns,bias,
     bodyPct:body/range,upperWickPct:upper/range,lowerWickPct:lower/range,
     breakoutUp,breakoutDown,insideBar,outsideBar,
-    supportDistance,resistanceDistance,compression,
+    supportPrice:recentLow,resistancePrice:recentHigh,supportDistance,resistanceDistance,compression,
     vector:[body/range,upper/range,lower/range,bullish?1:bearish?-1:0,bullishEngulfing?1:0,bearishEngulfing?1:0,bullishPin?1:0,bearishPin?1:0,insideBar?1:0,outsideBar?1:0,breakoutUp?1:0,breakoutDown?1:0,higherHigh?1:0,lowerHigh?1:0,higherLow?1:0,lowerLow?1:0,Math.tanh(supportDistance/3),Math.tanh(resistanceDistance/3),Math.tanh(compression-3),bias]
   };
 }
