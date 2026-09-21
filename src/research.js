@@ -773,11 +773,11 @@ function alignSeries(length,values,map=x=>x){
   const out=Array(Math.max(0,length-values.length)).fill(null);
   return out.concat(values.map(v=>v===undefined||v===null?null:map(v))).slice(-length);
 }
-function chartSnapshot(symbol,tf='1h',{limit=90}={}){
+function chartSnapshot(symbol,tf='1h',{limit=90,at=null}={}){
   const step=ms(tf);if(!step)throw new Error('Invalid timeframe');
-  const now=Date.now();
-  const rows=db.prepare('SELECT ts,open,high,low,close,volume,provider FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 240')
-    .all(symbol,tf,step,now).reverse();
+  const now=Date.now(),requestedAt=Number(at),cutoff=Number.isFinite(requestedAt)&&requestedAt>0?requestedAt:now-step;
+  const rows=db.prepare('SELECT ts,open,high,low,close,volume,provider FROM candles WHERE symbol=? AND timeframe=? AND ts<=? ORDER BY ts DESC LIMIT 240')
+    .all(symbol,tf,cutoff).reverse();
   if(rows.length<60)throw new Error('Insufficient closed candles for chart analysis');
   const close=rows.map(r=>r.close),high=rows.map(r=>r.high),low=rows.map(r=>r.low);
   const ema20=alignSeries(rows.length,ti.EMA.calculate({period:20,values:close}),Number);
@@ -798,7 +798,7 @@ function chartSnapshot(symbol,tf='1h',{limit=90}={}){
   const lastE20=ema20.at(-1),lastE50=ema50.at(-1),lastE200=ema200.at(-1),lastRsi=rsi.at(-1),lastMacd=macd.at(-1),lastMacdSignal=macdSignal.at(-1),lastAdx=adx.at(-1);
   const emaAlignment=lastE20&&lastE50&&lastE200?(lastE20>lastE50&&lastE50>lastE200?'bullish':lastE20<lastE50&&lastE50<lastE200?'bearish':'mixed'):'partial';
   const rsiState=lastRsi>=70?'overbought':lastRsi<=30?'oversold':lastRsi>=55?'bullish momentum':lastRsi<=45?'bearish momentum':'neutral';
-  return {symbol,timeframe:tf,generatedAt:now,candles,
+  return {symbol,timeframe:tf,generatedAt:now,analysisSourceTs:cutoff,analysisCloseAt:cutoff+step,candles,
     indicators:{ema20:slice(ema20),ema50:slice(ema50),ema200:slice(ema200),rsi:slice(rsi),macd:slice(macd),macdSignal:slice(macdSignal),macdHist:slice(macdHist),adx:slice(adx)},
     levels:{support:pa.supportPrice,resistance:pa.resistancePrice,swingSupport:pa.swingSupportPrice,swingResistance:pa.swingResistancePrice},
     priceAction:{structure:pa.structure,bias:pa.bias,baseBias:pa.baseBias,patternBias:pa.patternBias,patternConfidence:pa.patternConfidence,patterns},
