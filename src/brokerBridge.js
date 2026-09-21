@@ -123,7 +123,14 @@ async function reconcileOne(intent){
         cancelledForExpiry?'Automatic pending order cancelled because signal expired':intent.reason,now,intent.id);
     return {id:intent.id,ticket:intent.broker_order_id,status:b.status,intentStatus:nextStatus,cancelledForExpiry};
   }catch(e){
-    return {id:intent.id,ticket:intent.broker_order_id,error:e.response?.data?.detail||e.message};
+    const status=Number(e.response?.status||0),detail=e.response?.data?.detail||e.response?.data?.error||e.message;
+    if(status===404){
+      const now=Date.now();
+      db.prepare(`UPDATE execution_intents SET status='BROKER_NOT_FOUND',broker_status='NOT_FOUND',reason=?,broker_updated_at=?,updated_at=? WHERE id=?`)
+        .run('Broker no longer reports this historical ticket; reconciliation stopped for this intent',now,now,intent.id);
+      return {id:intent.id,ticket:intent.broker_order_id,status:'NOT_FOUND',intentStatus:'BROKER_NOT_FOUND',terminal:true};
+    }
+    return {id:intent.id,ticket:intent.broker_order_id,error:detail};
   }
 }
 async function reconcile(limit=100){
