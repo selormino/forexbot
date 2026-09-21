@@ -392,12 +392,14 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
   const distributionGates=setupModel.fitSideDistributionGates(policyCalibration,{model:adapted.model,maxFeatures:10,quantile:.90});
   const distributionAllowedSides=sideGate.allowedSides.filter(side=>!!distributionGates[side]);
   const finalModel={...adapted.model,allowedSides:distributionAllowedSides,distributionGates};
+  const allowedTestBeforeGate=rawTargetExamples.filter(x=>sideGate.allowedSides.includes(x.side));
+  const rawPolicyTest=setupModel.statsAt(adapted.model,allowedTestBeforeGate,threshold);
   const allowedTest=rawTargetExamples.filter(x=>distributionAllowedSides.includes(x.side));
   const targetExamples=allowedTest.filter(x=>setupModel.inDistribution(distributionGates[x.side],x.z));
   const targetCalSelected=policyCalibration.filter(x=>distributionAllowedSides.includes(x.side)&&setupModel.inDistribution(distributionGates[x.side],x.z));
   const distributionReport={
     type:'policy-aligned-robust',
-    quantile:.90,maxFeatures:10,
+    quantile:.90,maxFeatures:10,rawPolicyTest,
     allowedSidesBefore:sideGate.allowedSides,allowedSidesAfter:distributionAllowedSides,
     calibrationBefore:allowedCalibration.length,policyCalibration:policyCalibration.length,calibrationAfter:targetCalSelected.length,
     testBefore:rawTargetExamples.filter(x=>sideGate.allowedSides.includes(x.side)).length,testAfter:targetExamples.length,
