@@ -240,3 +240,19 @@ test('best-side selection takes at most one trade per timestamp',()=>{
   assert.equal(chosen[1].side,'SHORT');
   assert.equal(new Set(chosen.map(x=>x.at)).size,chosen.length);
 });
+
+
+test('target setup fallback trains from local pre-test examples',()=>{
+  const train=Array.from({length:160},(_,i)=>{
+    const a=(i%20)/19,b=((i*7)%17)/16;
+    return {z:[a,b,a*b],y:(a>.55&&b>.35)?1:0,realizedR:(a>.55&&b>.35)?.8:-1,side:i%2?'LONG':'SHORT',at:i};
+  });
+  const cal=Array.from({length:60},(_,i)=>{
+    const a=((i+3)%20)/19,b=((i*5+1)%17)/16;
+    return {z:[a,b,a*b],y:(a>.55&&b>.35)?1:0,realizedR:(a>.55&&b>.35)?.8:-1,side:i%2?'LONG':'SHORT',at:1000+i};
+  });
+  const out=research.fitTargetSetupFallback(train,cal,{name:'local-test',targetR:.8});
+  assert.ok(out?.model);
+  assert.equal(out.model.planOptions.name,'local-test');
+  assert.ok(['logistic','boosted-stumps'].includes(out.comparison.selected));
+});
