@@ -168,6 +168,11 @@ function examples(rows,symbol,costBps,planOptions={}){
   return out;
 }
 const PLAN_PROFILES=[
+  {name:'tight-0.8r',entryBufferAtr:.08,stopAtr:1.0,targetR:.8,entryExpiryBars:4,holdBars:6},
+  {name:'base-0.8r',entryBufferAtr:.12,stopAtr:1.2,targetR:.8,entryExpiryBars:4,holdBars:6},
+  {name:'wide-0.8r',entryBufferAtr:.18,stopAtr:1.4,targetR:.8,entryExpiryBars:4,holdBars:6},
+  {name:'base-0.9r',entryBufferAtr:.12,stopAtr:1.2,targetR:.9,entryExpiryBars:4,holdBars:6},
+  {name:'wide-0.9r',entryBufferAtr:.18,stopAtr:1.4,targetR:.9,entryExpiryBars:4,holdBars:6},
   {name:'tight-1r',entryBufferAtr:.08,stopAtr:1.0,targetR:1.0,entryExpiryBars:4,holdBars:6},
   {name:'base-1r',entryBufferAtr:.12,stopAtr:1.2,targetR:1.0,entryExpiryBars:4,holdBars:6},
   {name:'wide-1r',entryBufferAtr:.18,stopAtr:1.4,targetR:1.0,entryExpiryBars:4,holdBars:6},
