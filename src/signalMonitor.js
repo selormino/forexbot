@@ -71,7 +71,7 @@ function record(signal){
   const rawSetupProbability=signal.setupProbability,setupProbability=rawSetupProbability===null||rawSetupProbability===undefined?null:Number(rawSetupProbability);
   const directionalFloor=Number(signal.directionalMinProbability||process.env.DIRECTIONAL_MIN_PROBABILITY||.55);
   const lean=signal.leanDirection||signal.candidateDirection||'WAIT';
-  const qualified=['LONG','SHORT'].includes(signal.candidateDirection)&&Number.isFinite(setupProbability)&&setupProbability>=threshold&&directionalProbability>=directionalFloor;
+  const qualified=['LONG','SHORT'].includes(signal.candidateDirection)&&Number.isFinite(setupProbability)&&setupProbability>=threshold;
   const actionable=['LONG','SHORT'].includes(signal.direction);
   const modelVersion=String(signal.modelVersion||'legacy');
   const key=[signal.symbol,signal.timeframe,signal.sourceCandleTs,modelVersion].join(':');
