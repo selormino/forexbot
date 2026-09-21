@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v33-empirical-calibration';
+const VERSION='technical-fundamental-v34-isotonic-calibration';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -232,15 +232,15 @@ function calibrateRawModel(raw,rows){
   if(!raw)return null;
   if(raw.kind==='side-composite'){
     const baseRows=rows||[];
-    const base=raw.base?{...raw.base,calibration:setupModel.calibrateModel(raw.base,baseRows)}:null;
+    const base=raw.base?{...raw.base,calibration:setupModel.fitBestCalibration(raw.base,baseRows).calibration}:null;
     const sideModels={};
     for(const [side,model] of Object.entries(raw.sideModels||{})){
       const sideRows=(rows||[]).filter(x=>x.side===side);
-      if(sideRows.length>=20)sideModels[side]={...model,calibration:setupModel.calibrateModel(model,sideRows)};
+      if(sideRows.length>=20)sideModels[side]={...model,calibration:setupModel.fitBestCalibration(model,sideRows).calibration};
     }
     return {...raw,base,sideModels};
   }
-  return {...raw,calibration:setupModel.calibrateModel(raw,rows||[])};
+  return {...raw,calibration:setupModel.fitBestCalibration(raw,rows||[]).calibration};
 }
 function sideSpecializedRaw(baseRaw,trainExamples,fitCal){
   const sideModels={},diagnostics={};
