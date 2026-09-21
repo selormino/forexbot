@@ -105,7 +105,14 @@ async function trainAll(){
         baselineLoss:report.setupProbability.baselineLoss??null,
         plan:report.setupProbability.planOptions?.name||null,
         adaptation:report.setupProbability.adaptation?.selected||null,
-        allowedSides:report.setupProbability.sideGate?.allowedSides||[]
+        allowedSides:report.setupProbability.sideGate?.allowedSides||[],
+        sideHighProbability:Object.fromEntries(Object.entries(report.setupProbability.sideGate?.diagnostics||{}).map(([side,d])=>[side,{
+          selected:d.highProbability?.selected||0,
+          accuracy:d.highProbability?.accuracy??null,
+          averageR:d.highProbability?.averageR??null,
+          wilsonLower:d.highProbability?.wilsonLower??null,
+          passed:!!d.passed
+        }]))
       }:null
     }));
     await sleepImmediate();
