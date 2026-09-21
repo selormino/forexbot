@@ -50,6 +50,8 @@ function status(){
     mode:mode(),
     autoPaper:process.env.AUTO_PAPER_TRADING==='true',
     autoDemoStrict:process.env.AUTO_DEMO_STRICT==='true',
+    autoDemoResearch:process.env.AUTO_DEMO_RESEARCH==='true',
+    autoDemoResearchRiskPct:Number(process.env.AUTO_DEMO_RESEARCH_RISK_PCT||0.25),
     autoMinConfluence:Number(process.env.AUTO_MIN_CONFLUENCE||65),
     liveAutomation:false,
     brokerBridge:String(process.env.BROKER_BRIDGE||'none'),
@@ -95,6 +97,34 @@ function createAutoDemoIntent(signal,{riskPct=Number(process.env.RISK_PER_TRADE_
       'Automatic STRICT demo signal awaiting broker-safe preview',Date.now(),riskPct,'BROKER_RISK_PERCENT',0,signal.sourceCandleTs,signalKey,agreement);
   return {created:true,id:r.lastInsertRowid,status:'PENDING',signalKey,plan:{side,entry:plan.entry,stop:plan.stop,target:plan.target,riskPct,agreement}};
 }
+
+function createAutoResearchDemoIntent(signal,{riskPct=Number(process.env.AUTO_DEMO_RESEARCH_RISK_PCT||0.25)}={}){
+  if(process.env.AUTO_DEMO_RESEARCH!=='true')return {created:false,reason:'Automatic research demo execution is disabled'};
+  if(String(process.env.BROKER_BRIDGE_MODE||'demo').toLowerCase()!=='demo')return {created:false,reason:'Automatic research execution is restricted to demo bridge mode'};
+  if(signal.modelApproved)return {created:false,reason:'Approved signals use the strict demo path'};
+  const side=String(signal.candidateDirection||'').toUpperCase();
+  const prob=Number(signal.setupProbability??0),threshold=Number(signal.minProbability||0.7);
+  if(!['LONG','SHORT'].includes(side)||!Number.isFinite(prob)||prob<threshold)return {created:false,reason:'Research candidate is below the setup threshold'};
+  const blockers=(signal.filters||[]).filter(x=>x!=='Model has not passed out-of-sample validation gates');
+  if(blockers.length)return {created:false,reason:'Research candidate still has safety/quality blockers',blockers};
+  if(signal.eventRisk)return {created:false,reason:'Research candidate has event risk'};
+  const agreement=Number(signal.analysis?.confluence?.agreement||0),minAgreement=Number(process.env.AUTO_MIN_CONFLUENCE||65);
+  if(!Number.isFinite(agreement)||agreement<minAgreement)return {created:false,reason:`Evidence agreement below automatic demo minimum (${minAgreement}%)`};
+  const plan=signal.tradePlan;
+  if(!plan||![plan.entry,plan.stop,plan.target].every(Number.isFinite))return {created:false,reason:'Signal has no valid trade plan'};
+  if(!Number.isFinite(riskPct)||riskPct<=0||riskPct>0.5)return {created:false,reason:'Automatic research demo risk must be >0 and <=0.5%'};
+  const signalKey=[signal.symbol,signal.timeframe,signal.sourceCandleTs].join(':');
+  const prior=db.prepare('SELECT id,status,broker_order_id FROM execution_intents WHERE signal_key=? AND manual=0').get(signalKey);
+  if(prior)return {created:false,duplicateId:prior.id,status:prior.status,reason:'This source candle already has an automatic execution intent'};
+  const r=db.prepare(`INSERT INTO execution_intents(
+      created_at,symbol,timeframe,side,entry,stop,target,units,probability,model_id,mode,status,reason,updated_at,
+      risk_pct,sizing_mode,manual,source_ts,signal_key,confluence)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(Date.now(),signal.symbol,signal.timeframe||'1h',side,Number(plan.entry),Number(plan.stop),Number(plan.target),0,prob,signal.modelId||null,'demo','PENDING',
+      'Automatic RESEARCH demo candidate awaiting broker-safe preview',Date.now(),riskPct,'BROKER_RISK_PERCENT',0,signal.sourceCandleTs,signalKey,agreement);
+  return {created:true,id:r.lastInsertRowid,status:'PENDING',signalKey,plan:{side,entry:plan.entry,stop:plan.stop,target:plan.target,riskPct,agreement}};
+}
+
 function list(limit=100){return db.prepare('SELECT * FROM execution_intents ORDER BY id DESC LIMIT ?').all(Math.max(1,Math.min(500,Number(limit)||100)));}
 function approve(id){
   const row=db.prepare('SELECT * FROM execution_intents WHERE id=?').get(id);
@@ -118,4 +148,4 @@ function createManualIntent(signal,{side,equity=10000,riskPct=.5,maxPositionUnit
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(Date.now(),signal.symbol,signal.timeframe||'1h',chosen,entry,stop,target,0,signal.setupProbability??signal.probability,signal.modelId||null,m,'PENDING','Manual user-selected signal; probability threshold may be below automated gate',Date.now(),riskPct,'BROKER_RISK_PERCENT',1,signal.sourceCandleTs||null,null,Number(signal.analysis?.confluence?.agreement||0));
   return {created:true,id:r.lastInsertRowid,status:'PENDING',manual:true,plan:{side:chosen,entry,stop,target,riskPct,sizingMode:'BROKER_RISK_PERCENT',riskReward:Math.abs(target-entry)/stopDistance}};
 }
-module.exports={status,createIntent,createAutoDemoIntent,createManualIntent,list,approve};
+module.exports={status,createIntent,createAutoDemoIntent,createAutoResearchDemoIntent,createManualIntent,list,approve};
