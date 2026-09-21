@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v13-deep-history';
+const VERSION='technical-fundamental-v14-adaptive-calibration';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -208,6 +208,54 @@ function poolSplitRows(rows,cutoff){
   const cal=eligible.slice(calStart);
   return {train,tune,cal};
 }
+function stripCalibration(model){
+  if(!model)return null;
+  const {calibration,...raw}=model;
+  return raw;
+}
+function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
+  if(!pooledModel||calExamples.length<40)return {model:pooledModel,selection:{selected:'pooled',reason:'insufficient target calibration',calibrationSamples:calExamples.length,candidates:[]}};
+  const cut=Math.max(20,Math.min(calExamples.length-15,Math.floor(calExamples.length*.65)));
+  const fitCal=calExamples.slice(0,cut),validation=calExamples.slice(cut);
+  if(fitCal.length<20||validation.length<15)return {model:pooledModel,selection:{selected:'pooled',reason:'insufficient calibration split',calibrationSamples:calExamples.length,candidates:[]}};
+  const rawCandidates=[{name:'pooled-local-cal',raw:stripCalibration(pooledModel),complexity:0}];
+  if(trainExamples.length>=120){
+    const local=setupModel.fitCompetitive(trainExamples,fitCal);
+    rawCandidates.push({name:'target-local',raw:stripCalibration(local.model),complexity:1});
+    const recent=trainExamples.slice(-Math.min(500,trainExamples.length));
+    if(recent.length>=120){
+      const localRecent=setupModel.fitCompetitive(recent,fitCal);
+      rawCandidates.push({name:'target-recent',raw:stripCalibration(localRecent.model),complexity:2});
+    }
+  }
+  const evaluated=rawCandidates.map(candidate=>{
+    const calibrated={...candidate.raw,calibration:setupModel.calibrateModel(candidate.raw,fitCal)};
+    const probability=setupModel.probabilityMetrics(calibrated,validation);
+    const operating=setupModel.statsAt(calibrated,validation,threshold);
+    const passesUserFloor=operating.selected>=Math.max(8,Math.floor(validation.length*.12))&&operating.selectedAccuracy>=.60&&(operating.averageR||0)>0;
+    return {...candidate,calibrated,probability,operating,passesUserFloor};
+  });
+  const passing=evaluated.filter(x=>x.passesUserFloor);
+  const ranked=(passing.length?passing:evaluated).sort((a,b)=>{
+    if(a.passesUserFloor!==b.passesUserFloor)return a.passesUserFloor?-1:1;
+    const aAcc=a.operating.selectedAccuracy??-1,bAcc=b.operating.selectedAccuracy??-1;
+    if(a.passesUserFloor&&Math.abs(bAcc-aAcc)>.02)return bAcc-aAcc;
+    const aLoss=a.probability.logLoss??Infinity,bLoss=b.probability.logLoss??Infinity;
+    if(Math.abs(aLoss-bLoss)>.005)return aLoss-bLoss;
+    return a.complexity-b.complexity;
+  });
+  const chosen=ranked[0]||evaluated[0];
+  const finalRaw=chosen?.raw||stripCalibration(pooledModel);
+  const finalModel={...finalRaw,calibration:setupModel.calibrateModel(finalRaw,calExamples),planOptions:pooledModel.planOptions,
+    meaning:'P(success | confirmation entry triggered), target-adapted pre-test calibration'};
+  return {model:finalModel,selection:{
+    selected:chosen?.name||'pooled-local-cal',
+    calibrationSamples:calExamples.length,fitSamples:fitCal.length,validationSamples:validation.length,
+    userAccuracyFloor:.60,
+    candidates:evaluated.map(x=>({name:x.name,passesUserFloor:x.passesUserFloor,probability:x.probability,operating:x.operating}))
+  }};
+}
+
 function pooledSetup(symbol,tf,targetParts,threshold){
   const poolSymbols=assetFamily(symbol),cutoff=targetParts.test[0]?.at;
   if(!Number.isFinite(cutoff))return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols,trainSamples:0,tuneSamples:0,calibrationSamples:0,testSamples:0}};
@@ -251,17 +299,21 @@ function pooledSetup(symbol,tf,targetParts,threshold){
     };
     boundedSet(setupPoolCache,cacheKey,pooled,12);
   }
-  const targetExamples=setupModel.examples(targetParts.test,symbol,costs(symbol).total,pooled.planOptions||{});
+  const targetCost=costs(symbol).total;
+  const targetTrainExamples=setupModel.examples(targetParts.train,symbol,targetCost,pooled.planOptions||{});
+  const targetCalExamples=setupModel.examples(targetParts.cal,symbol,targetCost,pooled.planOptions||{});
+  const targetExamples=setupModel.examples(targetParts.test,symbol,targetCost,pooled.planOptions||{});
   if(!pooled.model||targetExamples.length<30){
     return {model:null,report:{status:'insufficient-triggered-setups',pooled:true,poolSymbols:pooled.used||poolSymbols,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:pooled.modelCompetition,
-      trainSamples:pooled.trainSamples||0,tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples||0,testSamples:targetExamples.length}};
+      trainSamples:pooled.trainSamples||0,targetTrainSamples:targetTrainExamples.length,targetCalibrationSamples:targetCalExamples.length,tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples||0,testSamples:targetExamples.length}};
   }
-  const calibrationRecommendedThreshold=pooled.calibrationRecommendedThreshold;
-  const report={status:'trained',pooled:true,poolSymbols:pooled.used,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:pooled.modelCompetition,
-    trainSamples:pooled.trainSamples,tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples,testSamples:targetExamples.length,
-    ...setupModel.evaluate(pooled.model,targetExamples,threshold),calibrationRecommendedThreshold,
-    recommendedTest:calibrationRecommendedThreshold===null?null:setupModel.statsAt(pooled.model,targetExamples,calibrationRecommendedThreshold)};
-  return {model:pooled.model,report};
+  const adapted=adaptSetupModel(pooled.model,targetTrainExamples,targetCalExamples,threshold),finalModel=adapted.model;
+  const calibrationRecommendedThreshold=setupModel.recommendThreshold(finalModel,targetCalExamples.length>=30?targetCalExamples:[],Math.max(12,Math.floor(targetCalExamples.length*.08)));
+  const report={status:'trained',pooled:true,poolSymbols:pooled.used,planOptions:pooled.planOptions,planSelection:pooled.planSelection,modelCompetition:pooled.modelCompetition,adaptation:adapted.selection,
+    trainSamples:pooled.trainSamples,targetTrainSamples:targetTrainExamples.length,targetCalibrationSamples:targetCalExamples.length,tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples,testSamples:targetExamples.length,
+    ...setupModel.evaluate(finalModel,targetExamples,threshold),calibrationRecommendedThreshold,
+    recommendedTest:calibrationRecommendedThreshold===null?null:setupModel.statsAt(finalModel,targetExamples,calibrationRecommendedThreshold)};
+  return {model:finalModel,report};
 }
 
 function trainSeries(symbol,tf){
@@ -295,7 +347,7 @@ function trainSeries(symbol,tf){
   const setupApproved=setupReport.status==='trained'&&setupReport.selected>=30&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss;
   const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||(f.setupProbability.recommendedTest.averageR||0)>0));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Session-aware plan-tuned setup model must have at least 30 market-specific out-of-sample selections at the configured threshold, meet the accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Adaptive market-calibrated setup model must have at least 30 market-specific out-of-sample selections at the configured threshold, meet the unchanged accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
