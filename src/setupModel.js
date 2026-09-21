@@ -39,6 +39,10 @@ function calibrate(weights,rows){
   return {a,b};
 }
 function rawScore(model,z){
+  if(model?.kind==='constant'){
+    const p=Math.max(.001,Math.min(.999,Number(model.probability)||.5));
+    return Math.log(p/(1-p));
+  }
   if(model?.kind==='boosted-stumps'){
     let score=Number(model.baseScore||0);
     for(const s of model.stumps||[])score+=z[s.feature]<=s.threshold?s.left:s.right;
@@ -117,9 +121,20 @@ function fitCompetitive(trainRows,calRows){
   const logisticBase={kind:'logistic',weights:fit(trainRows)};
   const logistic={...logisticBase,calibration:calibrateModel(logisticBase,calRows)};
   const boostedBase=fitBoosted(trainRows),boosted={...boostedBase,calibration:calibrateModel(boostedBase,calRows)};
-  const logisticMetrics=probabilityMetrics(logistic,calRows),boostedMetrics=probabilityMetrics(boosted,calRows);
-  const selected=boostedMetrics.logLoss+0.005<logisticMetrics.logLoss?'boosted-stumps':'logistic';
-  return {model:selected==='boosted-stumps'?boosted:logistic,comparison:{selected,logistic:logisticMetrics,boosted:boostedMetrics,minimumBoostedImprovement:.005}};
+  const trainWins=trainRows.reduce((s,r)=>s+r.y,0);
+  const constantBase={kind:'constant',probability:(trainWins+1)/(trainRows.length+2)};
+  const constant={...constantBase,calibration:calibrateModel(constantBase,calRows)};
+  const logisticMetrics=probabilityMetrics(logistic,calRows),boostedMetrics=probabilityMetrics(boosted,calRows),constantMetrics=probabilityMetrics(constant,calRows);
+  const complexBest=boostedMetrics.logLoss+0.005<logisticMetrics.logLoss
+    ?{name:'boosted-stumps',model:boosted,metrics:boostedMetrics}
+    :{name:'logistic',model:logistic,metrics:logisticMetrics};
+  const preferConstant=constantMetrics.logLoss<=complexBest.metrics.logLoss+0.003;
+  const selected=preferConstant?'constant':complexBest.name;
+  const model=preferConstant?constant:complexBest.model;
+  return {model,comparison:{
+    selected,logistic:logisticMetrics,boosted:boostedMetrics,constant:constantMetrics,
+    minimumBoostedImprovement:.005,constantSimplicityTolerance:.003
+  }};
 }
 
 function modelFeatureIndices(model,maxFeatures=10,featureCount=0){
