@@ -147,7 +147,7 @@ test('adaptive setup selection only needs pre-test train and calibration example
   const out=research.adaptSetupModel(base,train,cal,.6);
   assert.ok(out.model);
   assert.equal(out.model.planOptions.name,'test-profile');
-  assert.ok(['pooled-local-cal','target-local','target-recent'].includes(out.selection.selected));
+  assert.ok(['pooled-local-cal','target-local','target-recent','side-specialized'].includes(out.selection.selected));
   assert.equal(out.selection.calibrationSamples,cal.length);
   assert.ok(Number.isFinite(out.model.calibration.a));
   assert.ok(Number.isFinite(out.model.calibration.b));
@@ -308,4 +308,27 @@ test('robust distribution gate follows model-important features',()=>{
 });
 test('missing distribution gate is not treated as in-distribution',()=>{
   assert.equal(setup.inDistribution(null,[1,2,3]),false);
+});
+
+
+test('side-composite probability routes each direction through its specialized model',()=>{
+  const composite={
+    kind:'side-composite',
+    base:{kind:'logistic',weights:[0,0],calibration:{a:1,b:0}},
+    sideModels:{
+      LONG:{kind:'logistic',weights:[0,2],calibration:{a:1,b:0}},
+      SHORT:{kind:'logistic',weights:[0,-2],calibration:{a:1,b:0}}
+    }
+  };
+  assert.ok(setup.predict(composite,[1])>.8);
+  assert.ok(setup.predict(composite,[-1])>.8);
+});
+test('side-composite falls back to its base model when a side is unavailable',()=>{
+  const composite={
+    kind:'side-composite',
+    base:{kind:'logistic',weights:[0,0],calibration:{a:1,b:0}},
+    sideModels:{LONG:{kind:'logistic',weights:[0,2],calibration:{a:1,b:0}}}
+  };
+  assert.ok(setup.predict(composite,[1])>.8);
+  assert.ok(Math.abs(setup.predict(composite,[-1])-.5)<1e-9);
 });
