@@ -40,7 +40,7 @@ function compactLearning(rows){
       boostedLogLoss:x.directionalModelCompetition?.boosted?.logLoss??null
     },
     setup:x.setupProbability?{
-      status:x.setupProbability.status,testSamples:x.setupProbability.testSamples??x.setupProbability.samples??null,
+      status:x.setupProbability.status,trainingSource:x.setupProbability.trainingSource??null,testSamples:x.setupProbability.testSamples??x.setupProbability.samples??null,
       baseRate:x.setupProbability.baseRate??null,accuracy:x.setupProbability.accuracy??null,
       logLoss:x.setupProbability.logLoss??null,baselineLoss:x.setupProbability.baselineLoss??null,
       selected:x.setupProbability.selected??0,selectedAccuracy:x.setupProbability.selectedAccuracy??null,
