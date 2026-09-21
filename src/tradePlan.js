@@ -13,7 +13,7 @@ function buildTradePlan(signal,{side,entryBufferAtr=.12,structureBufferAtr=.03,s
   if(!['LONG','SHORT'].includes(direction))return null;
   const pa=signal.priceAction||{},buffer=atr*Math.max(0,Number(entryBufferAtr)||0),structureBuffer=atr*Math.max(0,Number(structureBufferAtr)||0);
   let entry=direction==='LONG'?price+buffer:price-buffer;
-  const resistance=Number(pa.resistancePrice),support=Number(pa.supportPrice);
+  const resistance=Number(pa.swingResistancePrice??pa.resistancePrice),support=Number(pa.swingSupportPrice??pa.supportPrice);
   if(direction==='LONG'){
     if(Number.isFinite(resistance)&&resistance>price)entry=Math.max(entry,resistance+structureBuffer);
     else if(pa.breakoutUp)entry=Math.max(entry,price+atr*.05);
