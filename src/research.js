@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v20-joint-policy';
+const VERSION='technical-fundamental-v21-nonlinear-direction';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -127,7 +127,15 @@ function calibrate(w,rows){
   for(let k=0;k<250;k++){let da=0,dbias=0;for(const r of rows){const z=dot(w,r.x),e=sigmoid(a*z+b)-r.y;da+=e*z;dbias+=e;}a-=.05*(da/rows.length+.01*(a-1));b-=.05*dbias/rows.length;}
   return {a,b};
 }
-const predict=(m,x)=>sigmoid(m.calibration.a*dot(m.weights,x)+m.calibration.b);
+const predict=(m,x)=>{
+  if(m?.kind)return setupModel.predict(m,x);
+  return sigmoid(m.calibration.a*dot(m.weights,x)+m.calibration.b);
+};
+function fitDirectionalModel(trainRows,calRows){
+  const train=trainRows.map(r=>({z:r.x,y:r.y})),cal=calRows.map(r=>({z:r.x,y:r.y}));
+  const competition=setupModel.fitCompetitive(train,cal);
+  return {model:competition.model,comparison:competition.comparison};
+}
 function evaluate(m,rows,costBps){
   let correct=0,ll=0,brier=0,net=0,gains=0,losses=0,equity=1,peak=1,drawdown=0,trades=0,lastExit=0;
   const bins=Array.from({length:10},()=>({samples:0,predicted:0,observed:0}));
@@ -374,11 +382,11 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
 
 function trainSeries(symbol,tf){
   const rows=dataset(symbol,tf);if(rows.length<500)return {symbol,timeframe:tf,status:'insufficient-data',samples:rows.length};
-  const {train,cal,test}=split(rows),weights=fit(train),calibration=calibrate(weights,cal);
+  const {train,cal,test}=split(rows),directionalTraining=fitDirectionalModel(train,cal);
   const cost=costs(symbol),threshold=MIN_PROB(),directionalFloor=Math.max(.5,Math.min(.9,Number(process.env.DIRECTIONAL_MIN_PROBABILITY||.55)));
-  const directionalModel={weights,calibration};
+  const directionalModel=directionalTraining.model;
   const setupTraining=pooledSetup(symbol,tf,{train,cal,test},threshold,directionalModel,directionalFloor);
-  const m={version:VERSION,weights,calibration,horizon:4,setup:setupTraining.model};
+  const m={version:VERSION,...directionalModel,horizon:4,setup:setupTraining.model};
   const planOptions=setupTraining.model?.planOptions||setupTraining.report?.planOptions||{};
   const metrics=evaluate(m,test,cost.total),setupBacktest=evaluateTradePlans(m,test,symbol,cost.total,threshold,planOptions),thresholdSweep=thresholdDiagnostics(m,test,symbol,cost.total,planOptions);
   const base=train.reduce((s,r)=>s+r.y,0)/train.length;
@@ -394,16 +402,16 @@ function trainSeries(symbol,tf){
   const folds=[];
   for(const fraction of [.6,.8,1]){
     const window=rows.slice(0,Math.floor(rows.length*fraction));
-    const parts=split(window),w=fit(parts.train),calibrationFold=calibrate(w,parts.cal);
-    const foldModel={weights:w,calibration:calibrationFold};
+    const parts=split(window),directionalFold=fitDirectionalModel(parts.train,parts.cal);
+    const foldModel=directionalFold.model;
     const setupFold=pooledSetup(symbol,tf,parts,threshold,foldModel,directionalFloor).report;
-    folds.push({...evaluate(foldModel,parts.test,cost.total),setup:evaluateTradePlans(foldModel,parts.test,symbol,cost.total,threshold,setupFold.planOptions||{}),setupProbability:setupFold});
+    folds.push({...evaluate(foldModel,parts.test,cost.total),directionalModelCompetition:directionalFold.comparison,setup:evaluateTradePlans(foldModel,parts.test,symbol,cost.total,threshold,setupFold.planOptions||{}),setupProbability:setupFold});
   }
   const setupReport=setupTraining.report,target=Number(process.env.SIGNAL_TARGET_ACCURACY||.70);
   const setupApproved=setupReport.status==='trained'&&setupReport.selected>=30&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss;
   const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||(f.setupProbability.recommendedTest.averageR||0)>0));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Joint-policy adaptive setup model must have at least 30 in-distribution market-specific out-of-sample selections where the directional model chose the same side, meet the unchanged accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Joint-policy adaptive setup model must have at least 30 in-distribution market-specific out-of-sample selections where the directional model chose the same side, meet the unchanged accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
@@ -521,4 +529,4 @@ function signal(symbol,tf='1h',events=null){
   return {...base,tradePlan:buildTradePlan(base,{side:lean,...(m?.model?.setup?.planOptions||{})})};
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
-module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseValidatedSides,adaptSetupModel,jointPolicyExamples,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
+module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseValidatedSides,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
