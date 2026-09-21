@@ -77,12 +77,30 @@ async function collectNews(){
 async function trainAll(){
   const learning=[];
   if(process.env.MODEL_AUTO_TRAIN!=='true')return learning;
-  for(const timeframe of ['1h','4h']){
-    for(const symbol of SYMBOLS){
-      try{learning.push(research.trainSeries(symbol,timeframe));}
-      catch(e){learning.push({symbol,timeframe,error:e.message});}
-      await sleepImmediate();
-    }
+  const priority=[['XAUUSD','4h']];
+  const rest=[];
+  for(const timeframe of ['1h','4h'])for(const symbol of SYMBOLS){
+    if(symbol==='XAUUSD'&&timeframe==='4h')continue;
+    rest.push([symbol,timeframe]);
+  }
+  for(const [symbol,timeframe] of [...priority,...rest]){
+    let report;
+    try{report=research.trainSeries(symbol,timeframe);}
+    catch(e){report={symbol,timeframe,error:e.message};}
+    learning.push(report);
+    console.log(JSON.stringify({
+      event:'research-series-trained',version:research.VERSION,symbol,timeframe,
+      approved:!!report.approved,status:report.status||'trained',
+      setup:report.setupProbability?{
+        status:report.setupProbability.status,testSamples:report.setupProbability.testSamples??null,
+        selected:report.setupProbability.selected??0,selectedAccuracy:report.setupProbability.selectedAccuracy??null,
+        averageR:report.setupProbability.averageR??null,logLoss:report.setupProbability.logLoss??null,
+        baselineLoss:report.setupProbability.baselineLoss??null,
+        plan:report.setupProbability.planOptions?.name||null,
+        adaptation:report.setupProbability.adaptation?.selected||null
+      }:null
+    }));
+    await sleepImmediate();
   }
   return learning;
 }
