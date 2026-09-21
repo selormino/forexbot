@@ -45,7 +45,8 @@ function compactLearning(rows){
       planOptions:x.setupProbability.planOptions??null,
       planTune:x.setupProbability.planSelection?.chosen?.stats??null,
       modelCompetition:x.setupProbability.modelCompetition??null,
-      adaptation:x.setupProbability.adaptation??null
+      adaptation:x.setupProbability.adaptation??null,
+      sideGate:x.setupProbability.sideGate??null
     }:null,
     folds:(x.folds||[]).map(f=>({
       directionalLogLoss:f.logLoss??null,
@@ -97,7 +98,8 @@ async function trainAll(){
         averageR:report.setupProbability.averageR??null,logLoss:report.setupProbability.logLoss??null,
         baselineLoss:report.setupProbability.baselineLoss??null,
         plan:report.setupProbability.planOptions?.name||null,
-        adaptation:report.setupProbability.adaptation?.selected||null
+        adaptation:report.setupProbability.adaptation?.selected||null,
+        allowedSides:report.setupProbability.sideGate?.allowedSides||[]
       }:null
     }));
     await sleepImmediate();
