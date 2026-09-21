@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v29-policy-aligned-adaptation';
+const VERSION='technical-fundamental-v30-recent-stability';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -319,6 +319,21 @@ function policyOperatingStats(model,examples,threshold){
   };
 }
 
+function stableSideGate(fullGate,adaptationSelection){
+  const broad=[...(fullGate?.allowedSides||[])];
+  const recent=[...(adaptationSelection?.recentAllowedSides||[])];
+  const allowedSides=broad.filter(side=>recent.includes(side));
+  return {
+    ...(fullGate||{diagnostics:{}}),
+    allowedSides,
+    broadAllowedSides:broad,
+    recentAllowedSides:recent,
+    recentPassesUserFloor:!!adaptationSelection?.recentPassesUserFloor,
+    stabilityRequired:true,
+    meaning:'A side must pass both the broader calibration window and the most recent pre-test validation slice before it can be monitored or traded.'
+  };
+}
+
 function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
   if(!pooledModel||calExamples.length<40)return {model:pooledModel,selection:{selected:'pooled',reason:'insufficient target calibration',calibrationSamples:calExamples.length,candidates:[]}};
   const cut=Math.max(20,Math.min(calExamples.length-15,Math.floor(calExamples.length*.65)));
@@ -364,6 +379,8 @@ function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
     meaning:'P(success | confirmation entry triggers), policy-aligned target adaptation with optional side specialization'};
   return {model:finalModel,selection:{
     selected:chosen?.name||'pooled-local-cal',
+    recentAllowedSides:chosen?.operating?.sideValidation?.allowedSides||[],
+    recentPassesUserFloor:!!chosen?.passesUserFloor,
     calibrationSamples:calExamples.length,fitSamples:fitCal.length,validationSamples:validation.length,
     userAccuracyFloor:.60,selectionPolicy:'best validated side, maximum one trade per timestamp',
     candidates:evaluated.map(x=>({
@@ -460,7 +477,8 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
       trainSamples:pooled.trainSamples||0,targetTrainSamples:targetTrainExamples.length,targetCalibrationSamples:targetCalExamples.length,selectionPolicy:{mode:'best-setup-side',trainExamples:targetTrainExamples.length,calibrationExamples:targetCalExamples.length,testExamples:rawTargetExamples.length,maxOneTradePerTimestamp:true},tuneSamples:pooled.planSelection?.chosen?.stats?.samples||0,calibrationSamples:pooled.calibrationSamples||0,testSamples:rawTargetExamples.length}};
   }
   const adapted=adaptSetupModel(baseModel,targetTrainExamples,targetCalExamples,threshold);
-  const sideGate=chooseValidatedSides(adapted.model,targetCalExamples,threshold);
+  const broadSideGate=chooseValidatedSides(adapted.model,targetCalExamples,threshold);
+  const sideGate=stableSideGate(broadSideGate,adapted.selection);
   const allowedCalibration=targetCalExamples.filter(x=>sideGate.allowedSides.includes(x.side));
   const policyCalibration=allowedCalibration.filter(x=>setupModel.predict(adapted.model,x.z)>=threshold);
   const distributionGates=setupModel.fitSideDistributionGates(policyCalibration,{model:adapted.model,maxFeatures:10,quantile:.90});
@@ -531,7 +549,7 @@ function trainSeries(symbol,tf){
   const setupApproved=setupReport.status==='trained'&&setupReport.selected>=30&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss;
   const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||(f.setupProbability.recommendedTest.averageR||0)>0));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Policy-aligned adaptive setup model may specialize LONG and SHORT separately using pre-test data only; candidate selection itself uses the same best validated side and one-trade-per-timestamp policy as live trading. Final approval still requires at least 30 market-specific out-of-sample selections at the configured threshold, the unchanged accuracy target, positive average R, baseline-beating log loss, and chronological fold stability',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Policy-aligned adaptive setup model may specialize LONG and SHORT separately using pre-test data only. A side must pass both broad calibration and the most recent validation slice before it is eligible. Final approval still requires at least 30 market-specific out-of-sample selections at the configured threshold, the unchanged accuracy target, positive average R, baseline-beating log loss, and chronological fold stability',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
@@ -657,4 +675,4 @@ function signal(symbol,tf='1h',events=null){
   return {...base,tradePlan:buildTradePlan(base,{side:lean,...(m?.model?.setup?.planOptions||{})})};
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
-module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
+module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,stableSideGate,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
