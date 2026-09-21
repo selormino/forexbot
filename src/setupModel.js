@@ -190,7 +190,7 @@ function examples(rows,symbol,costBps,planOptions={}){
       if(!eligible(row,side,costBps))continue;
       const result=outcome(row,symbol,side,costBps,planOptions);
       if(!result.triggered||!result.settled)continue;
-      out.push({z:vector(row,side),y:result.y,realizedR:result.realizedR,side,at:row.at,outcome:result.outcome});
+      out.push({z:vector(row,side),directionalX:row.x,y:result.y,realizedR:result.realizedR,side,at:row.at,outcome:result.outcome});
     }
   }
   return out;
