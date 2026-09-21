@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v36-xauusd-4h-long-regime';
+const VERSION='technical-fundamental-v37-pattern-chart';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -645,13 +645,18 @@ function eventFundamentalBias(events,symbol,now){
 function confluenceFor(side,f,higherTimeframe,fundamentalBias){
   const sign=side==='LONG'?1:-1;
   const higher=higherTimeframe?Math.tanh(Number(higherTimeframe.trend||0)):0;
-  const raw=.40*Number(f.technicalBias||0)+.20*Number(f.priceAction?.bias||0)+.15*higher+.25*Number(fundamentalBias||0);
+  const structure=Number(f.priceAction?.baseBias??f.priceAction?.bias??0);
+  const pattern=Number(f.priceAction?.patternBias||0);
+  const raw=.35*Number(f.technicalBias||0)+.15*structure+.15*pattern+.15*higher+.20*Number(fundamentalBias||0);
   const aligned=Math.max(-1,Math.min(1,sign*raw));
-  return {score:aligned,agreement:Math.round((aligned+1)*50),raw};
+  return {score:aligned,agreement:Math.round((aligned+1)*50),raw,components:{technical:Number(f.technicalBias||0),structure,pattern,higherTimeframe:higher,fundamental:Number(fundamentalBias||0)}};
 }
 function rangeConfluenceFor(side,f){
-  const score=Math.max(-1,Math.min(1,setupModel.rangeReversionScore(f,side)));
-  return {score,agreement:Math.round((score+1)*50),raw:score};
+  const sign=side==='LONG'?1:-1;
+  const meanReversion=Math.max(-1,Math.min(1,setupModel.rangeReversionScore(f,side)));
+  const patternAligned=sign*Number(f.priceAction?.patternBias||0);
+  const score=Math.max(-1,Math.min(1,.72*meanReversion+.28*patternAligned));
+  return {score,agreement:Math.round((score+1)*50),raw:score,components:{meanReversion,pattern:patternAligned}};
 }
 function signal(symbol,tf='1h',events=null){
   const now=Date.now(),step=ms(tf);if(!step)throw new Error('Invalid timeframe');
@@ -711,6 +716,8 @@ function signal(symbol,tf='1h',events=null){
   const eventFundamentals=eventFundamentalBias(events,symbol,now);
   const fundamentalBias=Math.max(-1,Math.min(1,.50*Number(f.context.macroBias||0)+.30*Number(f.context.newsSentiment||0)+.20*eventFundamentals.bias));
   const confluence=strategyFamily==='range'?rangeConfluenceFor(lean,f):confluenceFor(lean,f,higherTimeframe,fundamentalBias);
+  const strongestPattern=(f.priceAction.classicalPatterns||[])[0]||null;
+  if(strongestPattern&&strongestPattern.confirmed&&strongestPattern.confidence>=.70&&((lean==='LONG'?1:-1)*strongestPattern.bias<0))reasons.push('Confirmed '+strongestPattern.label+' pattern conflicts with '+lean+' bias');
   if(strategyFamily==='range'){
     if(confluence.score<.25)reasons.push('RSI/Bollinger/momentum reversal evidence lacks range confluence');
   }else if(confluence.score<.12)reasons.push('Technical and fundamental evidence lacks directional confluence');
@@ -720,6 +727,7 @@ function signal(symbol,tf='1h',events=null){
   if(!Array.isArray(events)||!events.length)reasons.push('Economic calendar unavailable');
   else if(relevantEvents.some(e=>String(e.impact).toLowerCase()==='high'&&Math.abs(new Date(e.time).getTime()-now)<=3600000))reasons.push('High-impact event within one hour');
   const paSummary=[f.priceAction.structure,...f.priceAction.patterns].filter(Boolean).join(', ');
+  const patternSummary=(f.priceAction.classicalPatterns||[]).slice(0,3).map(p=>p.label+' '+Math.round(p.confidence*100)+'%'+(p.confirmed?' confirmed':''));
   const technicalReasons=[
     `EMA trend score ${f.trend.toFixed(2)} ATR (${f.trend>0?'bullish':'bearish'})`,
     `RSI(14) ${f.rsi.toFixed(1)}`,
@@ -740,6 +748,7 @@ function signal(symbol,tf='1h',events=null){
   if((lean==='LONG'&&f.context.newsSentiment>0)||(lean==='SHORT'&&f.context.newsSentiment<0))confirmations.push('Recent news sentiment confirms direction');
   if((lean==='LONG'&&f.context.macroBias>0)||(lean==='SHORT'&&f.context.macroBias<0))confirmations.push('Macro backdrop confirms direction');
   if((lean==='LONG'&&eventFundamentals.bias>0)||(lean==='SHORT'&&eventFundamentals.bias<0))confirmations.push('Recent economic surprise confirms direction');
+  if(strongestPattern&&((lean==='LONG'?1:-1)*strongestPattern.bias>0)&&strongestPattern.confidence>=.60)confirmations.push(strongestPattern.label+' pattern supports '+lean+' ('+Math.round(strongestPattern.confidence*100)+'% pattern confidence)');
   if(strategyFamily==='trend'&&higherTimeframe&&(lean==='LONG'?1:-1)*higherTimeframe.trend>0)confirmations.push('4H trend confirms 1H direction');
   if(strategyFamily==='range'&&confluence.score>=.45)confirmations.push('Mean-reversion confluence is strong');
   else if(strategyFamily==='trend'&&confluence.score>=.35)confirmations.push('Technical + fundamental confluence is strong');
@@ -750,7 +759,7 @@ function signal(symbol,tf='1h',events=null){
     confidence:setupProbability??0,strategyFamily,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,
     analysis:{strategyFamily,thesis:`${strategyFamily==='range'?'Range mean-reversion':'Trend continuation'} ${lean} setup; directional lean ${(directionalProbability*100).toFixed(1)}%; triggered setup success probability is ${setupProbability===null?'unavailable':(setupProbability*100).toFixed(1)+'%'}; evidence agreement is ${confluence.agreement}%.`,
       directionalModel:{lean:directionalLean,probability:directionalProbability,agreesWithSetup:directionalLean===lean},
-      technical:technicalReasons,technicalBias:f.technicalBias,priceAction:{structure:f.priceAction.structure,patterns:f.priceAction.patterns,bias:f.priceAction.bias},
+      technical:technicalReasons,technicalBias:f.technicalBias,priceAction:{structure:f.priceAction.structure,patterns:f.priceAction.patterns,bias:f.priceAction.bias,baseBias:f.priceAction.baseBias,patternBias:f.priceAction.patternBias,patternConfidence:f.priceAction.patternConfidence,classicalPatterns:f.priceAction.classicalPatterns,summary:patternSummary},
       news:{available:f.context.newsAvailable,count:f.context.newsCount,sentiment:f.context.newsSentiment,headlines:f.context.newsHeadlines},
       macro:{available:f.context.macroAvailable,bias:f.context.macroBias,series:f.context.macro},
       fundamentals:{bias:fundamentalBias,eventBias:eventFundamentals.bias,eventSurprises:eventFundamentals.surprises},
@@ -760,5 +769,47 @@ function signal(symbol,tf='1h',events=null){
     eventRisk:reasons.some(r=>r.includes('event'))?1:0,generatedAt:now,sourceCandleTs:rows.at(-1).ts,horizonBars:m?.model?.horizon||4,modelId:m?.id||null,modelVersion:VERSION,modelApproved:!!m?.approved,execution:'gated'};
   return {...base,tradePlan:buildTradePlan(base,{side:lean,...planOptions})};
 }
+function alignSeries(length,values,map=x=>x){
+  const out=Array(Math.max(0,length-values.length)).fill(null);
+  return out.concat(values.map(v=>v===undefined||v===null?null:map(v))).slice(-length);
+}
+function chartSnapshot(symbol,tf='1h',{limit=90}={}){
+  const step=ms(tf);if(!step)throw new Error('Invalid timeframe');
+  const now=Date.now();
+  const rows=db.prepare('SELECT ts,open,high,low,close,volume,provider FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 240')
+    .all(symbol,tf,step,now).reverse();
+  if(rows.length<60)throw new Error('Insufficient closed candles for chart analysis');
+  const close=rows.map(r=>r.close),high=rows.map(r=>r.high),low=rows.map(r=>r.low);
+  const ema20=alignSeries(rows.length,ti.EMA.calculate({period:20,values:close}),Number);
+  const ema50=alignSeries(rows.length,ti.EMA.calculate({period:50,values:close}),Number);
+  const ema200=alignSeries(rows.length,ti.EMA.calculate({period:200,values:close}),Number);
+  const rsi=alignSeries(rows.length,ti.RSI.calculate({period:14,values:close}),Number);
+  const macdRaw=ti.MACD.calculate({values:close,fastPeriod:12,slowPeriod:26,signalPeriod:9,SimpleMAOscillator:false,SimpleMASignal:false});
+  const macd=alignSeries(rows.length,macdRaw,x=>Number(x.MACD||0));
+  const macdSignal=alignSeries(rows.length,macdRaw,x=>Number(x.signal||0));
+  const macdHist=alignSeries(rows.length,macdRaw,x=>Number(x.histogram||0));
+  const atr=Number(ti.ATR.calculate({period:14,high,low,close}).at(-1)||0);
+  const adxRaw=ti.ADX.calculate({period:14,high,low,close});
+  const adx=alignSeries(rows.length,adxRaw,x=>Number(x.adx||0));
+  const analysisRows=rows.slice(-60),pa=analyzePriceAction(analysisRows,atr);
+  const patterns=(pa.classicalPatterns||[]).map(p=>({...p,points:(p.points||[]).map(pt=>({...pt,ts:analysisRows[pt.i]?.ts??null})).filter(pt=>Number.isFinite(pt.ts))}));
+  const take=Math.max(50,Math.min(120,Number(limit)||90)),start=Math.max(0,rows.length-take);
+  const candles=rows.slice(start),slice=a=>a.slice(start);
+  const lastE20=ema20.at(-1),lastE50=ema50.at(-1),lastE200=ema200.at(-1),lastRsi=rsi.at(-1),lastMacd=macd.at(-1),lastMacdSignal=macdSignal.at(-1),lastAdx=adx.at(-1);
+  const emaAlignment=lastE20&&lastE50&&lastE200?(lastE20>lastE50&&lastE50>lastE200?'bullish':lastE20<lastE50&&lastE50<lastE200?'bearish':'mixed'):'partial';
+  const rsiState=lastRsi>=70?'overbought':lastRsi<=30?'oversold':lastRsi>=55?'bullish momentum':lastRsi<=45?'bearish momentum':'neutral';
+  return {symbol,timeframe:tf,generatedAt:now,candles,
+    indicators:{ema20:slice(ema20),ema50:slice(ema50),ema200:slice(ema200),rsi:slice(rsi),macd:slice(macd),macdSignal:slice(macdSignal),macdHist:slice(macdHist),adx:slice(adx)},
+    levels:{support:pa.supportPrice,resistance:pa.resistancePrice,swingSupport:pa.swingSupportPrice,swingResistance:pa.swingResistancePrice},
+    priceAction:{structure:pa.structure,bias:pa.bias,baseBias:pa.baseBias,patternBias:pa.patternBias,patternConfidence:pa.patternConfidence,patterns},
+    indicatorSummary:{close:close.at(-1),ema20:lastE20,ema50:lastE50,ema200:lastE200,emaAlignment,rsi:lastRsi,rsiState,macd:lastMacd,macdSignal:lastMacdSignal,macdState:lastMacd>lastMacdSignal?'bullish':'bearish',adx:lastAdx,trendStrength:lastAdx>=25?'strong':lastAdx>=18?'developing':'weak'},
+    explanations:[
+      'EMA alignment is '+emaAlignment+'; EMA20 '+Number(lastE20||0).toFixed(5)+', EMA50 '+Number(lastE50||0).toFixed(5)+(lastE200?', EMA200 '+Number(lastE200).toFixed(5):'')+'.',
+      'RSI(14) is '+Number(lastRsi||0).toFixed(1)+' ('+rsiState+').',
+      'MACD is '+(lastMacd>lastMacdSignal?'above':'below')+' its signal line; ADX is '+Number(lastAdx||0).toFixed(1)+'.',
+      patterns.length?patterns.slice(0,3).map(p=>p.label+': '+Math.round(p.confidence*100)+'% confidence'+(p.confirmed?', confirmed':'')+'. '+p.description).join(' '):'No high-quality classical chart pattern is currently detected.'
+    ]
+  };
+}
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
-module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,stableSideGate,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,status,setupModel};
+module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,stableSideGate,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,chartSnapshot,status,setupModel};
