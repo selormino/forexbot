@@ -353,13 +353,30 @@ test('policy operating stats ignore sides that fail validation',()=>{
 });
 
 
-test('recent stability gate requires both broad and recent side approval',()=>{
+test('recent stability gate vetoes measurable failures but treats sparse recent evidence as neutral',()=>{
   const broad={allowedSides:['LONG','SHORT'],diagnostics:{LONG:{passed:true},SHORT:{passed:true}}};
-  const recentOnlyLong={recentAllowedSides:['LONG'],recentPassesUserFloor:true};
-  const stable=research.stableSideGate(broad,recentOnlyLong);
+  const recent={
+    recentAllowedSides:['LONG'],
+    recentPassesUserFloor:true,
+    recentSideDiagnostics:{
+      LONG:{passed:true,highProbability:{selected:14,minSamples:10}},
+      SHORT:{passed:false,highProbability:{selected:12,minSamples:10}}
+    }
+  };
+  const stable=research.stableSideGate(broad,recent);
   assert.deepEqual(stable.allowedSides,['LONG']);
-  assert.deepEqual(stable.broadAllowedSides,['LONG','SHORT']);
-  assert.deepEqual(stable.recentAllowedSides,['LONG']);
-  const none=research.stableSideGate(broad,{recentAllowedSides:[],recentPassesUserFloor:false});
-  assert.deepEqual(none.allowedSides,[]);
+  assert.deepEqual(stable.recentVetoSides,['SHORT']);
+  assert.deepEqual(stable.insufficientRecentSides,[]);
+
+  const sparse=research.stableSideGate(broad,{
+    recentAllowedSides:[],
+    recentPassesUserFloor:false,
+    recentSideDiagnostics:{
+      LONG:{passed:false,highProbability:{selected:0,minSamples:10}},
+      SHORT:{passed:false,highProbability:{selected:4,minSamples:10}}
+    }
+  });
+  assert.deepEqual(sparse.allowedSides,['LONG','SHORT']);
+  assert.deepEqual(sparse.recentVetoSides,[]);
+  assert.deepEqual(sparse.insufficientRecentSides,['LONG','SHORT']);
 });
