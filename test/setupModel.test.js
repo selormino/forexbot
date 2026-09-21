@@ -207,3 +207,20 @@ test('joint policy meta-label rejects low directional confidence',()=>{
   const examples=[{side:'LONG',directionalX:[1],z:[1],y:1,realizedR:.8}];
   assert.equal(research.jointPolicyExamples(examples,directional,.60).length,0);
 });
+
+
+test('directional model competition returns a calibrated model',()=>{
+  const train=Array.from({length:220},(_,i)=>{
+    const a=(i%20)/19,b=((i*7)%17)/16;
+    return {x:[a,b,a*b],y:(a>.55&&b>.4)?1:0};
+  });
+  const cal=Array.from({length:80},(_,i)=>{
+    const a=((i+3)%20)/19,b=((i*5+1)%17)/16;
+    return {x:[a,b,a*b],y:(a>.55&&b>.4)?1:0};
+  });
+  const out=research.fitDirectionalModel(train,cal);
+  assert.ok(out.model);
+  assert.ok(['logistic','boosted-stumps'].includes(out.comparison.selected));
+  assert.ok(Number.isFinite(out.comparison.logistic.logLoss));
+  assert.ok(Number.isFinite(out.comparison.boosted.logLoss));
+});
