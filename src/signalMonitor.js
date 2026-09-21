@@ -175,7 +175,58 @@ function advance(limit=3000){
       if(outcome){const success=finalize(row,outcome,exitPrice,all[endIndex].ts,all.slice(0,endIndex+1));settled++;wins+=success;}
     }
   });tx();
-  return {triggered,expired,settled,wins};
+
+  let shadowTriggered=0,shadowExpired=0,shadowSettled=0,shadowWins=0;
+  const shadowRows=db.prepare("SELECT * FROM signal_records WHERE status='FILTERED' AND shadow_status IN ('PENDING_ENTRY','ACTIVE') ORDER BY id LIMIT ?")
+    .all(Math.max(1,Math.min(10000,Number(limit)||3000)));
+  const shadowTx=db.transaction(()=>{
+    for(let row of shadowRows){
+      const after=db.prepare('SELECT ts,open,high,low,close FROM candles WHERE symbol=? AND timeframe=? AND ts>? ORDER BY ts LIMIT ?')
+        .all(row.symbol,row.timeframe,row.source_ts,row.entry_expiry_bars+row.hold_bars+2);
+      if(!after.length)continue;
+      if(row.shadow_status==='PENDING_ENTRY'){
+        const expirySlice=after.slice(0,row.entry_expiry_bars);
+        let triggerIndex=-1;
+        for(let i=0;i<expirySlice.length;i++){if(hit(row,expirySlice[i]).entryHit){triggerIndex=i;break;}}
+        if(triggerIndex<0){
+          if(after.length>=row.entry_expiry_bars){
+            db.prepare("UPDATE signal_records SET shadow_status='EXPIRED',shadow_settled_at=?,shadow_outcome='NO_ENTRY' WHERE id=?")
+              .run(Date.now(),row.id);shadowExpired++;
+          }
+          continue;
+        }
+        const triggerBar=after[triggerIndex];
+        db.prepare("UPDATE signal_records SET shadow_status='ACTIVE',shadow_entry_triggered_at=? WHERE id=?").run(triggerBar.ts,row.id);
+        row={...row,shadow_status:'ACTIVE',shadow_entry_triggered_at:triggerBar.ts};shadowTriggered++;
+      }
+      const all=db.prepare('SELECT ts,open,high,low,close FROM candles WHERE symbol=? AND timeframe=? AND ts>=? ORDER BY ts LIMIT ?')
+        .all(row.symbol,row.timeframe,row.shadow_entry_triggered_at,row.hold_bars);
+      if(!all.length)continue;
+      let outcome=null,exitPrice=null,endIndex=-1;
+      for(let i=0;i<all.length;i++){
+        const h=hit(row,all[i]);
+        if(h.stopHit&&h.targetHit){outcome='SL';exitPrice=row.stop_price;endIndex=i;break;}
+        if(h.stopHit){outcome='SL';exitPrice=row.stop_price;endIndex=i;break;}
+        if(h.targetHit){outcome='TP';exitPrice=row.target_price;endIndex=i;break;}
+      }
+      if(!outcome&&all.length>=row.hold_bars){
+        const last=all[all.length-1],side=row.lean_direction==='LONG'?1:-1;
+        const net=side*(last.close/row.entry_price-1)-row.cost_bps/10000;
+        outcome=net>0?'TIMEOUT_WIN':'TIMEOUT_LOSS';exitPrice=last.close;endIndex=all.length-1;
+      }
+      if(outcome){
+        const side=row.lean_direction==='LONG'?1:-1;
+        const success=['TP','TIMEOUT_WIN'].includes(outcome)?1:0;
+        const outcomePips=side*distanceUnits(row.symbol,row.entry_price,exitPrice)*(exitPrice>=row.entry_price?1:-1);
+        const realizedR=(side*(exitPrice-row.entry_price))/Math.max(Math.abs(row.entry_price-row.stop_price),1e-12);
+        const mm=updateMfeMae(row,all.slice(0,endIndex+1));
+        db.prepare("UPDATE signal_records SET shadow_settled_at=?,shadow_status='SETTLED',shadow_exit_price=?,shadow_success=?,shadow_outcome=?,shadow_outcome_pips=?,shadow_realized_r=?,shadow_mfe_pips=?,shadow_mae_pips=? WHERE id=?")
+          .run(all[endIndex].ts,exitPrice,success,outcome,outcomePips,realizedR,mm.mfePips,mm.maePips,row.id);
+        shadowSettled++;shadowWins+=success;
+      }
+    }
+  });shadowTx();
+  return {triggered,expired,settled,wins,shadowTriggered,shadowExpired,shadowSettled,shadowWins};
 }
 function settle(limit=3000){return advance(limit);}
 
