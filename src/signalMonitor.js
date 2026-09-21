@@ -60,6 +60,17 @@ addColumn('directional_min_probability',"REAL");
 addColumn('model_version',"TEXT");
 addColumn('setup_probability',"REAL");
 addColumn('directional_min_probability',"REAL");
+addColumn('shadow_status',"TEXT");
+addColumn('shadow_entry_triggered_at',"INTEGER");
+addColumn('shadow_settled_at',"INTEGER");
+addColumn('shadow_exit_price',"REAL");
+addColumn('shadow_success',"INTEGER");
+addColumn('shadow_outcome',"TEXT");
+addColumn('shadow_outcome_pips',"REAL");
+addColumn('shadow_realized_r',"REAL");
+addColumn('shadow_mfe_pips',"REAL");
+addColumn('shadow_mae_pips',"REAL");
+db.prepare("UPDATE signal_records SET shadow_status='PENDING_ENTRY' WHERE status='FILTERED' AND shadow_status IS NULL AND lean_direction IN ('LONG','SHORT') AND entry_price IS NOT NULL AND stop_price IS NOT NULL AND target_price IS NOT NULL").run();
 
 const tfMs=tf=>({'1h':3600000,'4h':14400000}[tf]||0);
 const minProbability=()=>signalMinProbability();
@@ -82,6 +93,7 @@ function record(signal){
     symbol:signal.symbol,timeframe:signal.timeframe,candidate:signal.candidateDirection||'WAIT',direction:signal.direction,
     lean,probability:Number(signal.probability),directionalProbability,setupProbability:Number.isFinite(setupProbability)?setupProbability:null,directionalFloor,threshold,price:Number(signal.price),modelId:signal.modelId||null,modelVersion,
     horizon:Number(signal.horizonBars||4),costBps:Number(signal.costs?.total||0),qualified:+qualified,actionable:+actionable,status,
+    shadowStatus:status==='FILTERED'&&['LONG','SHORT'].includes(lean)?'PENDING_ENTRY':null,
     filters:JSON.stringify(signal.filters||[]),priceAction:JSON.stringify(signal.priceAction||null),plan:JSON.stringify(plan),analysis:JSON.stringify(signal.analysis||null),
     entry:plan.entry,stop:plan.stop,target:plan.target,tp1:plan.tp1,stopPips:plan.stopPips,targetPips:plan.targetPips,unitLabel:plan.unitLabel,
     entryExpiryBars:plan.entryExpiryBars,holdBars:plan.holdBars
@@ -89,10 +101,10 @@ function record(signal){
   db.prepare(`INSERT OR IGNORE INTO signal_records(
     signal_key,created_at,source_ts,source_close_at,due_at,symbol,timeframe,candidate_direction,direction,lean_direction,
     probability,directional_probability,threshold,price,model_id,horizon_bars,cost_bps,qualified,actionable,status,filters_json,price_action_json,
-    plan_json,analysis_json,entry_price,stop_price,target_price,tp1_price,stop_pips,target_pips,unit_label,entry_expiry_bars,hold_bars,setup_probability,directional_min_probability,model_version
+    plan_json,analysis_json,entry_price,stop_price,target_price,tp1_price,stop_pips,target_pips,unit_label,entry_expiry_bars,hold_bars,setup_probability,directional_min_probability,model_version,shadow_status
   ) VALUES(@key,@createdAt,@sourceTs,@sourceCloseAt,@dueAt,@symbol,@timeframe,@candidate,@direction,@lean,
     @probability,@directionalProbability,@threshold,@price,@modelId,@horizon,@costBps,@qualified,@actionable,@status,@filters,@priceAction,
-    @plan,@analysis,@entry,@stop,@target,@tp1,@stopPips,@targetPips,@unitLabel,@entryExpiryBars,@holdBars,@setupProbability,@directionalFloor,@modelVersion)`).run(row);
+    @plan,@analysis,@entry,@stop,@target,@tp1,@stopPips,@targetPips,@unitLabel,@entryExpiryBars,@holdBars,@setupProbability,@directionalFloor,@modelVersion,@shadowStatus)`).run(row);
   return db.prepare('SELECT * FROM signal_records WHERE signal_key=?').get(key);
 }
 
