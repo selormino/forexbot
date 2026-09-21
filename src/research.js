@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v27-policy-ood';
+const VERSION='technical-fundamental-v28-side-specialized';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -218,9 +218,50 @@ function poolSplitRows(rows,cutoff){
 }
 function stripCalibration(model){
   if(!model)return null;
+  if(model.kind==='side-composite'){
+    return {
+      kind:'side-composite',
+      base:stripCalibration(model.base),
+      sideModels:Object.fromEntries(Object.entries(model.sideModels||{}).map(([side,m])=>[side,stripCalibration(m)]))
+    };
+  }
   const {calibration,...raw}=model;
   return raw;
 }
+function calibrateRawModel(raw,rows){
+  if(!raw)return null;
+  if(raw.kind==='side-composite'){
+    const baseRows=rows||[];
+    const base=raw.base?{...raw.base,calibration:setupModel.calibrateModel(raw.base,baseRows)}:null;
+    const sideModels={};
+    for(const [side,model] of Object.entries(raw.sideModels||{})){
+      const sideRows=(rows||[]).filter(x=>x.side===side);
+      if(sideRows.length>=20)sideModels[side]={...model,calibration:setupModel.calibrateModel(model,sideRows)};
+    }
+    return {...raw,base,sideModels};
+  }
+  return {...raw,calibration:setupModel.calibrateModel(raw,rows||[])};
+}
+function sideSpecializedRaw(baseRaw,trainExamples,fitCal){
+  const sideModels={},diagnostics={};
+  for(const side of ['LONG','SHORT']){
+    const train=(trainExamples||[]).filter(x=>x.side===side);
+    const cal=(fitCal||[]).filter(x=>x.side===side);
+    if(train.length<100||cal.length<30){
+      diagnostics[side]={available:false,trainSamples:train.length,calibrationSamples:cal.length};
+      continue;
+    }
+    const competition=setupModel.fitCompetitive(train,cal);
+    sideModels[side]=stripCalibration(competition.model);
+    diagnostics[side]={available:true,trainSamples:train.length,calibrationSamples:cal.length,competition:competition.comparison};
+  }
+  if(!Object.keys(sideModels).length)return null;
+  return {
+    raw:{kind:'side-composite',base:baseRaw,sideModels},
+    diagnostics
+  };
+}
+
 function jointPolicyExamples(examples,directionalModel,directionalFloor){
   if(!directionalModel)return examples;
   const floor=Math.max(.5,Math.min(.9,Number(directionalFloor)||.55));
@@ -266,7 +307,8 @@ function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
   const cut=Math.max(20,Math.min(calExamples.length-15,Math.floor(calExamples.length*.65)));
   const fitCal=calExamples.slice(0,cut),validation=calExamples.slice(cut);
   if(fitCal.length<20||validation.length<15)return {model:pooledModel,selection:{selected:'pooled',reason:'insufficient calibration split',calibrationSamples:calExamples.length,candidates:[]}};
-  const rawCandidates=[{name:'pooled-local-cal',raw:stripCalibration(pooledModel),complexity:0}];
+  const pooledRaw=stripCalibration(pooledModel);
+  const rawCandidates=[{name:'pooled-local-cal',raw:pooledRaw,complexity:0}];
   if(trainExamples.length>=120){
     const local=setupModel.fitCompetitive(trainExamples,fitCal);
     rawCandidates.push({name:'target-local',raw:stripCalibration(local.model),complexity:1});
@@ -275,9 +317,11 @@ function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
       const localRecent=setupModel.fitCompetitive(recent,fitCal);
       rawCandidates.push({name:'target-recent',raw:stripCalibration(localRecent.model),complexity:2});
     }
+    const specialized=sideSpecializedRaw(pooledRaw,trainExamples,fitCal);
+    if(specialized)rawCandidates.push({name:'side-specialized',raw:specialized.raw,complexity:3,sideDiagnostics:specialized.diagnostics});
   }
   const evaluated=rawCandidates.map(candidate=>{
-    const calibrated={...candidate.raw,calibration:setupModel.calibrateModel(candidate.raw,fitCal)};
+    const calibrated=calibrateRawModel(candidate.raw,fitCal);
     const probability=setupModel.probabilityMetrics(calibrated,validation);
     const operating=setupModel.statsAt(calibrated,validation,threshold);
     const passesUserFloor=operating.selected>=Math.max(8,Math.floor(validation.length*.12))&&operating.selectedAccuracy>=.60&&(operating.averageR||0)>0;
@@ -293,14 +337,17 @@ function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
     return a.complexity-b.complexity;
   });
   const chosen=ranked[0]||evaluated[0];
-  const finalRaw=chosen?.raw||stripCalibration(pooledModel);
-  const finalModel={...finalRaw,calibration:setupModel.calibrateModel(finalRaw,calExamples),planOptions:pooledModel.planOptions,
-    meaning:'P(success | confirmation entry triggered), target-adapted pre-test calibration'};
+  const finalRaw=chosen?.raw||pooledRaw;
+  const finalModel={...calibrateRawModel(finalRaw,calExamples),planOptions:pooledModel.planOptions,
+    meaning:'P(success | confirmation entry triggers), target-adapted pre-test calibration with optional side specialization'};
   return {model:finalModel,selection:{
     selected:chosen?.name||'pooled-local-cal',
     calibrationSamples:calExamples.length,fitSamples:fitCal.length,validationSamples:validation.length,
     userAccuracyFloor:.60,
-    candidates:evaluated.map(x=>({name:x.name,passesUserFloor:x.passesUserFloor,probability:x.probability,operating:x.operating}))
+    candidates:evaluated.map(x=>({
+      name:x.name,passesUserFloor:x.passesUserFloor,probability:x.probability,operating:x.operating,
+      sideDiagnostics:x.sideDiagnostics||null
+    }))
   }};
 }
 
@@ -457,7 +504,7 @@ function trainSeries(symbol,tf){
   const setupApproved=setupReport.status==='trained'&&setupReport.selected>=30&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss;
   const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||(f.setupProbability.recommendedTest.averageR||0)>0));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Best-side adaptive setup model must select at most one policy-aligned robust in-distribution side per timestamp, have at least 30 market-specific out-of-sample selections at the configured threshold, meet the unchanged accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'Best-side adaptive setup model may specialize LONG and SHORT separately using pre-test data only; it must still select at most one policy-aligned robust in-distribution side per timestamp, have at least 30 market-specific out-of-sample selections at the configured threshold, meet the unchanged accuracy target, produce positive average R, beat baseline log loss, and beat baseline across every chronological fold',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
