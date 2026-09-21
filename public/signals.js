@@ -9,6 +9,26 @@ const fmt=x=>x==null?'—':Number(x).toFixed(Math.abs(Number(x))>=100?2:5);
 const num=x=>x==null?'—':Number(x).toFixed(1);
 const cls=x=>x==='LONG'?'long':x==='SHORT'?'short':'wait';
 const statusOf=s=>s.direction!=='WAIT'?'STRICT':s.candidateDirection!=='WAIT'?'FILTERED':'WATCH';
+const signalStatusMeta=code=>({
+ STRICT:{label:'Ready — strict setup',detail:'All required model, probability, confluence and risk gates passed.'},
+ FILTERED:{label:'Filtered — setup blocked',detail:'A possible setup was found, but one or more quality or safety gates rejected it.'},
+ WATCH:{label:'Watching — no setup yet',detail:'The market is being monitored, but there is no qualified entry setup yet.'}
+}[String(code||'').toUpperCase()]||{label:String(code||'—').replaceAll('_',' '),detail:''});
+const lifecycleMeta=code=>({
+ FILTERED:{label:'Filtered — not qualified',detail:'The setup failed one or more quality gates, so no entry was tracked.'},
+ PENDING_ENTRY:{label:'Waiting for entry',detail:'The setup qualified, but price has not reached the planned entry yet.'},
+ ACTIVE:{label:'Entry triggered — active',detail:'Price reached the entry. Stop, target and time limit are now being monitored.'},
+ EXPIRED:{label:'Expired — entry never triggered',detail:'Price did not reach the planned entry before the entry window closed.'},
+ SETTLED:{label:'Finished — result recorded',detail:'The setup has completed and its final result has been recorded.'}
+}[String(code||'').toUpperCase()]||{label:String(code||'—').replaceAll('_',' '),detail:''});
+const outcomeMeta=code=>({
+ TP:{label:'Target hit — win',detail:'Price reached the planned profit target.'},
+ SL:{label:'Stop hit — loss',detail:'Price reached the planned stop-loss.'},
+ TIMEOUT_WIN:{label:'Time limit reached — win',detail:'Neither target nor stop was hit before the holding limit; closing price finished profitable after estimated costs.'},
+ TIMEOUT_LOSS:{label:'Time limit reached — loss',detail:'Neither target nor stop was hit before the holding limit; closing price finished unprofitable after estimated costs.'},
+ NO_ENTRY:{label:'No entry — expired',detail:'The confirmation entry was never triggered.'}
+}[String(code||'').toUpperCase()]||{label:String(code||'—').replaceAll('_',' '),detail:''});
+const stateHtml=(meta,css='neutral')=>`<span class="pill ${css}" title="${esc(meta.detail)}">${esc(meta.label)}</span>${meta.detail?`<small>${esc(meta.detail)}</small>`:''}`;
 const friendly=e=>{const m=String(e?.message||e||'Unknown error');if(/Market closed/i.test(m))return 'This market is currently closed. No order was sent.';if(/Preview stale/i.test(m))return 'Price moved after the preview. Refresh the trade preview and try again.';if(/Autotrading disabled/i.test(m))return 'MT5 Algo Trading is disabled. Enable Algo Trading and external Python API trading in MT5.';return m.replace(/^MT5 order_send failed:\s*/,'');};
 
 function modal(title,body,actions=''){ $('modalTitle').textContent=title;$('modalBody').innerHTML=body;$('modalActions').innerHTML=actions;$('modalBackdrop').classList.add('open');}
@@ -20,7 +40,7 @@ function renderAccuracy(m){
  const q=m.qualified;
  $('accuracyCards').innerHTML=`
  <div class="card metric"><span class="label">Strict accuracy</span><div class="big">${pct(q.accuracy)}</div><span class="muted">${q.wins} wins · ${q.settled} settled</span></div>
- <div class="card metric"><span class="label">Monitoring</span><div class="big compact">${q.pendingEntry+q.active} open</div><span class="muted">${q.pendingEntry} waiting · ${q.active} active</span></div>
+ <div class="card metric"><span class="label">Monitoring</span><div class="big compact">${q.pendingEntry+q.active} open</div><span class="muted">${q.pendingEntry} waiting for entry · ${q.active} entry triggered</span></div>
  <div class="card metric"><span class="label">Validation</span><div class="big compact">${m.readyForBrokerValidation?'READY':'RESEARCH'}</div><span class="muted">Target ${pct(m.targetAccuracy)} · avg R ${q.averageR==null?'—':Number(q.averageR).toFixed(2)}</span></div>`;
 }
 function renderSettings(s){settings=s;$('thresholdInput').value=Math.round(Number(s.signalMinProbability||.7)*100);$('thresholdSource').textContent=s.source==='database'?'custom':'default';}
@@ -41,7 +61,7 @@ function renderBoard(rows){
    <td><b>${conf==null?'—':conf+'%'}</b><small>cross-factor agreement</small></td>
    <td><b>${fmt(p.entry)}</b><small>SL ${fmt(p.stop)} · TP ${fmt(p.target)} · ${num(p.targetPips)} ${esc(unit)}</small></td>
    <td><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></td>
-   <td><span class="pill ${status==='STRICT'?'good':'neutral'}">${status}</span><small>${esc((s.filters||[])[0]||'All gates passed')}</small></td>
+   <td>${stateHtml(signalStatusMeta(status),status==='STRICT'?'good':'neutral')}<small>${esc((s.filters||[])[0]||'All gates passed')}</small></td>
    <td><div class="action-stack"><button class="small-btn" onclick="explain(${i})">Details</button><button class="small-btn primary" onclick="trade(${i})">Trade</button></div></td>
   </tr>`;
  }).join('');
@@ -55,7 +75,7 @@ window.explain=i=>{
     <div><small>Bias</small><b class="${cls(s.leanDirection)}">${esc(s.leanDirection)}</b></div>
     <div><small>Setup success</small><b>${pct(s.setupProbability)}</b><small>direction ${pct(s.directionalProbability)}</small></div>
     <div><small>Evidence agreement</small><b>${a.confluence?.agreement??'—'}%</b></div>
-    <div><small>Status</small><b>${statusOf(s)}</b></div>
+    <div><small>Status</small><b>${esc(signalStatusMeta(statusOf(s)).label)}</b><small>${esc(signalStatusMeta(statusOf(s)).detail)}</small></div>
    </div>
    <div class="notice">${esc(a.thesis||'')}</div>
    <div class="kv"><div><small>Entry</small><b>${fmt(p.entry)}</b></div><div><small>Stop</small><b>${fmt(p.stop)}</b></div><div><small>Target</small><b>${fmt(p.target)}</b></div><div><small>R:R</small><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></div></div>
@@ -89,7 +109,7 @@ window.saveThreshold=async()=>{
 window.trade=i=>{
  const s=board[i],p=s.tradePlan||{},conf=s.analysis?.confluence?.agreement;
  modal(`Trade ${s.symbol} ${s.timeframe}`,`
-   <div class="kv"><div><small>Bias</small><b class="${cls(s.leanDirection)}">${esc(s.leanDirection)}</b></div><div><small>Setup success</small><b>${pct(s.setupProbability)}</b><small>direction ${pct(s.directionalProbability)}</small></div><div><small>Evidence agreement</small><b>${conf??'—'}%</b></div><div><small>Status</small><b>${statusOf(s)}</b></div></div>
+   <div class="kv"><div><small>Bias</small><b class="${cls(s.leanDirection)}">${esc(s.leanDirection)}</b></div><div><small>Setup success</small><b>${pct(s.setupProbability)}</b><small>direction ${pct(s.directionalProbability)}</small></div><div><small>Evidence agreement</small><b>${conf??'—'}%</b></div><div><small>Status</small><b>${esc(signalStatusMeta(statusOf(s)).label)}</b><small>${esc(signalStatusMeta(statusOf(s)).detail)}</small></div></div>
    <div class="notice">${statusOf(s)==='STRICT'?'Strict gates passed.':'Manual demo execution is allowed, but this setup has not passed all strict gates.'}</div>
    <div class="kv"><div><small>Entry</small><b>${fmt(p.entry)}</b></div><div><small>SL</small><b>${fmt(p.stop)}</b></div><div><small>TP</small><b>${fmt(p.target)}</b></div><div><small>R:R</small><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></div></div>
    <div class="field"><label>Admin API key</label><input id="tradeAdmin" type="password" autocomplete="off" value="${esc(adminToken)}" placeholder="Required for broker preview"></div>`,
@@ -127,10 +147,10 @@ window.sendTrade=async(id,mode)=>{
  }catch(e){modal('Order not sent','<div class="notice">'+esc(friendly(e))+'</div>','<button onclick="closeModal()">Close</button>')}
 };
 
-function renderSeries(m){const rows=Object.entries(m.bySeries||{}).sort((a,b)=>a[0].localeCompare(b[0]));$('seriesAccuracy').innerHTML=rows.map(([k,v])=>{const [symbol,tf]=k.split(':');return `<tr><td><b>${esc(symbol)}</b></td><td>${esc(tf)}</td><td>${v.pendingEntry}</td><td>${v.active}</td><td>${v.settled}</td><td>${v.wins}</td><td>${pct(v.accuracy)}</td><td>${v.averageR==null?'—':Number(v.averageR).toFixed(2)}</td></tr>`}).join('')||'<tr><td colspan="8">No strict setups yet.</td></tr>'}
+function renderSeries(m){const rows=Object.entries(m.bySeries||{}).sort((a,b)=>a[0].localeCompare(b[0]));$('seriesAccuracy').innerHTML=rows.map(([k,v])=>{const [symbol,tf]=k.split(':');return `<tr><td><b>${esc(symbol)}</b></td><td>${esc(tf)}</td><td>${v.pendingEntry}<small>waiting for entry</small></td><td>${v.active}<small>entry triggered</small></td><td>${v.settled}<small>finished</small></td><td>${v.wins}</td><td>${pct(v.accuracy)}</td><td>${v.averageR==null?'—':Number(v.averageR).toFixed(2)}</td></tr>`}).join('')||'<tr><td colspan="8">No strict setups yet.</td></tr>'}
 function renderEdge(e){const out=(e.series||[]).map(s=>({symbol:s.symbol,timeframe:s.timeframe,approved:s.approved,direction:s.setupBacktest,setup:s.setupProbability}));$('edgeDiagnostics').innerHTML=out.map(x=>`<tr><td><b>${esc(x.symbol)}</b></td><td>${esc(x.timeframe)}</td><td>${pct(x.setup?.threshold)}</td><td>${x.setup?.testSamples||0}</td><td>${pct(x.setup?.accuracy)}</td><td>${x.setup?.selected||0}</td><td>${pct(x.setup?.selectedAccuracy)}</td><td>${x.setup?.averageR==null?'—':Number(x.setup.averageR).toFixed(2)}</td></tr>`).join('')}
 function renderBrokerActivity(rows){$('brokerActivity').innerHTML=(rows||[]).filter(r=>r.broker_order_id||String(r.status||'').startsWith('DEMO_')).map(r=>`<tr><td>${new Date(r.created_at).toLocaleString()}</td><td><b>${esc(r.symbol)}</b><small>${esc(r.timeframe)}</small></td><td>${r.manual?'MANUAL':'AUTO'}<small>${esc(String(r.mode||'').toUpperCase())}</small></td><td class="${cls(r.side)}">${esc(r.side)}<small>${pct(r.probability)} · conf ${r.confluence==null?'—':Number(r.confluence).toFixed(0)+'%'}</small></td><td>${esc(r.broker_order_id||'—')}</td><td><span class="pill neutral">${esc(r.broker_status||r.status||'—')}</span></td><td>${r.broker_fill_price==null?'—':fmt(r.broker_fill_price)}<small>${r.broker_close_price==null?'':'close '+fmt(r.broker_close_price)}</small></td><td>${r.broker_profit==null?'—':Number(r.broker_profit).toFixed(2)}</td></tr>`).join('')||'<tr><td colspan="8">No broker executions recorded yet.</td></tr>'}
-function renderHistory(rows){$('signalHistory').innerHTML=rows.map(r=>`<tr><td>${new Date(r.created_at).toLocaleString()}</td><td><b>${esc(r.symbol)}</b><small>${esc(r.timeframe)}</small></td><td class="${cls(r.lean_direction)}">${esc(r.lean_direction||r.candidate_direction)}</td><td>${pct(r.setup_probability)}<small>dir ${pct(r.directional_probability)}</small></td><td>${fmt(r.entry_price)}</td><td>${esc(r.status)}</td><td>${esc(r.outcome||'—')}</td><td>${r.outcome_pips==null?'—':Number(r.outcome_pips).toFixed(1)+' '+esc(r.unit_label||'')}<small>${r.realized_r==null?'':Number(r.realized_r).toFixed(2)+'R'}</small></td></tr>`).join('')||'<tr><td colspan="8">No monitored history yet.</td></tr>'}
+function renderHistory(rows){$('signalHistory').innerHTML=rows.map(r=>{const st=lifecycleMeta(r.status),out=outcomeMeta(r.outcome);return `<tr><td>${new Date(r.created_at).toLocaleString()}</td><td><b>${esc(r.symbol)}</b><small>${esc(r.timeframe)}</small></td><td class="${cls(r.lean_direction)}">${esc(r.lean_direction||r.candidate_direction)}</td><td>${pct(r.setup_probability)}<small>dir ${pct(r.directional_probability)}</small></td><td>${fmt(r.entry_price)}</td><td>${stateHtml(st,r.status==='SETTLED'?'good':'neutral')}</td><td>${r.outcome?stateHtml(out,r.success===1?'good':r.status==='EXPIRED'?'neutral':'bad'):'—'}</td><td>${r.outcome_pips==null?'—':Number(r.outcome_pips).toFixed(1)+' '+esc(r.unit_label||'')}<small>${r.realized_r==null?'':Number(r.realized_r).toFixed(2)+'R'}</small></td></tr>`}).join('')||'<tr><td colspan="8">No monitored history yet.</td></tr>'}
 
 window.load=async()=>{
  try{
