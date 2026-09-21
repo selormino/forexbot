@@ -240,6 +240,10 @@ function aggregate(rows){
     averageProbability:settled.length?settled.reduce((s,r)=>s+Number(r.setup_probability??r.directional_probability),0)/settled.length:null,
     averageR:settled.length?settled.reduce((s,r)=>s+Number(r.realized_r||0),0)/settled.length:null};
 }
+function aggregateShadow(rows){
+  const tracked=rows.filter(r=>r.shadow_status),settled=tracked.filter(r=>r.shadow_status==='SETTLED'),wins=settled.filter(r=>r.shadow_success===1).length,ci=wilson(wins,settled.length);
+  return {total:tracked.length,pendingEntry:tracked.filter(r=>r.shadow_status==='PENDING_ENTRY').length,active:tracked.filter(r=>r.shadow_status==='ACTIVE').length,expired:tracked.filter(r=>r.shadow_status==='EXPIRED').length,settled:settled.length,wins,losses:settled.length-wins,accuracy:settled.length?wins/settled.length:null,confidence95:ci,averageR:settled.length?settled.reduce((sum,r)=>sum+Number(r.shadow_realized_r||0),0)/settled.length:null};
+}
 function currentVersion(){
   const exists=db.prepare("SELECT 1 ok FROM sqlite_master WHERE type='table' AND name='research_models'").get();
   return exists?db.prepare('SELECT version FROM research_models ORDER BY id DESC LIMIT 1').get()?.version||null:null;
@@ -251,6 +255,7 @@ function metrics(){
   for(const r of research){const k=r.symbol+':'+r.timeframe;(researchGroups[k]||(researchGroups[k]=[])).push(r);}
   for(const r of actionable){const k=r.symbol+':'+r.timeframe;(strictGroups[k]||(strictGroups[k]=[])).push(r);}
   const researchAgg=aggregate(research),strictAgg=aggregate(actionable);
+  const currentFiltered=version?db.prepare("SELECT * FROM signal_records WHERE status='FILTERED' AND model_version=? ORDER BY created_at").all(version):[];
   const allRows=db.prepare('SELECT * FROM signal_records ORDER BY created_at').all();
   const allQualified=allRows.filter(r=>r.qualified===1),allActionable=allQualified.filter(r=>r.actionable===1);
   return {
@@ -260,6 +265,8 @@ function metrics(){
     actionable:strictAgg,strict:strictAgg,
     allTimeQualified:aggregate(allQualified),
     allTimeActionable:aggregate(allActionable),
+    shadowFiltered:aggregateShadow(currentFiltered),
+    allTimeShadowFiltered:aggregateShadow(allRows.filter(r=>r.status==='FILTERED')),
     bySeries:Object.fromEntries(Object.entries(strictGroups).map(([k,v])=>[k,aggregate(v)])),
     researchBySeries:Object.fromEntries(Object.entries(researchGroups).map(([k,v])=>[k,aggregate(v)])),
     readyForBrokerValidation:strictAgg.settled>=Number(process.env.SIGNAL_MIN_SETTLED||50)&&(strictAgg.accuracy||0)>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&strictAgg.confidence95.lower>=Number(process.env.SIGNAL_MIN_CONFIDENCE_LOWER||.60)
