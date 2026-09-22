@@ -121,6 +121,12 @@ def prepare(order:Order,adjust_entry:bool=False):
     original_target=float(order.target)
     stop_distance=abs(original_entry-original_stop)
     target_distance=abs(original_target-original_entry)
+    max_spread_stop_ratio=max(0.01,float(os.getenv("MAX_SPREAD_STOP_RATIO","0.12")))
+    max_spread_target_ratio=max(0.01,float(os.getenv("MAX_SPREAD_TARGET_RATIO","0.08")))
+    spread_stop_ratio=spread/max(stop_distance,point)
+    spread_target_ratio=spread/max(target_distance,point)
+    if spread_stop_ratio>max_spread_stop_ratio or spread_target_ratio>max_spread_target_ratio:
+        raise HTTPException(409,f"Spread too wide for this setup: spread/stop={spread_stop_ratio:.3f}, spread/target={spread_target_ratio:.3f}. Wait for cheaper execution conditions.")
     if side=="LONG" and not(original_stop<original_entry<original_target):
         raise HTTPException(400,"Invalid LONG stop/entry/target ordering")
     if side=="SHORT" and not(original_target<original_entry<original_stop):
@@ -161,7 +167,7 @@ def prepare(order:Order,adjust_entry:bool=False):
     check=mt5.order_check(request)
     if check is None or check.retcode!=0:
         raise HTTPException(400,f"MT5 order_check failed: {check or mt5.last_error()}")
-    return account,broker_symbol,tick,volume,risk_cash,request,check,{"adjusted":adjusted,"originalEntry":original_entry,"entry":entry,"stop":stop,"target":target,"safetyGap":safety_gap,"spread":spread,"brokerMinDistance":broker_min}
+    return account,broker_symbol,tick,volume,risk_cash,request,check,{"adjusted":adjusted,"originalEntry":original_entry,"entry":entry,"stop":stop,"target":target,"safetyGap":safety_gap,"spread":spread,"spreadStopRatio":spread_stop_ratio,"spreadTargetRatio":spread_target_ratio,"brokerMinDistance":broker_min}
 
 @app.get("/health")
 def health(authorization:str|None=Header(default=None)):
@@ -188,7 +194,7 @@ def preview(order:Order,authorization:str|None=Header(default=None)):
     if order.mode!=MODE:
         raise HTTPException(400,f"Requested mode {order.mode} does not match bridge mode {MODE}")
     account,broker_symbol,tick,volume,risk_cash,request,check,plan=prepare(order,adjust_entry=True)
-    return {"ok":True,"canonicalSymbol":order.symbol,"brokerSymbol":broker_symbol,"mode":MODE,"accountLogin":account.login,"server":account.server,"equity":account.equity,"bid":tick.bid,"ask":tick.ask,"volumeLots":volume,"riskCash":risk_cash,"entry":plan["entry"],"stop":plan["stop"],"target":plan["target"],"adjusted":plan["adjusted"],"originalEntry":plan["originalEntry"],"safetyGap":plan["safetyGap"],"spread":plan["spread"],"brokerMinDistance":plan["brokerMinDistance"],"orderType":"BUY_STOP" if order.side.upper()=="LONG" else "SELL_STOP","orderCheck":getattr(check,"comment","ok")}
+    return {"ok":True,"canonicalSymbol":order.symbol,"brokerSymbol":broker_symbol,"mode":MODE,"accountLogin":account.login,"server":account.server,"equity":account.equity,"bid":tick.bid,"ask":tick.ask,"volumeLots":volume,"riskCash":risk_cash,"entry":plan["entry"],"stop":plan["stop"],"target":plan["target"],"adjusted":plan["adjusted"],"originalEntry":plan["originalEntry"],"safetyGap":plan["safetyGap"],"spread":plan["spread"],"spreadStopRatio":plan["spreadStopRatio"],"spreadTargetRatio":plan["spreadTargetRatio"],"brokerMinDistance":plan["brokerMinDistance"],"orderType":"BUY_STOP" if order.side.upper()=="LONG" else "SELL_STOP","orderCheck":getattr(check,"comment","ok")}
 
 @app.post("/orders")
 def orders(order:Order,authorization:str|None=Header(default=None),x_live_confirm:str|None=Header(default=None)):
