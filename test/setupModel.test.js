@@ -84,14 +84,14 @@ test('asset-family pooling stays within related markets',()=>{
 });
 
 
-test('plan selection requires positive expectancy and prefers stronger lower-bound accuracy',()=>{
+test('plan selection requires positive expectancy and prefers stronger economic edge',()=>{
   const candidates=[
-    {planOptions:{name:'bad'},stats:{samples:100,wilsonLower:.80,averageR:-.1,profitFactorR:.8}},
-    {planOptions:{name:'good-a'},stats:{samples:100,wilsonLower:.55,averageR:.12,profitFactorR:1.2}},
-    {planOptions:{name:'good-b'},stats:{samples:100,wilsonLower:.60,averageR:.05,profitFactorR:1.1}}
+    {planOptions:{name:'bad'},stats:{samples:100,wilsonLower:.80,averageR:-.1,expectancyLower95:-.2,profitFactorR:.8}},
+    {planOptions:{name:'good-a'},stats:{samples:100,wilsonLower:.55,averageR:.12,expectancyLower95:.06,profitFactorR:1.2}},
+    {planOptions:{name:'good-b'},stats:{samples:100,wilsonLower:.60,averageR:.05,expectancyLower95:.02,profitFactorR:1.1}}
   ];
   const chosen=setup.choosePlan(candidates,40);
-  assert.equal(chosen.planOptions.name,'good-b');
+  assert.equal(chosen.planOptions.name,'good-a');
 });
 test('custom plan profile changes the generated trade geometry',()=>{
   const r=row([{open:100,high:105,low:95,close:100}]);
