@@ -1,10 +1,20 @@
 param(
-  [Parameter(Mandatory=$false)][string]$BridgeDir = $PSScriptRoot,
+  [Parameter(Mandatory=$false)][string]$BridgeDir = "",
   [Parameter(Mandatory=$false)][string]$TaskName = "ForexBot MT5 Bridge",
   [Parameter(Mandatory=$false)][int]$Port = 8765
 )
 
 $ErrorActionPreference = "Continue"
+if ([string]::IsNullOrWhiteSpace($BridgeDir)) {
+  $BridgeDir = $PSScriptRoot
+}
+if ([string]::IsNullOrWhiteSpace($BridgeDir)) {
+  $BridgeDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if ([string]::IsNullOrWhiteSpace($BridgeDir)) {
+  Write-Host "[FAIL] Could not determine bridge folder. Re-run with -BridgeDir 'C:\forexbot\bridge\mt5'."
+  exit 2
+}
 $BridgeDir = (Resolve-Path $BridgeDir).Path
 $EnvFile = Join-Path $BridgeDir ".env"
 $LogFile = Join-Path $BridgeDir "logs\autostart.log"
