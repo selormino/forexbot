@@ -8,8 +8,10 @@ const read=name=>fs.readFileSync(path.join(root,name),'utf8');
 
 test('AWS MT5 autostart installer uses current-user logon task without storing credentials',()=>{
   const installer=read('install-autostart.ps1');
-  assert.match(installer,/schtasks\.exe \/Create/);
-  assert.match(installer,/\/SC ONLOGON/);
+  assert.match(installer,/New-ScheduledTaskAction/);
+  assert.match(installer,/New-ScheduledTaskTrigger -AtLogOn/);
+  assert.match(installer,/Register-ScheduledTask/);
+  assert.match(installer,/New-ScheduledTaskPrincipal/);
   assert.match(installer,/does NOT enable Windows auto-logon/i);
   assert.doesNotMatch(installer,/MT5_PASSWORD\s*=/);
   assert.doesNotMatch(installer,/BRIDGE_TOKEN\s*=/);
