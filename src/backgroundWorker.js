@@ -62,7 +62,7 @@ function compactLearning(rows){
       baseRate:x.setupProbability.baseRate??null,accuracy:x.setupProbability.accuracy??null,
       logLoss:x.setupProbability.logLoss??null,baselineLoss:x.setupProbability.baselineLoss??null,
       selected:x.setupProbability.selected??0,selectedAccuracy:x.setupProbability.selectedAccuracy??null,
-      averageR:x.setupProbability.averageR??null,p90:x.setupProbability.prediction?.p90??null,max:x.setupProbability.prediction?.max??null,
+      averageR:x.setupProbability.averageR??null,expectancyLower95:x.setupProbability.expectancyLower95??null,profitFactorR:x.setupProbability.profitFactorR??null,p90:x.setupProbability.prediction?.p90??null,max:x.setupProbability.prediction?.max??null,
       calibrationRecommendedThreshold:x.setupProbability.calibrationRecommendedThreshold??null,
       recommendedTest:x.setupProbability.recommendedTest??null,
       planOptions:x.setupProbability.planOptions??null,
@@ -104,7 +104,7 @@ async function trainAll(){
   if(process.env.MODEL_AUTO_TRAIN!=='true')return learning;
   const priority=[['XAUUSD','4h']];
   const rest=[];
-  for(const timeframe of ['4h','1h'])for(const symbol of SYMBOLS){
+  for(const timeframe of ['4h','1h','1d'])for(const symbol of SYMBOLS){
     if(symbol==='XAUUSD'&&timeframe==='4h')continue;
     rest.push([symbol,timeframe]);
   }
@@ -123,9 +123,9 @@ async function trainAll(){
         baselineLoss:report.setupProbability.baselineLoss??null,
         plan:report.setupProbability.planOptions?.name||null,
         planCandidates:[
-          ...(report.setupProbability.planSelection?.pooledCandidates||[]).map(x=>({source:'pooled',name:x.planOptions?.name,samples:x.stats?.samples,accuracy:x.stats?.accuracy,averageR:x.stats?.averageR,wilsonLower:x.stats?.wilsonLower})),
-          ...(report.setupProbability.planSelection?.targetCandidates||[]).map(x=>({source:'target',name:x.planOptions?.name,samples:x.stats?.samples,accuracy:x.stats?.accuracy,averageR:x.stats?.averageR,wilsonLower:x.stats?.wilsonLower}))
-        ].filter(x=>x.name).sort((a,b)=>(b.wilsonLower??-1)-(a.wilsonLower??-1)).slice(0,8),
+          ...(report.setupProbability.planSelection?.pooledCandidates||[]).map(x=>({source:'pooled',name:x.planOptions?.name,samples:x.stats?.samples,accuracy:x.stats?.accuracy,averageR:x.stats?.averageR,expectancyLower95:x.stats?.expectancyLower95,profitFactorR:x.stats?.profitFactorR,wilsonLower:x.stats?.wilsonLower})),
+          ...(report.setupProbability.planSelection?.targetCandidates||[]).map(x=>({source:'target',name:x.planOptions?.name,samples:x.stats?.samples,accuracy:x.stats?.accuracy,averageR:x.stats?.averageR,expectancyLower95:x.stats?.expectancyLower95,profitFactorR:x.stats?.profitFactorR,wilsonLower:x.stats?.wilsonLower}))
+        ].filter(x=>x.name).sort((a,b)=>(b.expectancyLower95??-Infinity)-(a.expectancyLower95??-Infinity)).slice(0,8),
         adaptation:report.setupProbability.adaptation?.selected||null,
         adaptationCandidates:(report.setupProbability.adaptation?.candidates||[]).map(candidate=>({
           name:candidate.name,passesUserFloor:!!candidate.passesUserFloor,
@@ -133,6 +133,8 @@ async function trainAll(){
           selected:candidate.operating?.selected??0,
           accuracy:candidate.operating?.selectedAccuracy??null,
           averageR:candidate.operating?.averageR??null,
+          expectancyLower95:candidate.operating?.expectancyLower95??null,
+          profitFactorR:candidate.operating?.profitFactorR??null,
           wilsonLower:candidate.operating?.wilsonLower??null,
           allowedSides:candidate.operating?.allowedSides||[]
         })),
@@ -167,7 +169,7 @@ async function trainAll(){
 
 async function generateSignals(){
   const events=await calendar().catch(()=>null),recordedSignals=[],generatedSignals=[];
-  for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h']){
+  for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h','1d']){
     try{
       const signal=research.signal(symbol,timeframe,events);
       generatedSignals.push(signal);
