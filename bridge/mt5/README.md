@@ -25,5 +25,50 @@ ForexBot sends a BUY STOP or SELL STOP at the signal confirmation entry. Positio
 ## Live mode
 Do not start with live money. After demo execution is verified end-to-end, live mode requires **both** bridge `BRIDGE_MODE=live` + `ALLOW_LIVE=true` and Railway `BROKER_BRIDGE_MODE=live` + `ALLOW_MANUAL_LIVE=true`. Every live order still requires an explicit click and confirmation.
 
+
+## AWS Windows / RDP autostart
+
+The bridge folder includes a safe Windows Scheduled Task installer. It does **not** store the XM password in Task Scheduler; the existing `.env` remains the only place for MT5 credentials.
+
+From an **Administrator PowerShell** opened inside `bridge\mt5`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1 -StartNow
+```
+
+The installer discovers Python and `terminal64.exe`, validates that `.env` exists, and creates a scheduled task named **ForexBot MT5 Bridge** for the current Windows user. At the next Windows logon the supervisor will:
+
+1. start XM MetaTrader 5 if it is not already running;
+2. wait for the MT5 terminal process;
+3. start `uvicorn main:app` on `127.0.0.1:8765`;
+4. restart the bridge after an unexpected bridge-process exit; and
+5. write a local supervisor log to `bridge\mt5\logs\autostart.log`.
+
+If discovery finds the wrong MT5 installation, install with explicit paths:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1 -Mt5Path "C:\Path\To\XM MT5\terminal64.exe" -PythonExe "C:\Path\To\python.exe" -StartNow
+```
+
+Verify the task, MT5 process, local port, authenticated bridge health, and recent supervisor log with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\verify-autostart.ps1
+```
+
+To remove only the scheduled task:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\uninstall-autostart.ps1
+```
+
+### Important reboot behavior
+
+MetaTrader 5 is a desktop application. The default task therefore runs **at Windows logon**, not in a non-interactive Windows service session. After an EC2 reboot, log in to the Windows instance once; MT5 and the bridge will then start automatically and continue running if the RDP window is disconnected without signing out.
+
+The scripts intentionally do **not** enable Windows automatic logon or store a Windows password. If completely unattended boot-before-login is ever required, treat that as a separate security decision rather than embedding Windows credentials in these scripts.
+
+If the public bridge URL uses Cloudflare Tunnel, Tailscale, ngrok, or another tunnel/reverse proxy, configure that tunnel independently as a Windows service or startup task. The ForexBot task supervises MT5 + FastAPI only and does not store tunnel tokens in command-line arguments.
+
 ## Security
 Never commit the real `.env` file. Never paste the XM password into chat, GitHub, browser JavaScript, or Railway. Only the bridge token belongs in Railway; the XM login/password/server stay on the Windows/VPS MT5 host.
