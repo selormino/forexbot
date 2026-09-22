@@ -55,6 +55,7 @@ EXECUTION_MODE=off
 AUTO_PAPER_TRADING=false
 AUTO_DEMO_STRICT=false
 AUTO_MIN_CONFLUENCE=60
+CTA_MIN_PROBABILITY=0.40
 BROKER_BRIDGE=none
 BROKER_RECONCILE_ENABLED=false
 BROKER_RECONCILE_SECONDS=60
@@ -113,6 +114,20 @@ The current model version includes price-action features in every training row a
 Run `npm test` locally. GitHub CI also runs syntax checks and price-action unit tests on pushes and pull requests.
 
 
+## CTA trend-following strategy
+
+Research v39 adds a separate **daily CTA-style trend-following family** rather than forcing slow trend trades through the 1H/4H setup rules. It uses 20/60-day momentum, EMA trend, ADX/directional movement and position within a 55-day channel. Candidate plans use wide ATR stops, 2.5R–5R targets and 30–60 daily-bar holding windows.
+
+CTA signals use `CTA_MIN_PROBABILITY` (default 0.40) rather than the intraday setup floor because the strategy is intentionally asymmetric: it may be profitable with a win rate below 50% if average winners are several times larger than average losses. Approval remains expectancy-first and still requires positive net OOS expectancy confidence, profit factor, drawdown stability and chronological validation.
+
+The CTA strategy currently trades only the existing ForexBot universe (FX, metals, WTI and crypto). Institutional CTA portfolios also diversify into rates and equity-index futures; those markets are not yet part of the current provider/broker symbol universe.
+
+## Market-making feasibility
+
+Market making is **not implemented for execution**. The current architecture polls market data and submits through an MT5 broker bridge; it does not have venue-native level-2 order-book data, queue position, colocated low-latency execution, maker rebates or reliable cancel/replace latency. A simple two-sided quoting bot in this environment would produce unrealistic backtests and would be highly exposed to adverse selection.
+
+`GET /api/research/strategies` reports the strategy capability status and the infrastructure that would be required before market-making research could be credible. No market-making order generator exists.
+
 ## Profitability-first validation
 
 Research v38 optimizes for **net expectancy after costs**, not a target win rate. Win rate remains visible, but plan selection, threshold recommendation, side/regime validation, and final model approval prioritize average R, profit factor, drawdown, and the 95% lower confidence bound of mean R. Final approval requires that lower expectancy bound to remain positive on the untouched chronological test window.
@@ -126,7 +141,7 @@ The MT5 bridge rejects an order when the live broker spread consumes too much of
 ## Signal monitoring and accuracy
 The signal engine records one decision per closed candle for each supported market and monitored timeframe. The directional model first proposes LONG/SHORT only when `DIRECTIONAL_MIN_PROBABILITY` is met. A second model then estimates `P(success | confirmation entry triggers)` for the actual entry/SL/TP structure. `SIGNAL_MIN_PROBABILITY` is the minimum setup-success probability. No-entry setups expire and are not counted as losses.
 
-The dedicated `/signals.html` page shows the current 1H/4H board, price-action context, filters, historical signals, settled wins/losses, observed accuracy, and a 95% Wilson confidence interval. The broker-validation readiness gate requires a minimum settled sample and the configured empirical accuracy target; a model probability is never presented as proof of the same realized win rate.
+The dedicated `/signals.html` page shows the current 1H/4H/1D board, price-action context, filters, historical signals, settled wins/losses, observed accuracy, and a 95% Wilson confidence interval. The broker-validation readiness gate requires a minimum settled sample and the configured empirical accuracy target; a model probability is never presented as proof of the same realized win rate.
 
 
 ## Broker connectivity
