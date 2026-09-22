@@ -55,3 +55,15 @@ test('automatic research demo accepts 60 percent evidence at the configured floo
   const out=execution.createAutoResearchDemoIntent(candidate,{riskPct:.25});
   assert.equal(out.created,true);
 });
+
+
+test('performance summary detects positive and negative recent expectancy',()=>{
+  const profitable=Array.from({length:40},(_,i)=>({realized_r:i%5!==0?.9:-1}));
+  const losing=Array.from({length:40},(_,i)=>({realized_r:i%2===0?.5:-1}));
+  const good=execution.summarizePerformance(profitable),bad=execution.summarizePerformance(losing);
+  assert.ok(good.averageR>0);
+  assert.ok(good.expectancyLower95>0);
+  assert.ok(good.profitFactorR>1);
+  assert.ok(bad.averageR<0);
+  assert.ok(bad.expectancyLower95<0);
+});
