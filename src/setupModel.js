@@ -109,11 +109,11 @@ function fitScoreGate(baseModel,rows,{threshold=.60,minSamples=30}={}){
       const selected=part.slice(0,n),stats=summarizeExamples(selected);
       const highProbability=(stats.wins+2)/(stats.samples+4);
       return {n,cutoff:selected.at(-1).raw,highProbability,stats,
-        passed:stats.samples>=minSamples&&highProbability>=threshold&&(stats.accuracy||0)>=.60&&(stats.averageR||0)>0&&stats.wilsonLower>=.45};
+        passed:stats.samples>=minSamples&&highProbability>=threshold&&(stats.averageR||0)>0&&(stats.profitFactorR===null||stats.profitFactorR>1)&&(stats.expectancyLower95??-Infinity)>0};
     });
-    const passing=candidates.filter(x=>x.passed).sort((a,b)=>(b.stats.wilsonLower-a.stats.wilsonLower)||((b.stats.averageR||0)-(a.stats.averageR||0))||(b.n-a.n));
+    const passing=candidates.filter(x=>x.passed).sort((a,b)=>((b.stats.expectancyLower95??-Infinity)-(a.stats.expectancyLower95??-Infinity))||((b.stats.averageR||0)-(a.stats.averageR||0))||((b.stats.profitFactorR||0)-(a.stats.profitFactorR||0))||(b.n-a.n));
     const chosen=passing[0];
-    diagnostics[side]={available:true,samples:part.length,candidates:candidates.map(x=>({n:x.n,cutoff:x.cutoff,highProbability:x.highProbability,accuracy:x.stats.accuracy,averageR:x.stats.averageR,wilsonLower:x.stats.wilsonLower,passed:x.passed})),chosen:chosen?{n:chosen.n,highProbability:chosen.highProbability,accuracy:chosen.stats.accuracy,averageR:chosen.stats.averageR,wilsonLower:chosen.stats.wilsonLower}:null};
+    diagnostics[side]={available:true,samples:part.length,candidates:candidates.map(x=>({n:x.n,cutoff:x.cutoff,highProbability:x.highProbability,accuracy:x.stats.accuracy,averageR:x.stats.averageR,expectancyLower95:x.stats.expectancyLower95,profitFactorR:x.stats.profitFactorR,wilsonLower:x.stats.wilsonLower,passed:x.passed})),chosen:chosen?{n:chosen.n,highProbability:chosen.highProbability,accuracy:chosen.stats.accuracy,averageR:chosen.stats.averageR,expectancyLower95:chosen.stats.expectancyLower95,profitFactorR:chosen.stats.profitFactorR,wilsonLower:chosen.stats.wilsonLower}:null};
     if(!chosen)continue;
     const rest=part.slice(chosen.n),restWins=rest.reduce((s,x)=>s+x.y,0);
     const lowProbability=Math.min(.59,rest.length?(restWins+2)/(rest.length+4):.5);
@@ -298,7 +298,8 @@ function rangeReversionScore(row,side){
 }
 function eligible(row,side,costBps,family='trend'){
   const sign=side==='LONG'?1:-1;
-  if(Number(row.atr||0)/Math.max(Number(row.price||0),1e-12)*10000<costBps*2)return false;
+  const effectiveCostBps=Number(row.costBps??costBps??0);
+  if(Number(row.atr||0)/Math.max(Number(row.price||0),1e-12)*10000<effectiveCostBps*2)return false;
   if(row.context?.newsAvailable&&((side==='LONG'&&Number(row.context.newsSentiment||0)<-.25)||(side==='SHORT'&&Number(row.context.newsSentiment||0)>.25)))return false;
   if(row.context?.macroAvailable&&((side==='LONG'&&Number(row.context.macroBias||0)<-.35)||(side==='SHORT'&&Number(row.context.macroBias||0)>.35)))return false;
   if(family==='range'){
@@ -320,30 +321,40 @@ function outcome(row,symbol,side,costBps,planOptions={}){
   const sign=side==='LONG'?1:-1;
   const pseudo={symbol,price:row.price,leanDirection:side,candidateDirection:side,features:row,priceAction:row.priceAction};
   const plan=buildTradePlan(pseudo,{side,...planOptions}),future=row.futureBars||[];
+  const effectiveCostBps=Math.max(0,Number(row.costBps??costBps??0));
+  const financingBpsPerDay=Math.max(0,Number(row.financingBpsPerDay||0));
   let trigger=-1;
   for(let i=0;i<Math.min(plan.entryExpiryBars,future.length);i++){
     if(side==='LONG'?future[i].high>=plan.entry:future[i].low<=plan.entry){trigger=i;break;}
   }
   if(trigger<0)return {triggered:false,settled:false,plan};
   const active=future.slice(trigger,trigger+plan.holdBars);
-  let exit=null,result=null;
-  for(const bar of active){
+  let exit=null,result=null,exitIndex=-1;
+  for(let i=0;i<active.length;i++){
+    const bar=active[i];
     const stopHit=side==='LONG'?bar.low<=plan.stop:bar.high>=plan.stop;
     const targetHit=side==='LONG'?bar.high>=plan.target:bar.low<=plan.target;
-    if(stopHit&&targetHit){exit=plan.stop;result='SL';break;}
-    if(stopHit){exit=plan.stop;result='SL';break;}
-    if(targetHit){exit=plan.target;result='TP';break;}
+    if(stopHit&&targetHit){exit=plan.stop;result='SL';exitIndex=i;break;}
+    if(stopHit){exit=plan.stop;result='SL';exitIndex=i;break;}
+    if(targetHit){exit=plan.target;result='TP';exitIndex=i;break;}
   }
   if(!result&&active.length>=plan.holdBars){
-    exit=active.at(-1).close;
-    const net=sign*(exit/plan.entry-1)-costBps/10000;
+    exit=active.at(-1).close;exitIndex=active.length-1;
+    const barMs=Math.max(0,Number(row.barMs||0));
+    const elapsedMs=barMs&&active[0]&&active[exitIndex]?Math.max(barMs,Number(active[exitIndex].ts)-Number(active[0].ts)+barMs):0;
+    const totalCostBps=effectiveCostBps+financingBpsPerDay*(elapsedMs/86400000);
+    const net=sign*(exit/plan.entry-1)-totalCostBps/10000;
     result=net>0?'TIMEOUT_WIN':'TIMEOUT_LOSS';
   }
   if(!result)return {triggered:true,settled:false,plan};
+  const barMs=Math.max(0,Number(row.barMs||0));
+  const elapsedMs=barMs&&active[0]&&active[exitIndex]?Math.max(barMs,Number(active[exitIndex].ts)-Number(active[0].ts)+barMs):0;
+  const holdingDays=elapsedMs/86400000;
+  const totalCostBps=effectiveCostBps+financingBpsPerDay*holdingDays;
   const stopFrac=Math.abs(plan.entry-plan.stop)/Math.max(plan.entry,1e-12);
-  const realizedR=sign*(exit-plan.entry)/Math.max(Math.abs(plan.entry-plan.stop),1e-12)-(costBps/10000)/Math.max(stopFrac,1e-12);
+  const realizedR=sign*(exit-plan.entry)/Math.max(Math.abs(plan.entry-plan.stop),1e-12)-(totalCostBps/10000)/Math.max(stopFrac,1e-12);
   const y=(result==='TP'||result==='TIMEOUT_WIN')?1:0;
-  return {triggered:true,settled:true,plan,outcome:result,exit,y,realizedR};
+  return {triggered:true,settled:true,plan,outcome:result,exit,y,realizedR,effectiveCostBps,totalCostBps,holdingDays};
 }
 function examples(rows,symbol,costBps,planOptions={}){
   const out=[];
@@ -354,7 +365,7 @@ function examples(rows,symbol,costBps,planOptions={}){
       const result=outcome(row,symbol,side,costBps,planOptions);
       if(!result.triggered||!result.settled)continue;
       const regimeKey=row.regime==='trend'?(Math.abs(Number(row.trend||0))>=1.5?'strong-trend':'trend'):String(row.regime||'unknown');
-      out.push({z:vector(row,side),directionalX:row.x,y:result.y,realizedR:result.realizedR,side,at:row.at,outcome:result.outcome,regimeKey});
+      out.push({z:vector(row,side),directionalX:row.x,y:result.y,realizedR:result.realizedR,side,at:row.at,outcome:result.outcome,regimeKey,effectiveCostBps:result.effectiveCostBps,totalCostBps:result.totalCostBps,holdingDays:result.holdingDays});
     }
   }
   return out;
@@ -398,11 +409,18 @@ function summarizeExamples(rows){
   const n=ordered.length,wins=ordered.filter(r=>r.y===1).length;
   const rs=ordered.map(r=>Number(r.realizedR)||0);
   const averageR=n?rs.reduce((s,v)=>s+v,0)/n:null;
+  const variance=n>1?rs.reduce((s,v)=>s+(v-averageR)**2,0)/(n-1):0;
+  const standardErrorR=n?Math.sqrt(variance/n):null;
+  const expectancyLower95=n?averageR-1.96*standardErrorR:null;
+  const positive=rs.filter(v=>v>0),negative=rs.filter(v=>v<0);
+  const averageWinR=positive.length?positive.reduce((s,v)=>s+v,0)/positive.length:null;
+  const averageLossR=negative.length?Math.abs(negative.reduce((s,v)=>s+v,0)/negative.length):null;
   const gainR=rs.reduce((s,v)=>s+Math.max(0,v),0),lossR=rs.reduce((s,v)=>s+Math.max(0,-v),0);
   let equity=0,peak=0,maxDrawdownR=0;
   for(const value of rs){equity+=value;peak=Math.max(peak,equity);maxDrawdownR=Math.max(maxDrawdownR,peak-equity);}
   return {
-    samples:n,wins,accuracy:n?wins/n:null,wilsonLower:wilsonLower(wins,n),averageR,
+    samples:n,wins,accuracy:n?wins/n:null,wilsonLower:wilsonLower(wins,n),
+    averageR,expectancyR:averageR,expectancyLower95,standardErrorR,averageWinR,averageLossR,
     profitFactorR:lossR?gainR/lossR:null,maxDrawdownR,
     worstRolling20R:rollingTotal(rs,20),worstRolling50R:rollingTotal(rs,50)
   };
@@ -410,7 +428,7 @@ function summarizeExamples(rows){
 function choosePlan(candidates,minSamples=40){
   const viable=(candidates||[]).filter(x=>x.stats.samples>=minSamples&&Number.isFinite(x.stats.averageR)&&x.stats.averageR>0&&(x.stats.profitFactorR===null||x.stats.profitFactorR>1));
   if(!viable.length)return null;
-  viable.sort((a,b)=>(b.stats.wilsonLower-a.stats.wilsonLower)||((b.stats.averageR||0)-(a.stats.averageR||0))||(b.stats.samples-a.stats.samples));
+  viable.sort((a,b)=>((b.stats.expectancyLower95??-Infinity)-(a.stats.expectancyLower95??-Infinity))||((b.stats.averageR||0)-(a.stats.averageR||0))||((b.stats.profitFactorR||0)-(a.stats.profitFactorR||0))||(b.stats.samples-a.stats.samples));
   return viable[0];
 }
 
@@ -427,7 +445,8 @@ function statsAt(model,rows,threshold){
   const chosen=bestSideSelections(model,rows,threshold),stats=summarizeExamples(chosen);
   return {
     threshold,selected:stats.samples,selectedAccuracy:stats.accuracy,selectedWins:stats.wins,
-    averageR:stats.averageR,profitFactorR:stats.profitFactorR,maxDrawdownR:stats.maxDrawdownR,
+    averageR:stats.averageR,expectancyR:stats.expectancyR,expectancyLower95:stats.expectancyLower95,standardErrorR:stats.standardErrorR,
+    averageWinR:stats.averageWinR,averageLossR:stats.averageLossR,profitFactorR:stats.profitFactorR,maxDrawdownR:stats.maxDrawdownR,
     worstRolling20R:stats.worstRolling20R,worstRolling50R:stats.worstRolling50R
   };
 }
@@ -459,9 +478,9 @@ function evaluate(model,rows,threshold=.7){
   };
 }
 function recommendThreshold(model,rows,minSelected=30){
-  const eligible=thresholdSweep(model,rows).filter(x=>x.selected>=minSelected&&Number.isFinite(x.averageR));
+  const eligible=thresholdSweep(model,rows).filter(x=>x.selected>=minSelected&&Number.isFinite(x.averageR)&&x.averageR>0&&(x.profitFactorR===null||x.profitFactorR>1));
   if(!eligible.length)return null;
-  eligible.sort((a,b)=>(b.averageR-a.averageR)||(b.selectedAccuracy-a.selectedAccuracy)||(b.selected-a.selected));
+  eligible.sort((a,b)=>((b.expectancyLower95??-Infinity)-(a.expectancyLower95??-Infinity))||((b.averageR??-Infinity)-(a.averageR??-Infinity))||((b.profitFactorR||0)-(a.profitFactorR||0))||((b.selectedAccuracy||0)-(a.selectedAccuracy||0))||(b.selected-a.selected));
   return eligible[0].threshold;
 }
 function train(trainRows,calRows,testRows,symbol,costBps,threshold=.7){
