@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let board=[],historyRows=[],settings=null,adminToken='',executionIntents=[];
+let board=[],historyRows=[],settings=null,adminToken='',executionIntents=[],operationsStatus=null;
 
 async function get(u){const r=await fetch(u);const d=await r.json();if(!r.ok)throw new Error(d.error||'Request failed');return d}
 async function post(u,body,token=adminToken){const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json','x-admin-token':token||''},body:JSON.stringify(body||{})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Request failed');return d}
@@ -102,6 +102,136 @@ window.showHistoryChart=i=>{
  const r=historyRows[i];if(!r)return;
  return openSetupChart({symbol:r.symbol,timeframe:r.timeframe,sourceCandleTs:r.source_ts,setupProbability:r.setup_probability,analysis:r.analysis||{},tradePlan:r.plan||{},leanDirection:r.lean_direction||r.candidate_direction});
 };
+
+
+const finite=x=>Number.isFinite(Number(x))?Number(x):null;
+const intentState=intent=>{
+ if(!intent)return 'none';
+ const broker=String(intent.broker_status||'').toUpperCase(),status=String(intent.status||'').toUpperCase();
+ if(broker==='OPEN'||status==='DEMO_FILLED')return 'active';
+ if(broker==='PENDING'||status==='DEMO_SENT'||status==='APPROVED'||status==='PREVIEWED')return 'pending';
+ if(['CLOSED','CANCELLED','EXPIRED','REJECTED','NOT_FOUND'].includes(broker)||['DEMO_CLOSED','DEMO_CANCELLED','BROKER_NOT_FOUND'].includes(status))return 'closed';
+ return intent.broker_order_id?'pending':'intent';
+};
+const signalProbabilityFloor=s=>{
+ const own=finite(s?.minProbability);if(own!=null)return own;
+ return s?.timeframe==='1d'?0.40:Number(settings?.signalMinProbability||0.60);
+};
+const evidencePct=s=>finite(s?.analysis?.confluence?.agreement);
+const setupProb=s=>finite(s?.setupProbability);
+const directionalProb=s=>finite(s?.directionalProbability);
+const uniq=a=>[...new Set((a||[]).filter(Boolean))];
+function qualification(s){
+ const status=statusOf(s),prob=setupProb(s),floor=signalProbabilityFloor(s),evidence=evidencePct(s),dir=directionalProb(s);
+ const blockers=[...(s.filters||[])];
+ if(prob==null&&!blockers.some(x=>/probability|data|candles|model|setup/i.test(String(x))))blockers.push('Setup-success probability is not available yet');
+ if(prob!=null&&prob<floor&&!blockers.some(x=>/probability/i.test(String(x))))blockers.push('Setup probability is below '+Math.round(floor*100)+'%');
+ if(evidence!=null&&evidence<60&&!blockers.some(x=>/confluence|evidence/i.test(String(x))))blockers.push('Evidence is below 60%');
+ const clean=uniq(blockers.map(x=>String(x).trim()).filter(Boolean));
+ const probProgress=prob==null?0:Math.min(1,prob/Math.max(floor,.01));
+ const evidenceProgress=evidence==null?0:Math.min(1,evidence/60);
+ const directionalProgress=dir==null?0:Math.min(1,dir/.55);
+ let score=probProgress*45+evidenceProgress*35+directionalProgress*20-clean.length*2;
+ if(status==='FILTERED')score+=120;
+ if(status==='STRICT')score+=500;
+ const intent=executionForSignal(s),brokerState=intentState(intent);
+ if(brokerState==='pending')score+=700;
+ if(brokerState==='active')score+=900;
+ return {status,prob,floor,evidence,dir,blockers:clean,score,intent,brokerState};
+}
+function dateValue(v){
+ const n=Number(v);return new Date(Number.isFinite(n)&&n>100000000000?n:v);
+}
+function sameLocalDay(a,b=new Date()){
+ const d=dateValue(a);return !Number.isNaN(d.getTime())&&d.getFullYear()===b.getFullYear()&&d.getMonth()===b.getMonth()&&d.getDate()===b.getDate();
+}
+function nextReason(q){
+ if(!q.blockers.length)return q.status==='STRICT'?'All trading gates passed':'Waiting for the next qualifying candle';
+ const preferred=q.blockers.find(x=>!/model has not passed/i.test(x))||q.blockers[0];
+ return preferred;
+}
+function progressRow(label,value,target,display){
+ const ratio=value==null?0:Math.max(0,Math.min(1,value/target));
+ return '<div class="qual-progress"><div><span>'+esc(label)+'</span><b>'+esc(display)+'</b></div><div class="progress-track"><span style="width:'+Math.round(ratio*100)+'%"></span></div></div>';
+}
+function opportunityCard(s,i,{compact=false}={}){
+ const q=qualification(s),p=s.tradePlan||{},intent=q.intent,track=brokerTrackingMeta(intent);
+ const side=s.leanDirection||s.candidateDirection||'WAIT',unit=p.unitLabel||'pips';
+ return '<div class="opportunity-card '+(q.status==='STRICT'?'ready':'')+'">'+
+   '<div class="opportunity-head"><div><b>'+esc(s.symbol)+' <span class="'+cls(side)+'">'+esc(side)+'</span></b><small>'+esc(String(s.timeframe||'').toUpperCase())+' · '+esc(s.analysis?.strategyFamily||s.regime||'market scan')+'</small></div><span class="pill '+(q.status==='STRICT'?'good':'neutral')+'">'+esc(signalStatusMeta(q.status).label)+'</span></div>'+
+   '<div class="opportunity-numbers"><div><span>Probability</span><b>'+pct(q.prob)+'</b><small>floor '+pct(q.floor)+'</small></div><div><span>Evidence</span><b>'+(q.evidence==null?'—':Math.round(q.evidence)+'%')+'</b><small>floor 60%</small></div><div><span>R:R</span><b>'+(p.riskReward?Number(p.riskReward).toFixed(2):'—')+'</b><small>'+esc(p.targetPips==null?'':num(p.targetPips)+' '+unit)+'</small></div></div>'+
+   (!compact?'<div class="opportunity-plan"><span>Entry <b>'+fmt(p.entry)+'</b></span><span>SL <b>'+fmt(p.stop)+'</b></span><span>TP <b>'+fmt(p.target)+'</b></span></div>':'')+
+   '<div class="why-line"><span class="label">Why not yet?</span><b>'+esc(q.status==='STRICT'?'Nothing — setup is ready':nextReason(q))+'</b></div>'+
+   (q.brokerState!=='none'?'<div class="broker-state '+track.css+'"><b>'+esc(track.label)+'</b><small>'+esc(track.detail)+'</small></div>':'')+
+   '<div class="operator-buttons"><button class="small-btn" onclick="showChart('+i+')">Chart</button><button class="small-btn" onclick="explain('+i+')">Why?</button>'+(q.status==='STRICT'?'<button class="small-btn primary" onclick="trade('+i+')">XM preview</button>':'')+'</div>'+
+ '</div>';
+}
+function renderOperator(rows,m,broker,intents,ops){
+ const now=new Date(),qs=rows.map((s,i)=>({s,i,q:qualification(s)})).sort((a,b)=>b.q.score-a.q.score);
+ const strict=qs.filter(x=>x.q.status==='STRICT');
+ const brokerPending=(intents||[]).filter(x=>intentState(x)==='pending');
+ const brokerActive=(intents||[]).filter(x=>intentState(x)==='active');
+ const today=(intents||[]).filter(x=>x.broker_order_id&&sameLocalDay(x.created_at,now));
+ const candidates=qs.filter(x=>x.q.status==='FILTERED');
+ const best=qs[0]||null;
+ const brokerOk=!!(broker?.configured&&broker?.reachable&&broker?.bridge?.accountConnected);
+ let state='SCANNING',css='neutral',title='No trade right now',message='ForexBot is scanning. You do not need to do anything until a setup passes its gates.',action='NO ACTION',actionNote='Leave the bot and XM demo connected.';
+ if(brokerActive.length){state='TRADE ACTIVE';css='good';title=brokerActive.length+' XM demo trade'+(brokerActive.length===1?' is':'s are')+' active';message='XM is managing the live demo position. ForexBot continues reconciliation and outcome tracking.';action='MONITOR';actionNote='Do not duplicate the position manually.';}
+ else if(brokerPending.length){state='XM MONITORING';css='good';title=brokerPending.length+' pending order'+(brokerPending.length===1?' is':'s are')+' at XM';message='XM is watching live price for the pending entry. The bot does not need a 15-minute cycle to trigger that broker-side order.';action='WAIT';actionNote='XM will trigger the entry if price reaches it.';}
+ else if(strict.length){state='TRADE READY';css='good';title=strict.length+' setup'+(strict.length===1?' has':'s have')+' passed the gates';message=ops?.autoDemoStrict?'Automatic demo execution is enabled. ForexBot should create and dispatch the eligible intent through the broker checks.':'A strict setup exists but automatic strict demo execution is not enabled.';action=ops?.autoDemoStrict?'AUTO-SEND':'REVIEW';actionNote=ops?.autoDemoStrict?'No manual action unless broker dispatch reports a problem.':'Review the setup and XM preview.';}
+ else if(candidates.length){state='WATCHING';css='warn';title='Setups exist, but none are executable';message='The closest ideas are being shadow-tracked. One or more probability, evidence, model or risk gates are still blocking broker execution.';action='WAIT';actionNote='Use Near Qualification below to see what is missing.';}
+ $('botStateBadge').className='operator-badge '+css;
+ $('botStateBadge').textContent=state;
+ $('botStateTitle').textContent=title;
+ $('botStateMessage').textContent=message;
+ $('operatorAction').innerHTML='<span class="label">Your action</span><b>'+esc(action)+'</b><small>'+esc(actionNote)+'</small>';
+ const cadence=Number(ops?.analysisCadenceMinutes||0);
+ $('operatorStats').innerHTML=
+   '<div><span>XM</span><b class="'+(brokerOk?'long':'short')+'">'+(brokerOk?'CONNECTED':'OFFLINE')+'</b><small>'+esc(String(broker?.mode||'demo').toUpperCase())+'</small></div>'+
+   '<div><span>Pending at XM</span><b>'+brokerPending.length+'</b><small>broker-side orders</small></div>'+
+   '<div><span>Active trades</span><b>'+brokerActive.length+'</b><small>XM positions</small></div>'+
+   '<div><span>Today</span><b>'+today.length+'</b><small>orders sent</small></div>'+
+   '<div><span>Analysis cycle</span><b>'+ (cadence?cadence+' min':'—') +'</b><small>closed-candle decisions</small></div>';
+ $('bestUpdated').textContent=new Date().toLocaleTimeString();
+ $('bestOpportunity').innerHTML=best?opportunityCard(best.s,best.i):'<div class="operator-empty">No market data available.</div>';
+ $('systemMode').textContent=esc(String(broker?.mode||ops?.executionMode||'demo').toUpperCase());
+ $('systemHealth').innerHTML=
+   '<div><span class="dot '+(brokerOk?'ok':'')+'"></span><div><b>XM bridge</b><small>'+(brokerOk?'Connected and account available':'Broker connection needs attention')+'</small></div></div>'+
+   '<div><span class="health-icon">↻</span><div><b>Market/research cycle</b><small>'+(cadence?'Every '+cadence+' minutes':'Configured by worker')+' · closed candles only</small></div></div>'+
+   '<div><span class="health-icon">⚡</span><div><b>Broker reconciliation</b><small>'+(ops?.brokerReconcileSeconds?'Every '+ops.brokerReconcileSeconds+' seconds':'Not enabled')+'</small></div></div>'+
+   '<div><span class="health-icon">M</span><div><b>Research model</b><small>'+esc(ops?.researchVersion||'—')+'</small></div></div>';
+ renderTradeNow(qs,intents);
+ renderWatching(qs);
+ renderNearQualification(qs);
+}
+function renderTradeNow(qs,intents){
+ const ready=qs.filter(x=>x.q.status==='STRICT'),activeIntents=(intents||[]).filter(x=>['pending','active'].includes(intentState(x)));
+ $('tradeNowCount').textContent=String(ready.length+activeIntents.length);
+ const cards=[];
+ for(const item of ready)cards.push(opportunityCard(item.s,item.i));
+ for(const intent of activeIntents){
+   const st=intentState(intent),ticket=intent.broker_order_id||'awaiting ticket';
+   cards.push('<div class="opportunity-card broker-order '+(st==='active'?'ready':'')+'"><div class="opportunity-head"><div><b>'+esc(intent.symbol)+' <span class="'+cls(intent.side)+'">'+esc(intent.side)+'</span></b><small>'+esc(String(intent.timeframe||'').toUpperCase())+' · XM '+esc(st)+'</small></div><span class="pill good">'+(st==='active'?'ACTIVE':'XM MONITORING')+'</span></div><div class="opportunity-plan"><span>Ticket <b>'+esc(ticket)+'</b></span><span>Entry <b>'+fmt(intent.entry)+'</b></span><span>SL <b>'+fmt(intent.stop)+'</b></span><span>TP <b>'+fmt(intent.target)+'</b></span></div><div class="why-line"><span class="label">What happens next</span><b>'+(st==='active'?'XM manages the position while ForexBot reconciles it.':'XM watches live price and fills the pending entry if reached.')+'</b></div></div>');
+ }
+ $('tradeNow').innerHTML=cards.join('')||'<div class="operator-empty success-empty"><b>No trade is required right now.</b><span>This is a valid operating state. ForexBot will move a setup here only after it passes the gates or reaches XM.</span></div>';
+}
+function renderWatching(qs){
+ const watching=qs.filter(x=>x.q.status!=='STRICT'&&!['pending','active'].includes(x.q.brokerState)).slice(0,8);
+ $('watchingCount').textContent=String(watching.length);
+ $('watchingGrid').innerHTML=watching.map(x=>opportunityCard(x.s,x.i,{compact:true})).join('')||'<div class="operator-empty">Nothing is currently close enough to rank.</div>';
+}
+function renderNearQualification(qs){
+ const near=qs.filter(x=>x.q.status!=='STRICT').slice(0,6);
+ $('nearCount').textContent=String(near.length);
+ $('nearQualification').innerHTML=near.map(({s,i,q})=>{
+   const blockerCount=q.blockers.length;
+   return '<div class="near-row"><div class="near-main"><div><b>'+esc(s.symbol)+' · '+esc(String(s.timeframe||'').toUpperCase())+'</b><small class="'+cls(s.leanDirection)+'">'+esc(s.leanDirection||'WAIT')+'</small></div><span class="pill neutral">'+blockerCount+' blocker'+(blockerCount===1?'':'s')+'</span></div>'+
+     progressRow('Setup probability',q.prob,q.floor,q.prob==null?'waiting':pct(q.prob)+' / '+pct(q.floor))+
+     progressRow('Evidence',q.evidence,60,q.evidence==null?'waiting':Math.round(q.evidence)+'% / 60%')+
+     '<div class="blocker-list">'+(q.blockers.slice(0,3).map(b=>'<span>• '+esc(b)+'</span>').join('')||'<span>• Waiting for the next qualifying candle</span>')+'</div>'+
+     '<div class="operator-buttons"><button class="small-btn" onclick="showChart('+i+')">Chart</button><button class="small-btn" onclick="explain('+i+')">Full explanation</button></div></div>';
+ }).join('')||'<div class="operator-empty">No blocked setups to explain.</div>';
+}
 
 function renderAccuracy(m){
  const strict=m.strict||m.actionable,research=m.researchCandidates||m.qualified,all=m.allTimeActionable||strict;
@@ -225,8 +355,10 @@ function renderHistory(rows){historyRows=rows||[];$('signalHistory').innerHTML=h
 
 window.load=async()=>{
  try{
-  const [m,b,h,e,s,broker,x]=await Promise.all([get('/api/signals/metrics'),get('/api/signals/board'),get('/api/signals/history?limit=200'),get('/api/research/edge'),get('/api/settings'),get('/api/broker/status'),get('/api/execution/intents?limit=100')]);
-  executionIntents=x||[];renderAccuracy(m);renderBoard(b);renderHistory(h);renderEdge(e);renderSeries(m);renderSettings(s);renderBroker(broker);renderBrokerActivity(x);
+  const [m,b,h,e,s,broker,x,ops]=await Promise.all([get('/api/signals/metrics'),get('/api/signals/board'),get('/api/signals/history?limit=200'),get('/api/research/edge'),get('/api/settings'),get('/api/broker/status'),get('/api/execution/intents?limit=100'),get('/api/operations/status')]);
+  executionIntents=x||[];operationsStatus=ops||{};settings=s;board=b||[];
+  renderSettings(s);renderBroker(broker);renderOperator(board,m,broker,executionIntents,operationsStatus);
+  renderAccuracy(m);renderBoard(board);renderHistory(h);renderEdge(e);renderSeries(m);renderBrokerActivity(executionIntents);
  }catch(e){toast(friendly(e))}
 };
 load();setInterval(load,60000);
