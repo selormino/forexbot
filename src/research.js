@@ -123,7 +123,7 @@ function costs(symbol,at=null,featureContext=null){
   return {baseSpread,spread,slippage,commission,financingBpsPerDay,total,sessionMultiplier,volatilityMultiplier,model:'session-volatility-estimate',observed:false};
 }
 function dataset(symbol,tf){
-  if(!ms(tf))throw new Error('Timeframe must be 1h or 4h');
+  if(!ms(tf))throw new Error('Timeframe must be 1h, 4h or 1d');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts').all(symbol,tf,ms(tf),Date.now());
   const out=[],horizon=horizonBars(tf),lookahead=tf==='1d'?70:10;
   for(let i=59;i+lookahead<rows.length;i++){
@@ -178,7 +178,7 @@ function evaluate(m,rows,costBps){
   return {samples:rows.length,accuracy:correct/rows.length,logLoss:ll/rows.length,brier:brier/rows.length,trades,netReturn:equity-1,expectancy:trades?net/trades:0,profitFactor:losses?gains/losses:null,maxDrawdown:drawdown,costBps,bins:bins.map(b=>({...b,predicted:b.samples?b.predicted/b.samples:null,observed:b.samples?b.observed/b.samples:null})),assumption:'Unlevered fixed-horizon, non-overlapping trades with session/volatility-adjusted estimated spread, slippage and commission; trade-plan evaluation separately includes financing estimates and intrabar barriers'};
 }
 function evaluateTradePlans(m,rows,symbol,costBps,threshold=MIN_PROB(),planOptions={}){
-  threshold=Math.max(.5,Math.min(.95,Number(threshold)||MIN_PROB()));
+  threshold=Math.max(.30,Math.min(.95,Number(threshold)||MIN_PROB()));
   let candidates=0,triggered=0,expired=0,wins=0,losses=0,tp=0,sl=0,timeout=0,sumR=0,gainR=0,lossR=0;
   const settledRows=[];
   for(const r of rows){
@@ -203,8 +203,8 @@ function evaluateTradePlans(m,rows,symbol,costBps,threshold=MIN_PROB(),planOptio
     worstRolling20R:stats.worstRolling20R,worstRolling50R:stats.worstRolling50R,planOptions,
     assumption:'Triple-barrier entry/SL/TP/timeout outcomes. Same-candle SL/TP is conservatively SL. Costs use session/volatility-adjusted estimated spread, slippage, commission and configured financing.'};
 }
-function thresholdDiagnostics(m,rows,symbol,costBps,planOptions={}){
-  return [...new Set([.55,.60,.65,.70,.75,.80,MIN_PROB()].map(x=>Number(x.toFixed(2))))].sort((a,b)=>a-b).map(threshold=>{
+function thresholdDiagnostics(m,rows,symbol,costBps,planOptions={},policyThreshold=MIN_PROB()){
+  return [...new Set([.35,.40,.45,.50,.55,.60,.65,.70,.75,.80,policyThreshold].map(x=>Number(x.toFixed(2))))].sort((a,b)=>a-b).map(threshold=>{
     const directional=rows.filter(r=>Math.max(predict(m,r.x),1-predict(m,r.x))>=threshold);
     const correct=directional.filter(r=>(predict(m,r.x)>=.5)===(r.y===1)).length;
     const setup=evaluateTradePlans(m,rows,symbol,costBps,threshold,planOptions);
@@ -612,7 +612,7 @@ function trainSeries(symbol,tf){
   const setupTraining=pooledSetup(symbol,tf,{train,cal,test},threshold,directionalModel,directionalFloor);
   const m={version:VERSION,...directionalModel,horizon:horizonBars(tf),strategyFamily:tf==='1d'?'cta':'adaptive',setup:setupTraining.model};
   const planOptions=setupTraining.model?.planOptions||setupTraining.report?.planOptions||{};
-  const metrics=evaluate(m,test,cost.total),setupBacktest=evaluateTradePlans(m,test,symbol,cost.total,threshold,planOptions),thresholdSweep=thresholdDiagnostics(m,test,symbol,cost.total,planOptions);
+  const metrics=evaluate(m,test,cost.total),setupBacktest=evaluateTradePlans(m,test,symbol,cost.total,threshold,planOptions),thresholdSweep=thresholdDiagnostics(m,test,symbol,cost.total,planOptions,threshold);
   const base=train.reduce((s,r)=>s+r.y,0)/train.length;
   const baselineLoss=-test.reduce((s,r)=>s+r.y*Math.log(base+1e-9)+(1-r.y)*Math.log(1-base+1e-9),0)/test.length;
   const contextSamples=train.filter(r=>r.context.macroAvailable&&r.context.newsAvailable).length;
