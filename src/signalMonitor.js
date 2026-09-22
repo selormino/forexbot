@@ -70,6 +70,7 @@ addColumn('shadow_outcome_pips',"REAL");
 addColumn('shadow_realized_r',"REAL");
 addColumn('shadow_mfe_pips',"REAL");
 addColumn('shadow_mae_pips',"REAL");
+addColumn('financing_bps_per_day',"REAL NOT NULL DEFAULT 0");
 db.prepare("UPDATE signal_records SET shadow_status='PENDING_ENTRY' WHERE status='FILTERED' AND shadow_status IS NULL AND lean_direction IN ('LONG','SHORT') AND entry_price IS NOT NULL AND stop_price IS NOT NULL AND target_price IS NOT NULL").run();
 
 const tfMs=tf=>({'1h':3600000,'4h':14400000}[tf]||0);
@@ -92,7 +93,7 @@ function record(signal){
     key,createdAt:Date.now(),sourceTs:signal.sourceCandleTs,sourceCloseAt:signal.sourceCandleTs+step,dueAt,
     symbol:signal.symbol,timeframe:signal.timeframe,candidate:signal.candidateDirection||'WAIT',direction:signal.direction,
     lean,probability:Number(signal.probability),directionalProbability,setupProbability:Number.isFinite(setupProbability)?setupProbability:null,directionalFloor,threshold,price:Number(signal.price),modelId:signal.modelId||null,modelVersion,
-    horizon:Number(signal.horizonBars||4),costBps:Number(signal.costs?.total||0),qualified:+qualified,actionable:+actionable,status,
+    horizon:Number(signal.horizonBars||4),costBps:Number(signal.costs?.total||0),financingBpsPerDay:Number(signal.costs?.financingBpsPerDay||0),qualified:+qualified,actionable:+actionable,status,
     shadowStatus:status==='FILTERED'&&['LONG','SHORT'].includes(lean)?'PENDING_ENTRY':null,
     filters:JSON.stringify(signal.filters||[]),priceAction:JSON.stringify(signal.priceAction||null),plan:JSON.stringify(plan),analysis:JSON.stringify(signal.analysis||null),
     entry:plan.entry,stop:plan.stop,target:plan.target,tp1:plan.tp1,stopPips:plan.stopPips,targetPips:plan.targetPips,unitLabel:plan.unitLabel,
@@ -101,10 +102,10 @@ function record(signal){
   db.prepare(`INSERT OR IGNORE INTO signal_records(
     signal_key,created_at,source_ts,source_close_at,due_at,symbol,timeframe,candidate_direction,direction,lean_direction,
     probability,directional_probability,threshold,price,model_id,horizon_bars,cost_bps,qualified,actionable,status,filters_json,price_action_json,
-    plan_json,analysis_json,entry_price,stop_price,target_price,tp1_price,stop_pips,target_pips,unit_label,entry_expiry_bars,hold_bars,setup_probability,directional_min_probability,model_version,shadow_status
+    plan_json,analysis_json,entry_price,stop_price,target_price,tp1_price,stop_pips,target_pips,unit_label,entry_expiry_bars,hold_bars,setup_probability,directional_min_probability,model_version,shadow_status,financing_bps_per_day
   ) VALUES(@key,@createdAt,@sourceTs,@sourceCloseAt,@dueAt,@symbol,@timeframe,@candidate,@direction,@lean,
     @probability,@directionalProbability,@threshold,@price,@modelId,@horizon,@costBps,@qualified,@actionable,@status,@filters,@priceAction,
-    @plan,@analysis,@entry,@stop,@target,@tp1,@stopPips,@targetPips,@unitLabel,@entryExpiryBars,@holdBars,@setupProbability,@directionalFloor,@modelVersion,@shadowStatus)`).run(row);
+    @plan,@analysis,@entry,@stop,@target,@tp1,@stopPips,@targetPips,@unitLabel,@entryExpiryBars,@holdBars,@setupProbability,@directionalFloor,@modelVersion,@shadowStatus,@financingBpsPerDay)`).run(row);
   return db.prepare('SELECT * FROM signal_records WHERE signal_key=?').get(key);
 }
 
@@ -125,14 +126,26 @@ function updateMfeMae(row,bars){
   }
   return {mfePips:distanceUnits(row.symbol,entry,entry+side*mfe),maePips:distanceUnits(row.symbol,entry,entry-side*mae)};
 }
+function tradeEconomics(row,exitPrice,settledAt,triggerAt){
+  const side=row.lean_direction==='LONG'?1:-1,entry=Number(row.entry_price),stopDistance=Math.max(Math.abs(entry-Number(row.stop_price)),1e-12);
+  const rawReturn=side*(Number(exitPrice)/entry-1);
+  const step=tfMs(row.timeframe);
+  const elapsedMs=Math.max(step||0,Number(settledAt||0)-Number(triggerAt||settledAt||0)+(step||0));
+  const holdingDays=elapsedMs/86400000;
+  const totalCostBps=Math.max(0,Number(row.cost_bps||0))+Math.max(0,Number(row.financing_bps_per_day||0))*holdingDays;
+  const netReturn=rawReturn-totalCostBps/10000;
+  const grossR=side*(Number(exitPrice)-entry)/stopDistance;
+  const stopFrac=stopDistance/Math.max(entry,1e-12);
+  const realizedR=grossR-(totalCostBps/10000)/Math.max(stopFrac,1e-12);
+  return {rawReturn,netReturn,grossR,realizedR,totalCostBps,holdingDays};
+}
 function finalize(row,outcome,exitPrice,settledAt,bars){
-  const side=row.lean_direction==='LONG'?1:-1,raw=side*(exitPrice/row.entry_price-1),net=raw-row.cost_bps/10000;
+  const side=row.lean_direction==='LONG'?1:-1,econ=tradeEconomics(row,exitPrice,settledAt,row.entry_triggered_at);
   const success=['TP','TIMEOUT_WIN'].includes(outcome)?1:0;
   const outcomePips=side*distanceUnits(row.symbol,row.entry_price,exitPrice)*(exitPrice>=row.entry_price?1:-1);
-  const realizedR=(side*(exitPrice-row.entry_price))/Math.max(Math.abs(row.entry_price-row.stop_price),1e-12);
   const mm=updateMfeMae(row,bars);
   db.prepare(`UPDATE signal_records SET settled_at=?,status='SETTLED',exit_price=?,gross_return=?,net_return=?,success=?,outcome=?,outcome_pips=?,realized_r=?,mfe_pips=?,mae_pips=? WHERE id=?`)
-    .run(settledAt,exitPrice,raw,net,success,outcome,outcomePips,realizedR,mm.mfePips,mm.maePips,row.id);
+    .run(settledAt,exitPrice,econ.rawReturn,econ.netReturn,success,outcome,outcomePips,econ.realizedR,mm.mfePips,mm.maePips,row.id);
   return success;
 }
 function advance(limit=3000){
@@ -168,9 +181,8 @@ function advance(limit=3000){
         if(h.targetHit){outcome='TP';exitPrice=row.target_price;endIndex=i;break;}
       }
       if(!outcome&&all.length>=row.hold_bars){
-        const last=all[all.length-1],side=row.lean_direction==='LONG'?1:-1;
-        const net=side*(last.close/row.entry_price-1)-row.cost_bps/10000;
-        outcome=net>0?'TIMEOUT_WIN':'TIMEOUT_LOSS';exitPrice=last.close;endIndex=all.length-1;
+        const last=all[all.length-1],econ=tradeEconomics(row,last.close,last.ts,row.entry_triggered_at);
+        outcome=econ.netReturn>0?'TIMEOUT_WIN':'TIMEOUT_LOSS';exitPrice=last.close;endIndex=all.length-1;
       }
       if(outcome){const success=finalize(row,outcome,exitPrice,all[endIndex].ts,all.slice(0,endIndex+1));settled++;wins+=success;}
     }
@@ -210,18 +222,17 @@ function advance(limit=3000){
         if(h.targetHit){outcome='TP';exitPrice=row.target_price;endIndex=i;break;}
       }
       if(!outcome&&all.length>=row.hold_bars){
-        const last=all[all.length-1],side=row.lean_direction==='LONG'?1:-1;
-        const net=side*(last.close/row.entry_price-1)-row.cost_bps/10000;
-        outcome=net>0?'TIMEOUT_WIN':'TIMEOUT_LOSS';exitPrice=last.close;endIndex=all.length-1;
+        const last=all[all.length-1],econ=tradeEconomics(row,last.close,last.ts,row.shadow_entry_triggered_at);
+        outcome=econ.netReturn>0?'TIMEOUT_WIN':'TIMEOUT_LOSS';exitPrice=last.close;endIndex=all.length-1;
       }
       if(outcome){
         const side=row.lean_direction==='LONG'?1:-1;
         const success=['TP','TIMEOUT_WIN'].includes(outcome)?1:0;
         const outcomePips=side*distanceUnits(row.symbol,row.entry_price,exitPrice)*(exitPrice>=row.entry_price?1:-1);
-        const realizedR=(side*(exitPrice-row.entry_price))/Math.max(Math.abs(row.entry_price-row.stop_price),1e-12);
+        const econ=tradeEconomics(row,exitPrice,all[endIndex].ts,row.shadow_entry_triggered_at);
         const mm=updateMfeMae(row,all.slice(0,endIndex+1));
         db.prepare("UPDATE signal_records SET shadow_settled_at=?,shadow_status='SETTLED',shadow_exit_price=?,shadow_success=?,shadow_outcome=?,shadow_outcome_pips=?,shadow_realized_r=?,shadow_mfe_pips=?,shadow_mae_pips=? WHERE id=?")
-          .run(all[endIndex].ts,exitPrice,success,outcome,outcomePips,realizedR,mm.mfePips,mm.maePips,row.id);
+          .run(all[endIndex].ts,exitPrice,success,outcome,outcomePips,econ.realizedR,mm.mfePips,mm.maePips,row.id);
         shadowSettled++;shadowWins+=success;
       }
     }
@@ -231,18 +242,27 @@ function advance(limit=3000){
 function settle(limit=3000){return advance(limit);}
 
 function wilson(wins,n,z=1.96){if(!n)return {lower:0,upper:0};const p=wins/n,z2=z*z,den=1+z2/n,center=(p+z2/(2*n))/den,margin=z*Math.sqrt((p*(1-p)+z2/(4*n))/n)/den;return {lower:Math.max(0,center-margin),upper:Math.min(1,center+margin)};}
+function rStats(values){
+  const rs=(values||[]).map(Number).filter(Number.isFinite),n=rs.length;
+  if(!n)return {averageR:null,expectancyLower95:null,profitFactorR:null,maxDrawdownR:0,averageWinR:null,averageLossR:null};
+  const averageR=rs.reduce((a,b)=>a+b,0)/n,variance=n>1?rs.reduce((a,v)=>a+(v-averageR)**2,0)/(n-1):0;
+  const positive=rs.filter(v=>v>0),negative=rs.filter(v=>v<0);
+  const gains=positive.reduce((a,b)=>a+b,0),losses=negative.reduce((a,b)=>a+Math.abs(b),0);
+  let equity=0,peak=0,maxDrawdownR=0;for(const r of rs){equity+=r;peak=Math.max(peak,equity);maxDrawdownR=Math.max(maxDrawdownR,peak-equity);}
+  return {averageR,expectancyLower95:averageR-1.96*Math.sqrt(variance/n),profitFactorR:losses?gains/losses:null,maxDrawdownR,
+    averageWinR:positive.length?gains/positive.length:null,averageLossR:negative.length?losses/negative.length:null};
+}
 function aggregate(rows){
   const settled=rows.filter(r=>r.status==='SETTLED'),wins=settled.filter(r=>r.success===1).length,ci=wilson(wins,settled.length);
-  const tp=settled.filter(r=>r.outcome==='TP').length,sl=settled.filter(r=>r.outcome==='SL').length;
+  const tp=settled.filter(r=>r.outcome==='TP').length,sl=settled.filter(r=>r.outcome==='SL').length,econ=rStats(settled.map(r=>r.realized_r));
   return {total:rows.length,pendingEntry:rows.filter(r=>r.status==='PENDING_ENTRY').length,active:rows.filter(r=>r.status==='ACTIVE').length,
     expired:rows.filter(r=>r.status==='EXPIRED').length,settled:settled.length,wins,losses:settled.length-wins,tp,sl,
     accuracy:settled.length?wins/settled.length:null,confidence95:ci,
-    averageProbability:settled.length?settled.reduce((s,r)=>s+Number(r.setup_probability??r.directional_probability),0)/settled.length:null,
-    averageR:settled.length?settled.reduce((s,r)=>s+Number(r.realized_r||0),0)/settled.length:null};
+    averageProbability:settled.length?settled.reduce((sum,r)=>sum+Number(r.setup_probability??r.directional_probability),0)/settled.length:null,...econ};
 }
 function aggregateShadow(rows){
-  const tracked=rows.filter(r=>r.shadow_status),settled=tracked.filter(r=>r.shadow_status==='SETTLED'),wins=settled.filter(r=>r.shadow_success===1).length,ci=wilson(wins,settled.length);
-  return {total:tracked.length,pendingEntry:tracked.filter(r=>r.shadow_status==='PENDING_ENTRY').length,active:tracked.filter(r=>r.shadow_status==='ACTIVE').length,expired:tracked.filter(r=>r.shadow_status==='EXPIRED').length,settled:settled.length,wins,losses:settled.length-wins,accuracy:settled.length?wins/settled.length:null,confidence95:ci,averageR:settled.length?settled.reduce((sum,r)=>sum+Number(r.shadow_realized_r||0),0)/settled.length:null};
+  const tracked=rows.filter(r=>r.shadow_status),settled=tracked.filter(r=>r.shadow_status==='SETTLED'),wins=settled.filter(r=>r.shadow_success===1).length,ci=wilson(wins,settled.length),econ=rStats(settled.map(r=>r.shadow_realized_r));
+  return {total:tracked.length,pendingEntry:tracked.filter(r=>r.shadow_status==='PENDING_ENTRY').length,active:tracked.filter(r=>r.shadow_status==='ACTIVE').length,expired:tracked.filter(r=>r.shadow_status==='EXPIRED').length,settled:settled.length,wins,losses:settled.length-wins,accuracy:settled.length?wins/settled.length:null,confidence95:ci,...econ};
 }
 function currentVersion(){
   const exists=db.prepare("SELECT 1 ok FROM sqlite_master WHERE type='table' AND name='research_models'").get();
@@ -269,7 +289,8 @@ function metrics(){
     allTimeShadowFiltered:aggregateShadow(allRows.filter(r=>r.status==='FILTERED')),
     bySeries:Object.fromEntries(Object.entries(strictGroups).map(([k,v])=>[k,aggregate(v)])),
     researchBySeries:Object.fromEntries(Object.entries(researchGroups).map(([k,v])=>[k,aggregate(v)])),
-    readyForBrokerValidation:strictAgg.settled>=Number(process.env.SIGNAL_MIN_SETTLED||50)&&(strictAgg.accuracy||0)>=Number(process.env.SIGNAL_TARGET_ACCURACY||.70)&&strictAgg.confidence95.lower>=Number(process.env.SIGNAL_MIN_CONFIDENCE_LOWER||.60)
+    readinessRule:'Minimum settled sample + positive monitored average R + positive 95% lower expectancy bound + profit factor above 1. Win rate is diagnostic.',
+    readyForBrokerValidation:strictAgg.settled>=Number(process.env.SIGNAL_MIN_SETTLED||50)&&(strictAgg.averageR||0)>0&&(strictAgg.expectancyLower95??-Infinity)>0&&(strictAgg.profitFactorR===null||strictAgg.profitFactorR>1)
   };
 }
 function history(limit=300){

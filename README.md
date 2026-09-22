@@ -54,7 +54,7 @@ TRADING_ENABLED=false
 EXECUTION_MODE=off
 AUTO_PAPER_TRADING=false
 AUTO_DEMO_STRICT=false
-AUTO_MIN_CONFLUENCE=65
+AUTO_MIN_CONFLUENCE=60
 BROKER_BRIDGE=none
 BROKER_RECONCILE_ENABLED=false
 BROKER_RECONCILE_SECONDS=60
@@ -112,6 +112,16 @@ The current model version includes price-action features in every training row a
 ## Quality gates
 Run `npm test` locally. GitHub CI also runs syntax checks and price-action unit tests on pushes and pull requests.
 
+
+## Profitability-first validation
+
+Research v38 optimizes for **net expectancy after costs**, not a target win rate. Win rate remains visible, but plan selection, threshold recommendation, side/regime validation, and final model approval prioritize average R, profit factor, drawdown, and the 95% lower confidence bound of mean R. Final approval requires that lower expectancy bound to remain positive on the untouched chronological test window.
+
+Historical broker bid/ask ticks are not yet available in the research store, so v38 does **not** pretend fixed spreads are broker truth. It uses conservative session- and volatility-adjusted spread/slippage estimates plus commission and a financing estimate by holding time. Configure symbol-specific financing with `FINANCING_BPS_PER_DAY_<SYMBOL>` when broker data is known.
+
+Automatic demo dispatch also has a forward-performance guard. After `AUTO_PERFORMANCE_MIN_TRADES` monitored trades for a market/timeframe/model, broker automation pauses when recent average R or its 95% lower bound is non-positive, profit factor drops below 1, or recent R drawdown exceeds `AUTO_MAX_RECENT_DRAWDOWN_R`. Internal/shadow monitoring continues so the system can keep learning while broker dispatch is paused.
+
+The MT5 bridge rejects an order when the live broker spread consumes too much of the planned stop or target. Use `MAX_SPREAD_STOP_RATIO` and `MAX_SPREAD_TARGET_RATIO` on the bridge host to tune those execution-cost guards.
 
 ## Signal monitoring and accuracy
 The signal engine records one decision per closed candle for each supported market and monitored timeframe. The directional model first proposes LONG/SHORT only when `DIRECTIONAL_MIN_PROBABILITY` is met. A second model then estimates `P(success | confirmation entry triggers)` for the actual entry/SL/TP structure. `SIGNAL_MIN_PROBABILITY` is the minimum setup-success probability. No-entry setups expire and are not counted as losses.

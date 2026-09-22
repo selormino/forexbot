@@ -7,7 +7,7 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v37-pattern-chart';
+const VERSION='technical-fundamental-v38-expectancy-first';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
@@ -85,20 +85,34 @@ function features(rows,symbol,at){
   const technicalBias=Math.max(-1,Math.min(1,.34*Math.tanh(trend)+.18*Math.tanh(emaSlope)+.18*Math.tanh(macdNorm)+.12*adxDirection+.10*Math.tanh(momentum5)+.08*rsiBias));
   return {price,atr,rsi,trend,ema20,ema50,emaSlope,momentum5,adx:{value:Number(adx.adx||0),pdi:Number(adx.pdi||0),mdi:Number(adx.mdi||0),direction:adxDirection},technicalBias,regime,session,macd:{value:macd.MACD||0,signal:macd.signal||0,histogram:macd.histogram||0},bollinger:{...bb,width:bbWidth,position:bbPosition},priceAction,context:ctx,x:[Math.tanh(trend),Math.tanh(emaSlope),Math.tanh(momentum5),rsiBias,Math.tanh(atr/price*100),Math.tanh(ratio-1),regime==='trend'?1:0,regime==='volatile'?1:0,Math.tanh(macdNorm),adxDirection,Math.tanh(Number(adx.adx||0)/25-1),Math.tanh((bbPosition-.5)*2),Math.tanh(bbWidth*100),technicalBias,...priceAction.vector,...ctx.x,...sessionX]};
 }
-function costs(symbol){
-  // Round-trip estimates in basis points, not measured broker quotes.
+function costs(symbol,at=null,featureContext=null){
+  // Conservative research estimates until broker-grade historical bid/ask data is ingested.
   const defaults={EURUSD:2,GBPUSD:3,USDJPY:3,AUDUSD:3,USDCAD:3,XAUUSD:5,XAGUSD:12,WTI:10,BTCUSD:12,ETHUSD:14,SOLUSD:18,XRPUSD:20,LTCUSD:18};
-  const spread=Number(process.env['SPREAD_BPS_'+symbol]??defaults[symbol]??5);
-  const slippage=Number(process.env.SLIPPAGE_BPS??1),commission=Number(process.env.COMMISSION_BPS??.5);
-  if(![spread,slippage,commission].every(v=>Number.isFinite(v)&&v>=0))throw new Error('Invalid transaction costs');
-  return {spread,slippage,commission,total:spread+2*slippage+2*commission};
+  const financingDefaults={EURUSD:.15,GBPUSD:.18,USDJPY:.18,AUDUSD:.18,USDCAD:.18,XAUUSD:.45,XAGUSD:.60,WTI:.55,BTCUSD:2.0,ETHUSD:2.2,SOLUSD:2.5,XRPUSD:2.5,LTCUSD:2.3};
+  const baseSpread=Number(process.env['SPREAD_BPS_'+symbol]??defaults[symbol]??5);
+  const baseSlippage=Number(process.env.SLIPPAGE_BPS??1),commission=Number(process.env.COMMISSION_BPS??.5);
+  const financingBpsPerDay=Number(process.env['FINANCING_BPS_PER_DAY_'+symbol]??process.env.FINANCING_BPS_PER_DAY??financingDefaults[symbol]??.25);
+  if(![baseSpread,baseSlippage,commission,financingBpsPerDay].every(v=>Number.isFinite(v)&&v>=0))throw new Error('Invalid transaction costs');
+  let sessionMultiplier=1,volatilityMultiplier=1;
+  if(Number.isFinite(Number(at))){
+    const hour=new Date(Number(at)).getUTCHours();
+    if(hour>=21&&hour<23)sessionMultiplier=1.8;
+    else if(hour<6&&!['USDJPY'].includes(symbol))sessionMultiplier=1.15;
+    else if(hour>=12&&hour<16)sessionMultiplier=.90;
+  }
+  if(featureContext?.regime==='volatile')volatilityMultiplier=1.35;
+  else if(featureContext?.regime==='range')volatilityMultiplier=1.05;
+  const spread=baseSpread*sessionMultiplier*volatilityMultiplier;
+  const slippage=baseSlippage*(featureContext?.regime==='volatile'?1.5:1);
+  const total=spread+2*slippage+2*commission;
+  return {baseSpread,spread,slippage,commission,financingBpsPerDay,total,sessionMultiplier,volatilityMultiplier,model:'session-volatility-estimate',observed:false};
 }
 function dataset(symbol,tf){
   if(!ms(tf))throw new Error('Timeframe must be 1h or 4h');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts').all(symbol,tf,ms(tf),Date.now());
   const out=[],horizon=4,lookahead=10;
   for(let i=59;i+lookahead<rows.length;i++){
-    const at=rows[i].ts+ms(tf),f=features(rows.slice(Math.max(0,i-119),i+1),symbol,at);
+    const at=rows[i].ts+ms(tf),f=features(rows.slice(Math.max(0,i-119),i+1),symbol,at),rowCost=costs(symbol,at,f);
     const segment=rows.slice(i,i+lookahead+1);
     if(segment.some((row,j)=>row.provider!==rows[i].provider||(j&&row.ts-segment[j-1].ts!==ms(tf))))continue;
     const ret=rows[i+horizon].close/rows[i+1].open-1;
@@ -106,7 +120,7 @@ function dataset(symbol,tf){
     const context={macroAvailable:!!f.context?.macroAvailable,newsAvailable:!!f.context?.newsAvailable,newsSentiment:Number(f.context?.newsSentiment||0),macroBias:Number(f.context?.macroBias||0)};
     out.push({
       price:f.price,atr:f.atr,trend:f.trend,technicalBias:f.technicalBias,regime:f.regime,
-      priceAction,context,x:f.x,
+      priceAction,context,x:f.x,costBps:rowCost.total,financingBpsPerDay:rowCost.financingBpsPerDay,barMs:ms(tf),costModel:rowCost.model,
       at,end:rows[i+horizon].ts+ms(tf),setupEnd:rows[i+lookahead].ts+ms(tf),ret,y:ret>0?1:0,
       futureBars:rows.slice(i+1,i+lookahead+1).map(row=>({ts:row.ts,open:row.open,high:row.high,low:row.low,close:row.close}))
     });
@@ -142,38 +156,37 @@ function evaluate(m,rows,costBps){
   for(const r of rows){const p=predict(m,r.x);correct+=(p>=.5)===(r.y===1);ll-=r.y*Math.log(p+1e-9)+(1-r.y)*Math.log(1-p+1e-9);brier+=(p-r.y)**2;
     const b=bins[Math.min(9,Math.floor(p*10))];b.samples++;b.predicted+=p;b.observed+=r.y;
     const threshold=MIN_PROB(); const side=p>=threshold?1:p<=1-threshold?-1:0;
-    if(!side||r.regime!=='trend'||side*r.trend<=0||r.at<lastExit||r.atr/r.price*10000<costBps*2)continue;
-    const pnl=side*r.ret-costBps/10000;trades++;net+=pnl;gains+=Math.max(0,pnl);losses+=Math.max(0,-pnl);equity*=1+pnl;peak=Math.max(peak,equity);drawdown=Math.max(drawdown,1-equity/peak);lastExit=r.end;
+    const effectiveCostBps=Number(r.costBps??costBps??0);
+    if(!side||r.regime!=='trend'||side*r.trend<=0||r.at<lastExit||r.atr/r.price*10000<effectiveCostBps*2)continue;
+    const pnl=side*r.ret-effectiveCostBps/10000;trades++;net+=pnl;gains+=Math.max(0,pnl);losses+=Math.max(0,-pnl);equity*=1+pnl;peak=Math.max(peak,equity);drawdown=Math.max(drawdown,1-equity/peak);lastExit=r.end;
   }
-  return {samples:rows.length,accuracy:correct/rows.length,logLoss:ll/rows.length,brier:brier/rows.length,trades,netReturn:equity-1,expectancy:trades?net/trades:0,profitFactor:losses?gains/losses:null,maxDrawdown:drawdown,costBps,bins:bins.map(b=>({...b,predicted:b.samples?b.predicted/b.samples:null,observed:b.samples?b.observed/b.samples:null})),assumption:'Unlevered fixed-horizon, non-overlapping trades; excludes financing and intrabar stops'};
+  return {samples:rows.length,accuracy:correct/rows.length,logLoss:ll/rows.length,brier:brier/rows.length,trades,netReturn:equity-1,expectancy:trades?net/trades:0,profitFactor:losses?gains/losses:null,maxDrawdown:drawdown,costBps,bins:bins.map(b=>({...b,predicted:b.samples?b.predicted/b.samples:null,observed:b.samples?b.observed/b.samples:null})),assumption:'Unlevered fixed-horizon, non-overlapping trades with session/volatility-adjusted estimated spread, slippage and commission; trade-plan evaluation separately includes financing estimates and intrabar barriers'};
 }
 function evaluateTradePlans(m,rows,symbol,costBps,threshold=MIN_PROB(),planOptions={}){
-  threshold=Math.max(.5,Math.min(.95,Number(threshold)||MIN_PROB()));let candidates=0,triggered=0,expired=0,wins=0,losses=0,tp=0,sl=0,timeout=0,sumR=0,gainR=0,lossR=0;
+  threshold=Math.max(.5,Math.min(.95,Number(threshold)||MIN_PROB()));
+  let candidates=0,triggered=0,expired=0,wins=0,losses=0,tp=0,sl=0,timeout=0,sumR=0,gainR=0,lossR=0;
+  const settledRows=[];
   for(const r of rows){
     const p=predict(m,r.x),directionalProbability=Math.max(p,1-p);if(directionalProbability<threshold)continue;
-    const side=p>=.5?'LONG':'SHORT',sgn=side==='LONG'?1:-1;
+    const side=p>=.5?'LONG':'SHORT';
     if(!setupModel.eligible(r,side,costBps,planOptions.strategyFamily||'trend'))continue;
     candidates++;
-    const pseudo={symbol,price:r.price,leanDirection:side,candidateDirection:side,directionalProbability,features:r,priceAction:r.priceAction};
-    const plan=buildTradePlan(pseudo,{side,...planOptions}),future=r.futureBars||[];let trigger=-1;
-    for(let i=0;i<Math.min(plan.entryExpiryBars,future.length);i++){if(side==='LONG'?future[i].high>=plan.entry:future[i].low<=plan.entry){trigger=i;break;}}
-    if(trigger<0){expired++;continue;}triggered++;
-    const active=future.slice(trigger,trigger+plan.holdBars);let exit=null,outcome=null;
-    for(const b of active){
-      const stopHit=side==='LONG'?b.low<=plan.stop:b.high>=plan.stop,targetHit=side==='LONG'?b.high>=plan.target:b.low<=plan.target;
-      if(stopHit&&targetHit){exit=plan.stop;outcome='SL';break;}
-      if(stopHit){exit=plan.stop;outcome='SL';break;}
-      if(targetHit){exit=plan.target;outcome='TP';break;}
-    }
-    if(!outcome&&active.length>=plan.holdBars){exit=active.at(-1).close;const net=sgn*(exit/plan.entry-1)-costBps/10000;outcome=net>0?'TIMEOUT_WIN':'TIMEOUT_LOSS';}
-    if(!outcome)continue;
-    const rr=sgn*(exit-plan.entry)/Math.max(Math.abs(plan.entry-plan.stop),1e-12)-costBps/10000/(Math.abs(plan.entry-plan.stop)/plan.entry);
+    const result=setupModel.outcome(r,symbol,side,costBps,planOptions);
+    if(!result.triggered){expired++;continue;}
+    triggered++;
+    if(!result.settled)continue;
+    const rr=Number(result.realizedR)||0;
+    settledRows.push({y:result.y,realizedR:rr,at:r.at});
     sumR+=rr;if(rr>0)gainR+=rr;else lossR+=-rr;
-    const success=outcome==='TP'||outcome==='TIMEOUT_WIN';wins+=success?1:0;losses+=success?0:1;
-    tp+=outcome==='TP'?1:0;sl+=outcome==='SL'?1:0;timeout+=outcome.startsWith('TIMEOUT')?1:0;
+    const success=result.y===1;wins+=success?1:0;losses+=success?0:1;
+    tp+=result.outcome==='TP'?1:0;sl+=result.outcome==='SL'?1:0;timeout+=String(result.outcome).startsWith('TIMEOUT')?1:0;
   }
-  return {candidates,triggered,expired,wins,losses,tp,sl,timeout,accuracy:triggered?wins/triggered:null,averageR:triggered?sumR/triggered:null,profitFactorR:lossR?gainR/lossR:null,planOptions,
-    assumption:'Confirmation entry and volatility-adjusted stop/target use the frozen plan profile selected before the test window. Same-candle SL/TP is conservatively treated as SL; estimated costs are deducted from R.'};
+  const stats=setupModel.summarizeExamples(settledRows);
+  return {candidates,triggered,expired,wins,losses,tp,sl,timeout,accuracy:triggered?wins/triggered:null,
+    averageR:stats.averageR,expectancyR:stats.expectancyR,expectancyLower95:stats.expectancyLower95,
+    averageWinR:stats.averageWinR,averageLossR:stats.averageLossR,profitFactorR:stats.profitFactorR,maxDrawdownR:stats.maxDrawdownR,
+    worstRolling20R:stats.worstRolling20R,worstRolling50R:stats.worstRolling50R,planOptions,
+    assumption:'Triple-barrier entry/SL/TP/timeout outcomes. Same-candle SL/TP is conservatively SL. Costs use session/volatility-adjusted estimated spread, slippage, commission and configured financing.'};
 }
 function thresholdDiagnostics(m,rows,symbol,costBps,planOptions={}){
   return [...new Set([.55,.60,.65,.70,.75,.80,MIN_PROB()].map(x=>Number(x.toFixed(2))))].sort((a,b)=>a-b).map(threshold=>{
@@ -277,35 +290,27 @@ function jointPolicyExamples(examples,directionalModel,directionalFloor){
 }
 
 function chooseValidatedSides(model,examples,threshold){
-  const diagnostics={};
-  const allowed=[];
+  const diagnostics={},allowed=[];
   for(const side of ['LONG','SHORT']){
-    const rows=examples.filter(x=>x.side===side),wins=rows.filter(x=>x.y===1).length;
-    const averageR=rows.length?rows.reduce((sum,x)=>sum+x.realizedR,0)/rows.length:null;
-    const accuracy=rows.length?wins/rows.length:null;
-    const gainR=rows.reduce((sum,x)=>sum+Math.max(0,x.realizedR),0),lossR=rows.reduce((sum,x)=>sum+Math.max(0,-x.realizedR),0);
+    const rows=examples.filter(x=>x.side===side);
+    const allStats=setupModel.summarizeExamples(rows);
     const highProb=rows.filter(x=>setupModel.predict(model,x.z)>=threshold);
-    const highProbWins=highProb.filter(x=>x.y===1).length;
-    const highProbAccuracy=highProb.length?highProbWins/highProb.length:null;
-    const highProbAverageR=highProb.length?highProb.reduce((sum,x)=>sum+x.realizedR,0)/highProb.length:null;
-    const highProbGainR=highProb.reduce((sum,x)=>sum+Math.max(0,x.realizedR),0),highProbLossR=highProb.reduce((sum,x)=>sum+Math.max(0,-x.realizedR),0);
-    const highProbWilson=setupModel.wilsonLower(highProbWins,highProb.length);
+    const highStats=setupModel.summarizeExamples(highProb);
     const minHighProbSamples=Math.max(10,Math.floor(examples.length*.05));
-    const passed=highProb.length>=minHighProbSamples&&(highProbAccuracy||0)>=.60&&(highProbAverageR||0)>0&&highProbWilson>=.45;
+    const passed=highStats.samples>=minHighProbSamples&&(highStats.averageR||0)>0&&(highStats.profitFactorR===null||highStats.profitFactorR>1)&&(highStats.expectancyLower95??-Infinity)>0;
     diagnostics[side]={
-      samples:rows.length,wins,accuracy,averageR,profitFactorR:lossR?gainR/lossR:null,passed,
+      ...allStats,passed,
       highProbability:{
-        threshold,selected:highProb.length,wins:highProbWins,accuracy:highProbAccuracy,averageR:highProbAverageR,
-        profitFactorR:highProbLossR?highProbGainR/highProbLossR:null,wilsonLower:highProbWilson,minSamples:minHighProbSamples,
-        policyAligned:true
+        threshold,selected:highStats.samples,wins:highStats.wins,accuracy:highStats.accuracy,averageR:highStats.averageR,
+        expectancyLower95:highStats.expectancyLower95,averageWinR:highStats.averageWinR,averageLossR:highStats.averageLossR,
+        profitFactorR:highStats.profitFactorR,wilsonLower:highStats.wilsonLower,minSamples:minHighProbSamples,policyAligned:true
       }
     };
     if(passed)allowed.push(side);
   }
-  return {allowedSides:allowed,diagnostics,userAccuracyFloor:.60,threshold,
-    meaning:'Side admission is judged only on pre-test setups at or above the configured probability threshold, matching the setups the live policy would actually trade. Final OOS approval remains unchanged.'};
+  return {allowedSides:allowed,diagnostics,threshold,
+    meaning:'Side admission is expectancy-first: pre-test threshold-qualified setups need positive average R, profit factor above 1, and a positive 95% lower confidence bound for mean R. Win rate is diagnostic, not the optimization target.'};
 }
-
 function policyOperatingStats(model,examples,threshold){
   const sideValidation=chooseValidatedSides(model,examples,threshold);
   const allowed=(examples||[]).filter(x=>sideValidation.allowedSides.includes(x.side));
@@ -318,6 +323,9 @@ function policyOperatingStats(model,examples,threshold){
     selectedAccuracy:stats.accuracy,
     selectedWins:stats.wins,
     averageR:stats.averageR,
+    expectancyLower95:stats.expectancyLower95,
+    averageWinR:stats.averageWinR,
+    averageLossR:stats.averageLossR,
     profitFactorR:stats.profitFactorR,
     wilsonLower:stats.wilsonLower
   };
@@ -394,18 +402,18 @@ function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
     const probability=setupModel.probabilityMetrics(calibrated,validation);
     const operating=policyOperatingStats(calibrated,validation,threshold);
     const minSelected=Math.max(20,Math.floor(validation.length*.20));
-    const passesUserFloor=operating.selected>=minSelected&&(operating.selectedAccuracy||0)>=.60&&(operating.averageR||0)>0&&operating.sideValidation.allowedSides.length>0;
+    const passesUserFloor=operating.selected>=minSelected&&(operating.averageR||0)>0&&(operating.profitFactorR===null||operating.profitFactorR>1)&&(operating.expectancyLower95??-Infinity)>0&&operating.sideValidation.allowedSides.length>0;
     return {...candidate,calibrated,probability,operating,minSelected,passesUserFloor};
   });
   const passing=evaluated.filter(x=>x.passesUserFloor);
   const ranked=(passing.length?passing:evaluated).sort((a,b)=>{
     if(a.passesUserFloor!==b.passesUserFloor)return a.passesUserFloor?-1:1;
-    const aWilson=a.operating.wilsonLower??0,bWilson=b.operating.wilsonLower??0;
-    if(a.passesUserFloor&&Math.abs(bWilson-aWilson)>.03)return bWilson-aWilson;
-    const aAcc=a.operating.selectedAccuracy??-1,bAcc=b.operating.selectedAccuracy??-1;
-    if(a.passesUserFloor&&Math.abs(bAcc-aAcc)>.02)return bAcc-aAcc;
+    const aLower=a.operating.expectancyLower95??-Infinity,bLower=b.operating.expectancyLower95??-Infinity;
+    if(a.passesUserFloor&&Math.abs(bLower-aLower)>.02)return bLower-aLower;
     const aR=a.operating.averageR??-Infinity,bR=b.operating.averageR??-Infinity;
-    if(a.passesUserFloor&&Math.abs(bR-aR)>.05)return bR-aR;
+    if(a.passesUserFloor&&Math.abs(bR-aR)>.03)return bR-aR;
+    const aPf=a.operating.profitFactorR??0,bPf=b.operating.profitFactorR??0;
+    if(a.passesUserFloor&&Math.abs(bPf-aPf)>.10)return bPf-aPf;
     const aLoss=a.probability.logLoss??Infinity,bLoss=b.probability.logLoss??Infinity;
     if(Math.abs(aLoss-bLoss)>.005)return aLoss-bLoss;
     return a.complexity-b.complexity;
@@ -420,12 +428,12 @@ function adaptSetupModel(pooledModel,trainExamples,calExamples,threshold){
     recentSideDiagnostics:chosen?.operating?.sideValidation?.diagnostics||{},
     recentPassesUserFloor:!!chosen?.passesUserFloor,
     calibrationSamples:calExamples.length,fitSamples:fitCal.length,validationSamples:validation.length,
-    userAccuracyFloor:.60,selectionPolicy:'best validated side, maximum one trade per timestamp',
+    selectionPolicy:'positive-expectancy validated side, maximum one trade per timestamp',
     candidates:evaluated.map(x=>({
       name:x.name,passesUserFloor:x.passesUserFloor,minSelected:x.minSelected,probability:x.probability,
       operating:{
         threshold:x.operating.threshold,selected:x.operating.selected,selectedAccuracy:x.operating.selectedAccuracy,
-        selectedWins:x.operating.selectedWins,averageR:x.operating.averageR,profitFactorR:x.operating.profitFactorR,
+        selectedWins:x.operating.selectedWins,averageR:x.operating.averageR,expectancyLower95:x.operating.expectancyLower95,averageWinR:x.operating.averageWinR,averageLossR:x.operating.averageLossR,profitFactorR:x.operating.profitFactorR,
         wilsonLower:x.operating.wilsonLower,allowedSides:x.operating.sideValidation.allowedSides
       },
       sideDiagnostics:x.sideDiagnostics||null,
@@ -462,7 +470,7 @@ function fitRegimeValidation(model,examples,threshold,{minSamples=20}={}){
   const diagnostics={},allowedRegimes=[];
   for(const [regime,rows] of Object.entries(groups)){
     const stats=setupModel.summarizeExamples(rows);
-    const passed=stats.samples>=minSamples&&(stats.averageR||0)>0&&(stats.profitFactorR===null||stats.profitFactorR>1)&&stats.wilsonLower>=.45;
+    const passed=stats.samples>=minSamples&&(stats.averageR||0)>0&&(stats.profitFactorR===null||stats.profitFactorR>1)&&(stats.expectancyLower95??-Infinity)>0;
     diagnostics[regime]={...stats,passed};
     if(passed)allowedRegimes.push(regime);
   }
@@ -608,12 +616,13 @@ function trainSeries(symbol,tf){
     const setupFold=pooledSetup(symbol,tf,parts,threshold,foldModel,directionalFloor).report;
     folds.push({...evaluate(foldModel,parts.test,cost.total),directionalModelCompetition:directionalFold.comparison,setup:evaluateTradePlans(foldModel,parts.test,symbol,cost.total,threshold,setupFold.planOptions||{}),setupProbability:setupFold});
   }
-  const setupReport=setupTraining.report,target=Number(process.env.SIGNAL_TARGET_ACCURACY||.70);
+  const setupReport=setupTraining.report;
   const requiredSelections=symbol==='XAUUSD'&&tf==='4h'?50:30;
-  const setupApproved=setupReport.status==='trained'&&setupReport.selected>=requiredSelections&&setupReport.selectedAccuracy>=target&&(setupReport.averageR||0)>0&&setupReport.logLoss<setupReport.baselineLoss&&(setupReport.worstRolling20R===null||setupReport.worstRolling20R>0);
-  const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||(f.setupProbability.recommendedTest.averageR||0)>0));
+  const minProfitFactor=Math.max(1,Number(process.env.RESEARCH_MIN_PROFIT_FACTOR||1.10));
+  const setupApproved=setupReport.status==='trained'&&setupReport.selected>=requiredSelections&&(setupReport.averageR||0)>0&&(setupReport.expectancyLower95??-Infinity)>0&&(setupReport.profitFactorR??0)>=minProfitFactor&&setupReport.logLoss<setupReport.baselineLoss&&(setupReport.worstRolling20R===null||setupReport.worstRolling20R>0);
+  const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||((f.setupProbability.recommendedTest.averageR||0)>0&&(f.setupProbability.recommendedTest.profitFactorR===null||f.setupProbability.recommendedTest.profitFactorR>1))));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,approved,approvalRule:'v36 keeps the final test window untouched while model, plan, score gate, side policy, distribution gate, and XAUUSD 4H regime policy are learned only from pre-test data. XAUUSD 4H is explicitly LONG-only, score-gate discovery requires at least 30 examples, final approval requires 50 market-specific out-of-sample selections, the unchanged accuracy target, positive average R, non-negative rolling-20R stability, baseline-beating log loss, and chronological fold stability',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,minProfitFactor,approved,approvalRule:'v38 is expectancy-first. All plan/model/side/distribution/regime selection remains pre-test-only, and the final chronological test window stays untouched. Approval requires enough market-specific OOS selections, positive average R after conservative dynamic costs, a positive 95% lower confidence bound for mean R, profit factor at or above the configured floor, positive rolling-20R stability, baseline-beating probability loss, and chronological fold stability. Win rate is reported but is not an approval target.',costModel:'Session/volatility-adjusted estimated spread + slippage + commission, plus financing estimate by holding time. Historical broker bid/ask/tick costs are not yet available.',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
@@ -661,7 +670,7 @@ function rangeConfluenceFor(side,f){
 function signal(symbol,tf='1h',events=null){
   const now=Date.now(),step=ms(tf);if(!step)throw new Error('Invalid timeframe');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,tf,step,now).reverse();
-  const f=features(rows,symbol,now),m=latest(symbol,tf),p=m?predict(m.model,f.x):.5,cost=costs(symbol),reasons=[],softRisks=[];
+  const f=features(rows,symbol,now),m=latest(symbol,tf),p=m?predict(m.model,f.x):.5,cost=costs(symbol,now,f),reasons=[],softRisks=[];
   const threshold=MIN_PROB(),directionalFloor=Math.max(.5,Math.min(.9,Number(process.env.DIRECTIONAL_MIN_PROBABILITY||.55))),directionalLean=p>=.5?'LONG':'SHORT',directionalProbability=Math.max(p,1-p);
   const setupScores={};
   for(const side of ['LONG','SHORT']){

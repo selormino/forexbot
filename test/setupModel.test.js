@@ -84,14 +84,14 @@ test('asset-family pooling stays within related markets',()=>{
 });
 
 
-test('plan selection requires positive expectancy and prefers stronger lower-bound accuracy',()=>{
+test('plan selection requires positive expectancy and prefers stronger economic edge',()=>{
   const candidates=[
-    {planOptions:{name:'bad'},stats:{samples:100,wilsonLower:.80,averageR:-.1,profitFactorR:.8}},
-    {planOptions:{name:'good-a'},stats:{samples:100,wilsonLower:.55,averageR:.12,profitFactorR:1.2}},
-    {planOptions:{name:'good-b'},stats:{samples:100,wilsonLower:.60,averageR:.05,profitFactorR:1.1}}
+    {planOptions:{name:'bad'},stats:{samples:100,wilsonLower:.80,averageR:-.1,expectancyLower95:-.2,profitFactorR:.8}},
+    {planOptions:{name:'good-a'},stats:{samples:100,wilsonLower:.55,averageR:.12,expectancyLower95:.06,profitFactorR:1.2}},
+    {planOptions:{name:'good-b'},stats:{samples:100,wilsonLower:.60,averageR:.05,expectancyLower95:.02,profitFactorR:1.1}}
   ];
   const chosen=setup.choosePlan(candidates,40);
-  assert.equal(chosen.planOptions.name,'good-b');
+  assert.equal(chosen.planOptions.name,'good-a');
 });
 test('custom plan profile changes the generated trade geometry',()=>{
   const r=row([{open:100,high:105,low:95,close:100}]);
@@ -168,8 +168,8 @@ test('conservative plan profiles include positive-expectancy 0.8R choices',()=>{
 test('side validation can allow only the statistically stronger direction',()=>{
   const model={kind:'logistic',weights:[0,2],calibration:{a:1,b:0}};
   const rows=[];
-  for(let i=0;i<20;i++)rows.push({side:'LONG',z:[1],y:i<14?1:0,realizedR:i<14?.8:-1});
-  for(let i=0;i<20;i++)rows.push({side:'SHORT',z:[-1],y:i<8?1:0,realizedR:i<8?.8:-1});
+  for(let i=0;i<40;i++)rows.push({side:'LONG',z:[1],y:i<32?1:0,realizedR:i<32?.9:-1});
+  for(let i=0;i<40;i++)rows.push({side:'SHORT',z:[-1],y:i<14?1:0,realizedR:i<14?.9:-1});
   const gate=research.chooseValidatedSides(model,rows,.6);
   assert.deepEqual(gate.allowedSides,['LONG']);
   assert.equal(gate.diagnostics.LONG.passed,true);
@@ -342,13 +342,14 @@ test('side-composite falls back to its base model when a side is unavailable',()
 test('policy operating stats ignore sides that fail validation',()=>{
   const model={kind:'logistic',weights:[0,2],calibration:{a:1,b:0}};
   const rows=[];
-  for(let i=0;i<20;i++)rows.push({at:i,side:'LONG',z:[1],y:i<14?1:0,realizedR:i<14?.8:-1});
-  for(let i=0;i<20;i++)rows.push({at:100+i,side:'SHORT',z:[-1],y:i<5?1:0,realizedR:i<5?.8:-1});
+  for(let i=0;i<40;i++)rows.push({at:i,side:'LONG',z:[1],y:i<32?1:0,realizedR:i<32?.9:-1});
+  for(let i=0;i<40;i++)rows.push({at:100+i,side:'SHORT',z:[-1],y:i<10?1:0,realizedR:i<10?.9:-1});
   const out=research.policyOperatingStats(model,rows,.6);
   assert.deepEqual(out.sideValidation.allowedSides,['LONG']);
-  assert.equal(out.selected,20);
-  assert.equal(out.selectedWins,14);
-  assert.equal(out.selectedAccuracy,.7);
+  assert.equal(out.selected,40);
+  assert.equal(out.selectedWins,32);
+  assert.equal(out.selectedAccuracy,.8);
+  assert.ok(out.expectancyLower95>0);
   assert.ok(out.averageR>0);
 });
 
@@ -455,7 +456,7 @@ test('score gate refuses a high-ranked subset with negative expectancy',()=>{
 });
 
 
-test('v36 score gate requires at least 30 discovery examples by default',()=>{
+test('v38 score gate requires at least 30 discovery examples by default',()=>{
   const base={kind:'logistic',weights:[0,0,1]};
   const rows=Array.from({length:100},(_,i)=>{
     const high=i>=70,y=high?(i%5!==0?1:0):(i%5===0?1:0);
@@ -472,4 +473,40 @@ test('risk summary reports drawdown and rolling expectancy',()=>{
   assert.ok(Number.isFinite(stats.maxDrawdownR));
   assert.ok(Number.isFinite(stats.worstRolling20R));
   assert.ok(Number.isFinite(stats.worstRolling50R));
+});
+
+
+test('expectancy confidence is positive only when the R distribution supports it',()=>{
+  const strong=Array.from({length:80},(_,i)=>({at:i,y:i%5!==0?1:0,realizedR:i%5!==0?.9:-1}));
+  const weak=Array.from({length:80},(_,i)=>({at:i,y:i%2===0?1:0,realizedR:i%2===0?.6:-1}));
+  const a=setup.summarizeExamples(strong),b=setup.summarizeExamples(weak);
+  assert.ok(a.averageR>0);
+  assert.ok(a.expectancyLower95>0);
+  assert.ok(b.averageR<0);
+  assert.ok(b.expectancyLower95<0);
+});
+
+test('plan selection prefers stronger net expectancy over a higher win rate',()=>{
+  const highWinLowEdge={planOptions:{name:'high-win-low-edge'},stats:setup.summarizeExamples(
+    Array.from({length:100},(_,i)=>({at:i,y:i<75?1:0,realizedR:i<75?.25:-1}))
+  )};
+  const lowerWinHighEdge={planOptions:{name:'lower-win-high-edge'},stats:setup.summarizeExamples(
+    Array.from({length:100},(_,i)=>({at:i,y:i<55?1:0,realizedR:i<55?1.4:-1}))
+  )};
+  assert.ok(highWinLowEdge.stats.accuracy>lowerWinHighEdge.stats.accuracy);
+  assert.ok(lowerWinHighEdge.stats.averageR>highWinLowEdge.stats.averageR);
+  const chosen=setup.choosePlan([highWinLowEdge,lowerWinHighEdge],40);
+  assert.equal(chosen.planOptions.name,'lower-win-high-edge');
+});
+
+test('trade outcome deducts row-specific execution costs and financing from R',()=>{
+  const row={
+    price:100,atr:1,trend:1,technicalBias:.8,regime:'trend',at:0,barMs:14_400_000,
+    costBps:20,financingBpsPerDay:4,priceAction:{bias:.5},context:{macroAvailable:false,newsAvailable:false},
+    x:[1],futureBars:[{ts:1,open:100,high:101.5,low:100,close:101},{ts:14_400_001,open:101,high:103,low:100.5,close:102}]
+  };
+  const result=setup.outcome(row,'EURUSD','LONG',0,{entryBufferAtr:0,stopAtr:1,targetR:2,entryExpiryBars:1,holdBars:2});
+  assert.equal(result.settled,true);
+  assert.ok(result.totalCostBps>20);
+  assert.ok(result.realizedR<2);
 });
