@@ -105,13 +105,14 @@ window.showHistoryChart=i=>{
 
 function renderAccuracy(m){
  const strict=m.strict||m.actionable,research=m.researchCandidates||m.qualified,all=m.allTimeActionable||strict;
- const currentAccuracy=strict.settled?pct(strict.accuracy):'—';
- const priorNote=!strict.settled&&all.settled?`<small>Current model: no finished approved setups yet · all-time ${pct(all.accuracy)} (${all.settled} finished)</small>`:'';
+ const r=x=>x==null?'—':Number(x).toFixed(2)+'R',pf=x=>x==null?'—':Number(x).toFixed(2);
+ const currentExpectancy=strict.settled?r(strict.averageR):'—';
+ const priorNote=!strict.settled&&all.settled?`<small>Current model: no finished approved setups yet · all-time ${r(all.averageR)} across ${all.settled} finished</small>`:'';
  $('accuracyCards').innerHTML=`
- <div class="card metric"><span class="label">Approved-trade accuracy</span><div class="big">${currentAccuracy}</div><span class="muted">${strict.wins} wins · ${strict.settled} finished approved setups</span>${priorNote}</div>
+ <div class="card metric"><span class="label">Approved-trade expectancy</span><div class="big">${currentExpectancy}</div><span class="muted">95% lower ${r(strict.expectancyLower95)} · PF ${pf(strict.profitFactorR)} · win rate ${pct(strict.accuracy)}</span>${priorNote}</div>
  <div class="card metric"><span class="label">Approved setups open</span><div class="big compact">${strict.pendingEntry+strict.active} open</div><span class="muted">${strict.pendingEntry} waiting for entry · ${strict.active} entry triggered</span></div>
- <div class="card metric"><span class="label">Research validation</span><div class="big compact">${m.readyForBrokerValidation?'READY':'RESEARCH'}</div><span class="muted">Target ${pct(m.targetAccuracy)} · research-only: ${research.settled} finished / ${research.wins} wins</span></div>
- <div class="card metric"><span class="label">Filtered-signal shadow accuracy</span><div class="big">${pct(m.shadowFiltered?.accuracy)}</div><span class="muted">${m.shadowFiltered?.wins||0} wins · ${m.shadowFiltered?.settled||0} finished · ${m.shadowFiltered?.expired||0} no-entry</span></div>`;
+ <div class="card metric"><span class="label">Profitability validation</span><div class="big compact">${m.readyForBrokerValidation?'READY':'RESEARCH'}</div><span class="muted">${strict.settled} settled · drawdown ${r(strict.maxDrawdownR)} · expectancy must stay positive after costs</span></div>
+ <div class="card metric"><span class="label">Filtered shadow expectancy</span><div class="big">${r(m.shadowFiltered?.averageR)}</div><span class="muted">95% lower ${r(m.shadowFiltered?.expectancyLower95)} · PF ${pf(m.shadowFiltered?.profitFactorR)} · ${m.shadowFiltered?.settled||0} finished</span></div>`;
 }
 function renderSettings(s){settings=s;$('thresholdInput').value=Math.round(Number(s.signalMinProbability||.7)*100);$('thresholdSource').textContent=s.source==='database'?'custom':'default';}
 function renderBroker(b){
