@@ -45,6 +45,44 @@ CREATE INDEX IF NOT EXISTS execution_broker_tracking
 `);
 
 const mode=()=>String(process.env.EXECUTION_MODE||'off').toLowerCase();
+function summarizePerformance(rows){
+  const rs=(rows||[]).map(r=>Number(r.realized_r??r.realizedR)).filter(Number.isFinite);
+  const n=rs.length;
+  if(!n)return {samples:0,averageR:null,expectancyLower95:null,profitFactorR:null,maxDrawdownR:0};
+  const averageR=rs.reduce((a,b)=>a+b,0)/n;
+  const variance=n>1?rs.reduce((a,v)=>a+(v-averageR)**2,0)/(n-1):0;
+  const expectancyLower95=averageR-1.96*Math.sqrt(variance/n);
+  const gains=rs.reduce((a,v)=>a+Math.max(0,v),0),losses=rs.reduce((a,v)=>a+Math.max(0,-v),0);
+  let equity=0,peak=0,maxDrawdownR=0;
+  for(const r of rs.slice().reverse()){equity+=r;peak=Math.max(peak,equity);maxDrawdownR=Math.max(maxDrawdownR,peak-equity);}
+  return {samples:n,averageR,expectancyLower95,profitFactorR:losses?gains/losses:null,maxDrawdownR};
+}
+function performanceGuard(signal){
+  if(process.env.AUTO_PERFORMANCE_GUARD==='false')return {allowed:true,enabled:false,reason:'Performance guard disabled'};
+  const exists=db.prepare("SELECT 1 ok FROM sqlite_master WHERE type='table' AND name='signal_records'").get();
+  if(!exists)return {allowed:true,enabled:true,reason:'No monitored signal history yet'};
+  const minTrades=Math.max(10,Number(process.env.AUTO_PERFORMANCE_MIN_TRADES||20));
+  const lookback=Math.max(minTrades,Math.min(200,Number(process.env.AUTO_PERFORMANCE_LOOKBACK||30)));
+  const version=String(signal.modelVersion||'');
+  const rows=db.prepare(`SELECT realized_r FROM signal_records
+    WHERE qualified=1 AND status='SETTLED' AND symbol=? AND timeframe=? AND (?='' OR model_version=?)
+      AND realized_r IS NOT NULL ORDER BY settled_at DESC,id DESC LIMIT ?`)
+    .all(signal.symbol,signal.timeframe||'1h',version,version,lookback);
+  const stats=summarizePerformance(rows);
+  if(stats.samples<minTrades)return {allowed:true,enabled:true,collecting:true,minTrades,...stats,reason:`Collecting performance sample (${stats.samples}/${minTrades})`};
+  let maxDrawdownR=Math.max(1,Number(process.env.AUTO_MAX_RECENT_DRAWDOWN_R||4));
+  try{
+    const modelRow=db.prepare("SELECT report FROM research_models WHERE symbol=? AND timeframe=? AND (?='' OR version=?) ORDER BY id DESC LIMIT 1").get(signal.symbol,signal.timeframe||'1h',version,version);
+    const historical=Number(JSON.parse(modelRow?.report||'{}')?.setupProbability?.maxDrawdownR);
+    if(Number.isFinite(historical)&&!process.env.AUTO_MAX_RECENT_DRAWDOWN_R)maxDrawdownR=Math.max(3,historical*1.25);
+  }catch{}
+  const failures=[];
+  if(!(stats.averageR>0))failures.push('recent average R is not positive');
+  if(!(stats.expectancyLower95>0))failures.push('95% lower expectancy bound is not positive');
+  if(stats.profitFactorR!==null&&stats.profitFactorR<1)failures.push('recent profit factor is below 1');
+  if(stats.maxDrawdownR>maxDrawdownR)failures.push(`recent drawdown ${stats.maxDrawdownR.toFixed(2)}R exceeds ${maxDrawdownR.toFixed(2)}R guard`);
+  return {allowed:failures.length===0,enabled:true,minTrades,lookback,maxDrawdownLimitR:maxDrawdownR,...stats,reason:failures.length?failures.join('; '):'Recent monitored expectancy is within guard'};
+}
 function status(){
   return {
     mode:mode(),
@@ -53,6 +91,9 @@ function status(){
     autoDemoResearch:process.env.AUTO_DEMO_RESEARCH==='true',
     autoDemoResearchRiskPct:Number(process.env.AUTO_DEMO_RESEARCH_RISK_PCT||0.25),
     autoMinConfluence:Number(process.env.AUTO_MIN_CONFLUENCE||60),
+    performanceGuardEnabled:process.env.AUTO_PERFORMANCE_GUARD!=='false',
+    performanceGuardMinTrades:Number(process.env.AUTO_PERFORMANCE_MIN_TRADES||20),
+    performanceGuardLookback:Number(process.env.AUTO_PERFORMANCE_LOOKBACK||30),
     liveAutomation:false,
     brokerBridge:String(process.env.BROKER_BRIDGE||'none'),
     pending:db.prepare("SELECT COUNT(*) n FROM execution_intents WHERE status='PENDING'").get().n,
@@ -86,6 +127,7 @@ function createAutoDemoIntent(signal,{riskPct=Number(process.env.RISK_PER_TRADE_
   const plan=signal.tradePlan;
   if(!plan||![plan.entry,plan.stop,plan.target].every(Number.isFinite))return {created:false,reason:'Signal has no valid trade plan'};
   if(!Number.isFinite(riskPct)||riskPct<=0||riskPct>1)return {created:false,reason:'Automatic demo risk must be >0 and <=1%'};
+  const guard=performanceGuard(signal);if(!guard.allowed)return {created:false,reason:'Automatic demo paused by performance guard: '+guard.reason,performanceGuard:guard};
   const signalKey=[signal.symbol,signal.timeframe,signal.sourceCandleTs].join(':');
   const prior=db.prepare('SELECT id,status,broker_order_id FROM execution_intents WHERE signal_key=? AND manual=0').get(signalKey);
   if(prior)return {created:false,duplicateId:prior.id,status:prior.status,reason:'This source candle already has an automatic execution intent'};
@@ -113,6 +155,7 @@ function createAutoResearchDemoIntent(signal,{riskPct=Number(process.env.AUTO_DE
   const plan=signal.tradePlan;
   if(!plan||![plan.entry,plan.stop,plan.target].every(Number.isFinite))return {created:false,reason:'Signal has no valid trade plan'};
   if(!Number.isFinite(riskPct)||riskPct<=0||riskPct>0.5)return {created:false,reason:'Automatic research demo risk must be >0 and <=0.5%'};
+  const guard=performanceGuard(signal);if(!guard.allowed)return {created:false,reason:'Automatic research demo paused by performance guard: '+guard.reason,performanceGuard:guard};
   const signalKey=[signal.symbol,signal.timeframe,signal.sourceCandleTs].join(':');
   const prior=db.prepare('SELECT id,status,broker_order_id FROM execution_intents WHERE signal_key=? AND manual=0').get(signalKey);
   if(prior)return {created:false,duplicateId:prior.id,status:prior.status,reason:'This source candle already has an automatic execution intent'};
@@ -148,4 +191,4 @@ function createManualIntent(signal,{side,equity=10000,riskPct=.5,maxPositionUnit
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(Date.now(),signal.symbol,signal.timeframe||'1h',chosen,entry,stop,target,0,signal.setupProbability??signal.probability,signal.modelId||null,m,'PENDING','Manual user-selected signal; probability threshold may be below automated gate',Date.now(),riskPct,'BROKER_RISK_PERCENT',1,signal.sourceCandleTs||null,null,Number(signal.analysis?.confluence?.agreement||0));
   return {created:true,id:r.lastInsertRowid,status:'PENDING',manual:true,plan:{side:chosen,entry,stop,target,riskPct,sizingMode:'BROKER_RISK_PERCENT',riskReward:Math.abs(target-entry)/stopDistance}};
 }
-module.exports={status,createIntent,createAutoDemoIntent,createAutoResearchDemoIntent,createManualIntent,list,approve};
+module.exports={status,summarizePerformance,performanceGuard,createIntent,createAutoDemoIntent,createAutoResearchDemoIntent,createManualIntent,list,approve};
