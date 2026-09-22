@@ -18,6 +18,11 @@ const ms=tf=>({'1h':3600000,'4h':14400000,'1d':86400000}[tf]||0);
 const strategyThreshold=tf=>tf==='1d'?Math.max(.30,Math.min(.70,Number(process.env.CTA_MIN_PROBABILITY||.40))):MIN_PROB();
 const horizonBars=tf=>tf==='1d'?10:4;
 const planProfilesFor=tf=>setupModel.PLAN_PROFILES.filter(p=>tf==='1d'?p.strategyFamily==='cta':p.strategyFamily!=='cta');
+const continuousGap=(prev,next,tf)=>{
+  const step=ms(tf),delta=Number(next)-Number(prev);
+  if(!step||delta<step)return false;
+  return tf==='1d'?delta<=step*4:delta===step;
+};
 const sigmoid=z=>1/(1+Math.exp(-Math.max(-30,Math.min(30,z))));
 const dot=(w,x)=>w[0]+x.reduce((s,v,i)=>s+w[i+1]*v,0);
 function snapshot(kind,symbol,payload,now=Date.now()){db.prepare('INSERT OR REPLACE INTO context_snapshots VALUES(?,?,?,?)').run(kind,symbol,now,JSON.stringify(payload));}
@@ -124,7 +129,7 @@ function dataset(symbol,tf){
   for(let i=59;i+lookahead<rows.length;i++){
     const at=rows[i].ts+ms(tf),f=features(rows.slice(Math.max(0,i-119),i+1),symbol,at),rowCost=costs(symbol,at,f);
     const segment=rows.slice(i,i+lookahead+1);
-    if(segment.some((row,j)=>row.provider!==rows[i].provider||(j&&row.ts-segment[j-1].ts!==ms(tf))))continue;
+    if(segment.some((row,j)=>row.provider!==rows[i].provider||(j&&!continuousGap(segment[j-1].ts,row.ts,tf))))continue;
     const ret=rows[i+horizon].close/rows[i+1].open-1;
     const priceAction={bias:Number(f.priceAction?.bias||0),breakoutUp:!!f.priceAction?.breakoutUp,breakoutDown:!!f.priceAction?.breakoutDown,supportPrice:Number(f.priceAction?.supportPrice),resistancePrice:Number(f.priceAction?.resistancePrice),swingSupportPrice:Number(f.priceAction?.swingSupportPrice),swingResistancePrice:Number(f.priceAction?.swingResistancePrice)};
     const context={macroAvailable:!!f.context?.macroAvailable,newsAvailable:!!f.context?.newsAvailable,newsSentiment:Number(f.context?.newsSentiment||0),macroBias:Number(f.context?.macroBias||0)};
@@ -705,8 +710,8 @@ function signal(symbol,tf='1h',events=null){
   const rangeScore=strategyFamily==='range'?setupModel.rangeReversionScore(f,lean):null;
   const candidate=setupProbability!==null&&setupProbability>=threshold?lean:'WAIT';
   if(!m?.approved)reasons.push('Model has not passed out-of-sample validation gates');
-  if(now-(rows.at(-1).ts+step)>step*2)reasons.push('Stale closed candles');
-  if(rows.some((r,i)=>r.provider==='demo'||(i&&r.ts-rows[i-1].ts!==step)))reasons.push('Candle gaps or synthetic data');
+  if(now-(rows.at(-1).ts+step)>(tf==='1d'?step*4:step*2))reasons.push('Stale closed candles');
+  if(rows.some((r,i)=>r.provider==='demo'||(i&&!continuousGap(rows[i-1].ts,r.ts,tf))))reasons.push('Candle gaps or synthetic data');
   if(rows.some(r=>r.provider==='yahoo'))reasons.push('Research-only fallback feed');
   if(strategyFamily!=='cta'&&(!f.context.macroAvailable||!f.context.newsAvailable))reasons.push('Missing fresh macro/news confirmation');
   if(directionalProbability<directionalFloor)softRisks.push(`Directional model is low-confidence (${Math.round(directionalProbability*100)}%); setup model carries the decision`);
@@ -858,4 +863,4 @@ function chartSnapshot(symbol,tf='1h',{limit=90,at=null}={}){
   };
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
-module.exports={VERSION,ms,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,stableSideGate,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,chartSnapshot,status,setupModel};
+module.exports={VERSION,ms,strategyThreshold,horizonBars,continuousGap,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,stableSideGate,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,chartSnapshot,status,setupModel};
