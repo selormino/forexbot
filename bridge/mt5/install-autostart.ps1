@@ -57,26 +57,29 @@ $quotedRunner = '"' + $Runner + '"'
 $quotedBridge = '"' + $BridgeDir + '"'
 $quotedPython = '"' + $PythonExe + '"'
 $quotedMt5 = '"' + $Mt5Path + '"'
-$taskCommand = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $quotedRunner -BridgeDir $quotedBridge -PythonExe $quotedPython -Mt5Path $quotedMt5 -BindAddress $BindAddress -Port $Port"
+$taskArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $quotedRunner -BridgeDir $quotedBridge -PythonExe $quotedPython -Mt5Path $quotedMt5 -BindAddress $BindAddress -Port $Port"
+$currentUser = "$env:USERDOMAIN\$env:USERNAME"
 
 Write-Host ""
 Write-Host "Installing scheduled task: $TaskName"
-Write-Host "Windows user: $env:USERDOMAIN\$env:USERNAME"
+Write-Host "Windows user: $currentUser"
 Write-Host "Bridge folder: $BridgeDir"
 Write-Host "Python: $PythonExe"
 Write-Host "XM MT5: $Mt5Path"
 Write-Host ""
 Write-Host "The task runs at Windows logon. It does NOT enable Windows auto-logon."
 
-& schtasks.exe /Create /TN $TaskName /TR $taskCommand /SC ONLOGON /RL HIGHEST /F | Out-Host
-if ($LASTEXITCODE -ne 0) {
-  throw "schtasks.exe failed with exit code $LASTEXITCODE. Run PowerShell as Administrator and retry."
-}
+Import-Module ScheduledTasks -ErrorAction Stop
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArguments
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
+$principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 
 if ($StartNow) {
   Write-Host "Starting scheduled task now..."
-  & schtasks.exe /Run /TN $TaskName | Out-Host
-  if ($LASTEXITCODE -ne 0) { throw "Task was installed but could not be started." }
+  Start-ScheduledTask -TaskName $TaskName
+  Start-Sleep -Seconds 3
 }
 
 Write-Host ""
