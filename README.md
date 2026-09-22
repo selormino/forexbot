@@ -138,6 +138,14 @@ Automatic demo dispatch also has a forward-performance guard. After `AUTO_PERFOR
 
 The MT5 bridge rejects an order when the live broker spread consumes too much of the planned stop or target. Use `MAX_SPREAD_STOP_RATIO` and `MAX_SPREAD_TARGET_RATIO` on the bridge host to tune those execution-cost guards.
 
+## Operator console
+
+The primary `/signals.html` experience is an operator console rather than a research dump. It answers four questions first: whether any action is required, whether XM is monitoring/filling an order, which market is currently closest to qualification, and exactly which blockers remain.
+
+The main view is split into **Trade Now**, **Watching**, and **Near Qualification**. Detailed thresholds, model diagnostics, signal history, shadow results and manual demo controls remain under **Research & advanced controls**. The console does not weaken any trading gate; it only makes the existing state easier to understand.
+
+`GET /api/operations/status` exposes non-secret runtime cadence and automation state so the UI can explain how often research and broker reconciliation run.
+
 ## Signal monitoring and accuracy
 The signal engine records one decision per closed candle for each supported market and monitored timeframe. The directional model first proposes LONG/SHORT only when `DIRECTIONAL_MIN_PROBABILITY` is met. A second model then estimates `P(success | confirmation entry triggers)` for the actual entry/SL/TP structure. `SIGNAL_MIN_PROBABILITY` is the minimum setup-success probability. No-entry setups expire and are not counted as losses.
 
