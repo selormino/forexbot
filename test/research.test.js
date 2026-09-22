@@ -53,3 +53,29 @@ test('v38 research costs widen conservatively at rollover and in volatile regime
   assert.ok(rollover.financingBpsPerDay>0);
   assert.equal(rollover.observed,false);
 });
+
+
+test('daily CTA uses a lower probability floor because payoff is asymmetric',()=>{
+  const old=process.env.CTA_MIN_PROBABILITY;
+  process.env.CTA_MIN_PROBABILITY='0.40';
+  assert.equal(r.strategyThreshold('1d'),.40);
+  assert.ok(r.strategyThreshold('1h')>=.5);
+  if(old===undefined)delete process.env.CTA_MIN_PROBABILITY;else process.env.CTA_MIN_PROBABILITY=old;
+});
+
+test('daily continuity allows normal weekend gaps but rejects long missing periods',()=>{
+  const fri=Date.parse('2026-09-18T00:00:00Z'),mon=Date.parse('2026-09-21T00:00:00Z');
+  assert.equal(r.continuousGap(fri,mon,'1d'),true);
+  assert.equal(r.continuousGap(fri,Date.parse('2026-09-25T00:00:00Z'),'1d'),false);
+  assert.equal(r.continuousGap(0,14_400_000,'4h'),true);
+  assert.equal(r.continuousGap(0,28_800_000,'4h'),false);
+});
+
+test('daily features expose CTA momentum, channel and trend-strength evidence',()=>{
+  const rows=Array.from({length:120},(_,i)=>({open:100+i*.2,high:101+i*.2,low:99+i*.2,close:100.5+i*.2,volume:1000,provider:'test'}));
+  const f=r.features(rows,'EURUSD',Date.parse('2026-09-21T00:00:00Z'));
+  assert.ok(Number.isFinite(f.cta.score));
+  assert.ok(Number.isFinite(f.cta.momentum20Atr));
+  assert.ok(Number.isFinite(f.cta.momentum60Atr));
+  assert.ok(f.cta.breakoutPosition<=1&&f.cta.breakoutPosition>=-1);
+});

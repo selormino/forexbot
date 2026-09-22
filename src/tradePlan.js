@@ -11,12 +11,12 @@ function buildTradePlan(signal,{side,strategyFamily='trend',entryBufferAtr=.12,s
   const f=signal.features||{},price=Number(signal.price),atr=Math.max(Number(f.atr||0),price*.0005);
   const direction=side||signal.leanDirection||signal.candidateDirection;
   if(!['LONG','SHORT'].includes(direction))return null;
-  const family=strategyFamily==='range'?'range':'trend';
+  const family=['range','cta'].includes(strategyFamily)?strategyFamily:'trend';
   const pa=signal.priceAction||{},buffer=atr*Math.max(0,Number(entryBufferAtr)||0),structureBuffer=atr*Math.max(0,Number(structureBufferAtr)||0);
   let entry=direction==='LONG'?price+buffer:price-buffer;
   const resistance=Number(pa.swingResistancePrice??pa.resistancePrice),support=Number(pa.swingSupportPrice??pa.supportPrice);
 
-  if(family==='trend'){
+  if(family==='trend'||family==='cta'){
     if(direction==='LONG'){
       if(Number.isFinite(resistance)&&resistance>price)entry=Math.max(entry,resistance+structureBuffer);
       else if(pa.breakoutUp)entry=Math.max(entry,price+atr*.05);
@@ -48,7 +48,9 @@ function buildTradePlan(signal,{side,strategyFamily='trend',entryBufferAtr=.12,s
     entryExpiryBars:Math.max(1,Math.round(entryExpiryBars)),holdBars:Math.max(1,Math.round(holdBars)),
     rationale:family==='range'
       ?'Mean-reversion confirmation entry after an extreme; stop is volatility/structure-aware and target is selected from pre-test range profiles.'
-      :'Structure-confirmed pending entry beyond nearby resistance/support; stop and targets are volatility-adjusted from ATR.'
+      :family==='cta'
+        ?'Slow trend-following breakout entry; wide ATR stop and asymmetric target are designed to tolerate frequent small losses while preserving occasional large winners.'
+        :'Structure-confirmed pending entry beyond nearby resistance/support; stop and targets are volatility-adjusted from ATR.'
   };
 }
 module.exports={spec,distanceUnits,buildTradePlan};

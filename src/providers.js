@@ -22,6 +22,11 @@ function demoCandles(symbol, count=250){
   return out;
 }
 
+function intervalToTwelve(interval){
+  const map={'1m':'1min','5m':'5min','15m':'15min','30m':'30min','1h':'1h','4h':'4h','1d':'1day','1wk':'1week'};
+  return map[interval]||interval;
+}
+
 function intervalToYahoo(interval){
   const map={'1m':'1m','5m':'5m','15m':'15m','30m':'30m','1h':'1h','1d':'1d','1wk':'1wk','1mo':'1mo'};
   return map[interval]||'1h';
@@ -59,7 +64,7 @@ async function yahooChart(symbol, interval='1h', outputsize=250){
 
 async function twelveDataCandles(symbol, interval='1h', outputsize=250, options={}){
   const key=`td:${symbol}:${interval}:${outputsize}:${options.startTime||''}:${options.endTime||''}`; const hit=cached(key); if(hit) return hit;
-  const params={symbol:TD_SYMBOLS[symbol]||symbol,interval,outputsize,apikey:process.env.TWELVE_DATA_API_KEY,format:'JSON',timezone:'UTC'};
+  const params={symbol:TD_SYMBOLS[symbol]||symbol,interval:intervalToTwelve(interval),outputsize,apikey:process.env.TWELVE_DATA_API_KEY,format:'JSON',timezone:'UTC'};
   if(options.startTime) params.start_date=new Date(options.startTime).toISOString();
   if(options.endTime) params.end_date=new Date(options.endTime).toISOString();
   let r;

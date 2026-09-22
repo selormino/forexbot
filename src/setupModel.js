@@ -300,6 +300,13 @@ function eligible(row,side,costBps,family='trend'){
   const sign=side==='LONG'?1:-1;
   const effectiveCostBps=Number(row.costBps??costBps??0);
   if(Number(row.atr||0)/Math.max(Number(row.price||0),1e-12)*10000<effectiveCostBps*2)return false;
+  if(family==='cta'){
+    const score=Number(row.ctaScore||0),strength=Number(row.ctaTrendStrength||0);
+    if(sign*score<.35||strength<.15)return false;
+    if(side==='LONG'&&Number(row.priceAction?.bias||0)<-.80)return false;
+    if(side==='SHORT'&&Number(row.priceAction?.bias||0)>.80)return false;
+    return true;
+  }
   if(row.context?.newsAvailable&&((side==='LONG'&&Number(row.context.newsSentiment||0)<-.25)||(side==='SHORT'&&Number(row.context.newsSentiment||0)>.25)))return false;
   if(row.context?.macroAvailable&&((side==='LONG'&&Number(row.context.macroBias||0)<-.35)||(side==='SHORT'&&Number(row.context.macroBias||0)>.35)))return false;
   if(family==='range'){
@@ -371,6 +378,10 @@ function examples(rows,symbol,costBps,planOptions={}){
   return out;
 }
 const PLAN_PROFILES=[
+  {name:'cta-fast-2.5r',strategyFamily:'cta',entryBufferAtr:.05,stopAtr:1.75,targetR:2.5,entryExpiryBars:5,holdBars:30},
+  {name:'cta-balanced-3r',strategyFamily:'cta',entryBufferAtr:.06,stopAtr:2.0,targetR:3.0,entryExpiryBars:5,holdBars:40},
+  {name:'cta-wide-4r',strategyFamily:'cta',entryBufferAtr:.08,stopAtr:2.5,targetR:4.0,entryExpiryBars:7,holdBars:55},
+  {name:'cta-patient-5r',strategyFamily:'cta',entryBufferAtr:.08,stopAtr:2.5,targetR:5.0,entryExpiryBars:7,holdBars:60},
   {name:'range-tight-0.7r',strategyFamily:'range',entryBufferAtr:.05,stopAtr:1.0,targetR:.7,entryExpiryBars:3,holdBars:5},
   {name:'range-base-0.8r',strategyFamily:'range',entryBufferAtr:.08,stopAtr:1.2,targetR:.8,entryExpiryBars:3,holdBars:6},
   {name:'range-wide-0.8r',strategyFamily:'range',entryBufferAtr:.12,stopAtr:1.4,targetR:.8,entryExpiryBars:3,holdBars:6},

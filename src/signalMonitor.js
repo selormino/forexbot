@@ -73,7 +73,7 @@ addColumn('shadow_mae_pips',"REAL");
 addColumn('financing_bps_per_day',"REAL NOT NULL DEFAULT 0");
 db.prepare("UPDATE signal_records SET shadow_status='PENDING_ENTRY' WHERE status='FILTERED' AND shadow_status IS NULL AND lean_direction IN ('LONG','SHORT') AND entry_price IS NOT NULL AND stop_price IS NOT NULL AND target_price IS NOT NULL").run();
 
-const tfMs=tf=>({'1h':3600000,'4h':14400000}[tf]||0);
+const tfMs=tf=>({'1h':3600000,'4h':14400000,'1d':86400000}[tf]||0);
 const minProbability=()=>signalMinProbability();
 
 function record(signal){

@@ -76,3 +76,19 @@ test('forward realized R is net of execution costs and financing',()=>{
   assert.ok(latest.realized_r<1);
   assert.ok(latest.net_return<latest.gross_return);
 });
+
+
+test('daily CTA setup can be recorded and monitored',()=>{
+  const source=10_000_000;
+  const row=monitor.record({
+    symbol:'EURUSD',timeframe:'1d',sourceCandleTs:source,
+    candidateDirection:'LONG',direction:'WAIT',leanDirection:'LONG',
+    probability:.44,setupProbability:.44,directionalProbability:.58,directionalMinProbability:.55,
+    minProbability:.40,price:1.1,modelId:9,modelVersion:'cta-test',horizonBars:10,
+    costs:{total:5,financingBpsPerDay:.2},filters:['Model has not passed out-of-sample validation gates'],priceAction:{bias:.2},analysis:{strategyFamily:'cta'},
+    tradePlan:{entry:1.11,stop:1.09,target:1.17,tp1:1.13,stopPips:200,targetPips:600,unitLabel:'pips',entryExpiryBars:5,holdBars:40}
+  });
+  assert.equal(row.qualified,1);
+  assert.equal(row.status,'PENDING_ENTRY');
+  assert.ok(row.due_at>source+30*86_400_000);
+});

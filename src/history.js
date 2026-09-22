@@ -2,7 +2,7 @@ const db = require('./db');
 const { SYMBOLS, historicalCandles, providerStatus } = require('./providers');
 const { features } = require('./analysis');
 
-const DEFAULT_TIMEFRAMES = (process.env.HISTORICAL_TIMEFRAMES || '1h,4h').split(',').map(x => x.trim()).filter(Boolean);
+const DEFAULT_TIMEFRAMES = (process.env.HISTORICAL_TIMEFRAMES || '1h,4h,1d').split(',').map(x => x.trim()).filter(Boolean);
 const MAX_BARS = Math.max(250, Math.min(5000, Number(process.env.HISTORICAL_BARS || 1500)));
 const HORIZON = Math.max(1, Number(process.env.LABEL_HORIZON_BARS || 4));
 const MIN_MOVE_BPS = Math.max(0, Number(process.env.LABEL_MIN_MOVE_BPS || 3));
