@@ -70,5 +70,68 @@ The scripts intentionally do **not** enable Windows automatic logon or store a W
 
 If the public bridge URL uses Cloudflare Tunnel, Tailscale, ngrok, or another tunnel/reverse proxy, configure that tunnel independently as a Windows service or startup task. The ForexBot task supervises MT5 + FastAPI only and does not store tunnel tokens in command-line arguments.
 
+
+## Stable Cloudflare Tunnel service
+
+A Cloudflare **Quick Tunnel** (`*.trycloudflare.com`) is temporary and its hostname can change after the process or Windows server restarts. For a stable bridge URL, use a **named Cloudflare Tunnel** with a hostname on a domain that is managed in your Cloudflare account.
+
+### One-time Cloudflare dashboard setup
+
+1. In Cloudflare Zero Trust, create a new Cloudflare Tunnel named something like `forexbot-mt5`.
+2. Choose **Windows** as the connector platform and copy the tunnel token shown by Cloudflare. Keep that token private; do not paste it into chat, GitHub, or Railway.
+3. Add a Public Hostname such as `mt5.example.com`.
+4. Configure the service/origin for that hostname as:
+   - Type: `HTTP`
+   - URL: `http://127.0.0.1:8765`
+5. The DNS hostname must belong to a zone/domain that Cloudflare manages.
+
+### Install the named tunnel as a Windows service
+
+Refresh the helper scripts on the AWS Windows host, then run Administrator PowerShell from `C:\forexbot\bridge\mt5`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-cloudflare-service.ps1 `
+  -BridgeDir "C:\forexbot\bridge\mt5" `
+  -PublicHostname "mt5.example.com"
+```
+
+The script securely prompts for the Cloudflare tunnel token and installs `cloudflared` as an **Automatic** Windows service. The token is not written to the ForexBot repository or supervisor logs.
+
+Verify local MT5/bridge health, the Windows service, DNS and the public tunnel in one command:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\verify-cloudflare-service.ps1 `
+  -BridgeDir "C:\forexbot\bridge\mt5"
+```
+
+A healthy result shows the Cloudflare service running, the local bridge listening on port 8765, local authenticated `/health` succeeding, DNS resolving, and public authenticated `/health` succeeding.
+
+After public verification succeeds, set Railway `MT5_BRIDGE_URL` to the stable URL, for example:
+
+```text
+https://mt5.example.com
+```
+
+The existing `MT5_BRIDGE_TOKEN` remains unchanged.
+
+### Reboot behavior
+
+`cloudflared` runs as a Windows service and can start before an interactive RDP login. The MT5 terminal itself still starts at Windows logon through the separate `ForexBot MT5 Bridge` scheduled task. Therefore after a reboot:
+
+1. Windows starts the Cloudflare Tunnel service automatically.
+2. Log into the Windows instance once.
+3. The ForexBot scheduled task starts XM MT5 and the FastAPI bridge.
+4. Cloudflare immediately reconnects the stable public hostname to `127.0.0.1:8765`.
+5. Railway continues using the same `MT5_BRIDGE_URL`; no URL update is required.
+
+To remove only the Windows Cloudflare service:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\uninstall-cloudflare-service.ps1 `
+  -BridgeDir "C:\forexbot\bridge\mt5"
+```
+
+This does not delete the Cloudflare tunnel or DNS hostname from the Cloudflare dashboard.
+
 ## Security
 Never commit the real `.env` file. Never paste the XM password into chat, GitHub, browser JavaScript, or Railway. Only the bridge token belongs in Railway; the XM login/password/server stay on the Windows/VPS MT5 host.
