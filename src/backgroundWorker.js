@@ -199,14 +199,13 @@ async function runCycle({bootstrap=false}={}){
         })
       :[];
 
-    let learning=bootstrap?await trainAll():[];
     const macro=process.env.FRED_API_KEY?await syncMacro():[];
     const macroVintages=process.env.FRED_API_KEY?await syncPointInTimeMacro():[];
     research.captureMacro();
     const newsRuns=await collectNews();
     const market=process.env.HISTORY_AUTO_SYNC==='true'?await history.syncHistory():[];
     const settledSignals=signalMonitor.settle();
-    if(!bootstrap)learning=await trainAll();
+    const learning=await trainAll();
     const {recordedSignals,generatedSignals}=await generateSignals();
     const autoDemoRuns=await autoDemoStrict(generatedSignals);
     const autoResearchDemoRuns=await autoDemoResearch(generatedSignals);
