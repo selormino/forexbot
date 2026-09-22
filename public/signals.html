@@ -1,36 +1,69 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signals · ForexBot</title><link rel="stylesheet" href="/app.css"><script src="/theme.js"></script></head>
-<body><div class="shell"><aside><div class="brand"><span>FB</span><div><b>ForexBot</b><small>MARKET INTELLIGENCE</small></div></div><nav><a href="/">Dashboard</a><a class="active" href="/signals.html">Signals</a></nav><div class="side-note">Strict signals require the configured setup-success threshold plus model validation and cross-factor confirmation. Manual demo trades remain separate.</div></aside>
+<body><div class="shell"><aside><div class="brand"><span>FB</span><div><b>ForexBot</b><small>MARKET INTELLIGENCE</small></div></div><nav><a href="/">Dashboard</a><a class="active" href="/signals.html">Signals</a></nav><div class="side-note">Use this page as an operating console. If it says <b>No action</b>, leave the bot running. Research diagnostics are available below when you want to inspect why.</div></aside>
 <main>
-<header><div><p class="eyebrow">SIGNALS</p><h1>Clean setups. Measured outcomes.</h1><p class="muted">Triggered-setup probability + directional model + indicators + classical chart patterns + fundamentals, with every outcome tracked.</p></div><div class="header-actions"><button class="ghost" data-theme-toggle>☀ Light</button><button onclick="load()">Refresh</button></div></header>
+<header><div><p class="eyebrow">TRADING CONSOLE</p><h1>What should I do right now?</h1><p class="muted">ForexBot scans the markets, validates the setup, and either sends a demo order to XM or tells you exactly why it is still waiting.</p></div><div class="header-actions"><button class="ghost" data-theme-toggle>☀ Light</button><button onclick="load()">Refresh</button></div></header>
 
-<div class="controls card">
-  <div class="control-group"><span class="label">Setup threshold</span><div class="threshold-control"><input id="thresholdInput" type="number" min="50" max="95" step="1"><span>%</span><button class="primary" onclick="openThreshold()">Save</button></div><small id="thresholdSource" class="muted"></small></div>
-  <div class="broker-mini"><span id="brokerDot" class="dot"></span><b id="brokerText">Checking XM bridge…</b><span id="brokerMode"></span></div>
-</div>
-
-<section id="accuracyCards" class="grid hero"></section>
-
-<div class="card signal-table-card"><div class="card-head"><h2>Signal board</h2><span id="boardUpdated">—</span></div><div class="table-wrap"><table>
-<thead><tr><th>Market</th><th>Bias</th><th>Setup probability</th><th>Evidence</th><th>Trade plan</th><th>R:R</th><th>Status</th><th></th></tr></thead>
-<tbody id="signalBoard"></tbody></table></div></div>
-
-<details class="research"><summary>Accuracy by market</summary><div class="details-body"><div class="table-wrap"><table><thead><tr><th>Market</th><th>TF</th><th>Waiting for entry</th><th>Entry triggered</th><th>Finished</th><th>Wins</th><th>Accuracy</th><th>Avg R</th></tr></thead><tbody id="seriesAccuracy"></tbody></table></div></div></details>
-<details class="research"><summary>Edge diagnostics</summary><div class="details-body"><p class="muted">Out-of-sample triggered-setup model diagnostics. The probability is conditional on the confirmation entry triggering.</p><div class="table-wrap"><table><thead><tr><th>Market</th><th>TF</th><th>Threshold</th><th>Test setups</th><th>All acc.</th><th>Selected</th><th>Selected acc.</th><th>Avg R</th></tr></thead><tbody id="edgeDiagnostics"></tbody></table></div></div></details>
-<details class="research"><summary>XM activity</summary><div class="details-body"><div class="table-wrap"><table><thead><tr><th>Created</th><th>Market</th><th>Mode</th><th>Signal</th><th>Ticket</th><th>Broker status</th><th>Fill</th><th>P/L</th></tr></thead><tbody id="brokerActivity"></tbody></table></div></div></details>
-<details class="research"><summary>What each signal status means</summary><div class="details-body">
-  <div class="analysis-grid">
-    <div class="analysis-box"><h3>Filtered — not qualified</h3><p>A possible setup was found, but one or more model, quality, confluence or risk gates rejected it. ForexBot shadow-tracks the planned entry/SL/TP so the rejected idea can still be evaluated.</p></div>
-    <div class="analysis-box"><h3>Waiting for entry</h3><p>The setup qualified. ForexBot is waiting for price to reach the planned confirmation entry.</p></div>
-    <div class="analysis-box"><h3>Entry triggered — active</h3><p>Price reached the planned entry. ForexBot is now monitoring the stop, target and holding-time limit.</p></div>
-    <div class="analysis-box"><h3>Expired — entry never triggered</h3><p>The allowed entry window closed before price reached the planned entry, so the setup was discarded without a trade result.</p></div>
-    <div class="analysis-box"><h3>Finished — result recorded</h3><p>The setup completed. Its target, stop or time-limit outcome has been stored in the accuracy statistics.</p></div>
-    <div class="analysis-box"><h3>Time limit reached — win / loss</h3><p>Neither target nor stop was hit before the maximum holding period. ForexBot closes the evaluation at the final candle and marks it a win or loss after estimated costs.</p></div>
+<section class="card operator-state-card">
+  <div class="operator-state-main">
+    <div><span id="botStateBadge" class="operator-badge neutral">SCANNING</span><h2 id="botStateTitle">Checking markets…</h2><p id="botStateMessage" class="muted">Loading the latest signal and broker state.</p></div>
+    <div id="operatorAction" class="operator-action"><span class="label">Your action</span><b>WAIT</b><small>ForexBot will tell you when a setup is actionable.</small></div>
   </div>
-</div></details>
-<details class="research"><summary>Signal history</summary><div class="details-body"><div class="table-wrap"><table><thead><tr><th>Created</th><th>Market</th><th>Bias</th><th>Probability</th><th>Entry</th><th>Status</th><th>Outcome</th><th>Result</th></tr></thead><tbody id="signalHistory"></tbody></table></div></div></details>
+  <div id="operatorStats" class="operator-stats"></div>
+</section>
 
-<footer>Setup probability estimates success after the confirmation entry triggers; it is calibrated, not a guarantee. Automatic execution is demo-only while the monitored edge is being validated. Live-money trading remains disabled.</footer>
+<section class="grid two operator-top">
+  <div class="card"><div class="card-head"><h2>Best current opportunity</h2><span id="bestUpdated">—</span></div><div id="bestOpportunity" class="operator-empty">Evaluating markets…</div></div>
+  <div class="card"><div class="card-head"><h2>System health</h2><span id="systemMode">—</span></div><div id="systemHealth" class="health-list"></div></div>
+</section>
+
+<section class="card operator-section trade-now-section">
+  <div class="card-head"><div><h2>Trade Now</h2><p class="section-help">Only setups that passed the trading gates or are already at XM appear here.</p></div><span id="tradeNowCount">0</span></div>
+  <div id="tradeNow" class="operator-list"><div class="operator-empty">No executable setup right now.</div></div>
+</section>
+
+<section class="card operator-section">
+  <div class="card-head"><div><h2>Watching</h2><p class="section-help">The closest markets to becoming actionable. No manual intervention is needed.</p></div><span id="watchingCount">0</span></div>
+  <div id="watchingGrid" class="watch-grid"></div>
+</section>
+
+<section class="card operator-section">
+  <div class="card-head"><div><h2>Near Qualification</h2><p class="section-help">See exactly what is still missing before a setup can move forward.</p></div><span id="nearCount">0</span></div>
+  <div id="nearQualification" class="near-list"></div>
+</section>
+
+<details class="research research-master">
+  <summary>Research & advanced controls <span class="summary-note">Open only when you want the full model detail</span></summary>
+  <div class="details-body">
+    <div class="controls advanced-controls">
+      <div class="control-group"><span class="label">Intraday setup threshold</span><div class="threshold-control"><input id="thresholdInput" type="number" min="50" max="95" step="1"><span>%</span><button class="primary" onclick="openThreshold()">Save</button></div><small id="thresholdSource" class="muted"></small></div>
+      <div class="broker-mini"><span id="brokerDot" class="dot"></span><b id="brokerText">Checking XM bridge…</b><span id="brokerMode"></span></div>
+    </div>
+
+    <section id="accuracyCards" class="grid hero"></section>
+
+    <div class="card signal-table-card embedded-card"><div class="card-head"><h2>All signal decisions</h2><span id="boardUpdated">—</span></div><div class="table-wrap"><table>
+    <thead><tr><th>Market</th><th>Bias</th><th>Setup probability</th><th>Evidence</th><th>Trade plan</th><th>R:R</th><th>Status</th><th></th></tr></thead>
+    <tbody id="signalBoard"></tbody></table></div></div>
+
+    <details class="research nested"><summary>Performance by market</summary><div class="details-body"><div class="table-wrap"><table><thead><tr><th>Market</th><th>TF</th><th>Waiting for entry</th><th>Entry triggered</th><th>Finished</th><th>Wins</th><th>Accuracy</th><th>Avg R</th></tr></thead><tbody id="seriesAccuracy"></tbody></table></div></div></details>
+    <details class="research nested"><summary>Model edge diagnostics</summary><div class="details-body"><p class="muted">Out-of-sample setup diagnostics. Profitability/expectancy gates matter more than win rate.</p><div class="table-wrap"><table><thead><tr><th>Market</th><th>TF</th><th>Threshold</th><th>Test setups</th><th>All acc.</th><th>Selected</th><th>Selected acc.</th><th>Avg R</th></tr></thead><tbody id="edgeDiagnostics"></tbody></table></div></div></details>
+    <details class="research nested"><summary>XM activity</summary><div class="details-body"><div class="table-wrap"><table><thead><tr><th>Created</th><th>Market</th><th>Mode</th><th>Signal</th><th>Ticket</th><th>Broker status</th><th>Fill</th><th>P/L</th></tr></thead><tbody id="brokerActivity"></tbody></table></div></div></details>
+    <details class="research nested"><summary>Signal history</summary><div class="details-body"><div class="table-wrap"><table><thead><tr><th>Created</th><th>Market</th><th>Bias</th><th>Probability</th><th>Entry</th><th>Status</th><th>Outcome</th><th>Result</th></tr></thead><tbody id="signalHistory"></tbody></table></div></div></details>
+    <details class="research nested"><summary>What each status means</summary><div class="details-body">
+      <div class="analysis-grid">
+        <div class="analysis-box"><h3>Watching</h3><p>No complete setup yet. ForexBot continues scanning new closed candles.</p></div>
+        <div class="analysis-box"><h3>Filtered / shadow tracked</h3><p>A trade idea exists but failed one or more gates. It is followed internally so we can learn whether rejecting it helped.</p></div>
+        <div class="analysis-box"><h3>Waiting for entry</h3><p>The setup qualified. If it was sent to XM, XM monitors live price; otherwise ForexBot monitors the planned entry internally.</p></div>
+        <div class="analysis-box"><h3>Entry triggered</h3><p>Price reached the entry. Stop, target and holding-time rules now control the outcome.</p></div>
+        <div class="analysis-box"><h3>Expired</h3><p>The entry price was never reached before the allowed entry window closed.</p></div>
+        <div class="analysis-box"><h3>Finished</h3><p>The target, stop or time-limit outcome has been recorded for performance monitoring.</p></div>
+      </div>
+    </div></details>
+  </div>
+</details>
+
+<footer>The console is designed to reduce unnecessary intervention. A quiet bot is not automatically a broken bot: no order is preferable to a setup that has not demonstrated enough edge. Automatic execution remains demo-only.</footer>
 </main></div>
 
 <div id="modalBackdrop" class="modal-backdrop" onclick="backdropClose(event)"><div class="modal"><div class="modal-head"><h2 id="modalTitle">ForexBot</h2><button class="ghost" onclick="closeModal()">✕</button></div><div id="modalBody" class="modal-body"></div><div id="modalActions" class="modal-actions"></div></div></div>
