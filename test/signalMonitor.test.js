@@ -55,3 +55,24 @@ test('filtered signals are shadow-tracked through entry and outcome',()=>{
   assert.equal(latest.shadow_outcome,'TP');
   assert.equal(latest.shadow_success,1);
 });
+
+
+test('forward realized R is net of execution costs and financing',()=>{
+  const source=4_000_000;
+  const row=monitor.record({
+    symbol:'EURUSD',timeframe:'1h',sourceCandleTs:source,
+    candidateDirection:'LONG',direction:'LONG',leanDirection:'LONG',
+    probability:.72,setupProbability:.72,directionalProbability:.70,directionalMinProbability:.55,
+    minProbability:.60,price:1.1,modelId:4,modelVersion:'net-r-v1',horizonBars:4,
+    costs:{total:10,financingBpsPerDay:5},filters:[],priceAction:{bias:.4},analysis:{},
+    tradePlan:{entry:1.1,stop:1.09,target:1.11,tp1:1.105,stopPips:100,targetPips:100,unitLabel:'pips',entryExpiryBars:2,holdBars:2}
+  });
+  db.prepare('INSERT INTO candles(symbol,timeframe,ts,open,high,low,close,volume,provider,ingested_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
+    .run('EURUSD','1h',source+3_600_000,1.1,1.111,1.1,1.11,1000,'test',Date.now());
+  const result=monitor.advance();
+  assert.equal(result.settled>=1,true);
+  const latest=monitor.history(20).find(x=>x.signal_key===row.signal_key);
+  assert.equal(latest.outcome,'TP');
+  assert.ok(latest.realized_r<1);
+  assert.ok(latest.net_return<latest.gross_return);
+});
