@@ -1,5 +1,5 @@
 param(
-  [Parameter(Mandatory=$false)][string]$BridgeDir = $PSScriptRoot,
+  [Parameter(Mandatory=$false)][string]$BridgeDir = "",
   [Parameter(Mandatory=$false)][string]$PythonExe = "",
   [Parameter(Mandatory=$false)][string]$Mt5Path = "",
   [Parameter(Mandatory=$false)][string]$TaskName = "ForexBot MT5 Bridge",
@@ -9,6 +9,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($BridgeDir)) {
+  $BridgeDir = $PSScriptRoot
+}
+if ([string]::IsNullOrWhiteSpace($BridgeDir)) {
+  $BridgeDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if ([string]::IsNullOrWhiteSpace($BridgeDir)) {
+  throw "Could not determine the bridge folder. Re-run with -BridgeDir 'C:\forexbot\bridge\mt5'."
+}
 
 function Resolve-Python {
   param([string]$Requested)
