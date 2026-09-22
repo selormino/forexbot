@@ -16,6 +16,18 @@ app.get('/api/settings',(req,res)=>res.json(settings.status()));
 app.post('/api/settings/signal-threshold',(req,res)=>{try{const value=Number(req.body?.value);res.json({...settings.status(),signalMinProbability:settings.setSignalMinProbability(value),source:'database',updatedAt:Date.now()});}catch(e){res.status(400).json({error:e.message});}});
 app.get('/api/research/status',(req,res)=>res.json({version:research.VERSION,models:research.status()}));
 app.get('/api/research/strategies',(req,res)=>res.json(strategyCapabilities.status()));
+app.get('/api/operations/status',(req,res)=>res.json({
+  researchVersion:research.VERSION,
+  analysisCadenceMinutes:Math.max(15,Number(process.env.HISTORY_SYNC_MINUTES||60)),
+  dataRefreshSeconds:Math.max(15,Number(process.env.DATA_REFRESH_SECONDS||120)),
+  brokerReconcileSeconds:process.env.BROKER_RECONCILE_ENABLED==='true'?Math.max(30,Number(process.env.BROKER_RECONCILE_SECONDS||60)):null,
+  historyAutoSync:process.env.HISTORY_AUTO_SYNC==='true',
+  modelAutoTrain:process.env.MODEL_AUTO_TRAIN==='true',
+  autoDemoStrict:process.env.AUTO_DEMO_STRICT==='true',
+  autoDemoResearch:process.env.AUTO_DEMO_RESEARCH==='true',
+  timeframes:String(process.env.HISTORICAL_TIMEFRAMES||'1h,4h,1d').split(',').map(x=>x.trim()).filter(Boolean),
+  executionMode:String(process.env.EXECUTION_MODE||'off').toLowerCase()
+}));
 app.get('/api/research/edge',(req,res)=>{const models=research.status();res.json({version:research.VERSION,target:Number(process.env.SIGNAL_TARGET_ACCURACY||.70),series:models.map(m=>({symbol:m.symbol,timeframe:m.timeframe,approved:m.approved,samples:m.samples,setupBacktest:m.setupBacktest,setupProbability:m.setupProbability,thresholdSweep:m.thresholdSweep||[],contextSamples:m.contextSamples||0,fundamentalCoverage:m.fundamentalCoverage||0,newsCoverage:m.newsCoverage||0}))});});
 app.get('/api/signals/metrics',(req,res)=>res.json(signalMonitor.metrics()));
 app.get('/api/signals/history',(req,res)=>res.json(signalMonitor.history(req.query.limit)));
