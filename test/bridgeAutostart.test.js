@@ -36,3 +36,29 @@ test('autostart verifier checks task, MT5, listener and authenticated bridge hea
   assert.match(verify,/Invoke-RestMethod/);
   assert.match(verify,/Authorization = "Bearer \$token"/);
 });
+
+
+test('Cloudflare service installer uses a secure token prompt and automatic Windows service',()=>{
+  const installer=read('install-cloudflare-service.ps1');
+  assert.match(installer,/Read-Host "Tunnel token" -AsSecureString/);
+  assert.match(installer,/service install \$plainToken/);
+  assert.match(installer,/Set-Service -Name "cloudflared" -StartupType Automatic/);
+  assert.match(installer,/Start-Service -Name "cloudflared"/);
+  assert.doesNotMatch(installer,/CLOUDFLARE_TUNNEL_TOKEN\s*=/);
+});
+
+test('Cloudflare verifier checks service, local bridge, DNS and public authenticated health',()=>{
+  const verify=read('verify-cloudflare-service.ps1');
+  assert.match(verify,/Get-Service -Name "cloudflared"/);
+  assert.match(verify,/Get-NetTCPConnection -LocalPort 8765/);
+  assert.match(verify,/Resolve-DnsName \$PublicHostname/);
+  assert.match(verify,/https:\/\/.*\/health/);
+  assert.match(verify,/Authorization = "Bearer \$token"/);
+});
+
+test('Cloudflare uninstall script removes only the Windows connector service',()=>{
+  const uninstall=read('uninstall-cloudflare-service.ps1');
+  assert.match(uninstall,/service uninstall/);
+  assert.match(uninstall,/Cloudflare Windows service removed/);
+  assert.match(uninstall,/dashboard tunnel\/DNS configuration was not deleted/i);
+});
