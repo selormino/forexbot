@@ -86,14 +86,23 @@ Write-BridgeLog "ForexBot MT5 supervisor starting. BridgeDir=$BridgeDir Python=$
 Ensure-Mt5Running -Terminal $Mt5Path
 Set-Location $BridgeDir
 
+$UvicornStdout = Join-Path $LogDir "uvicorn-out.log"
+$UvicornStderr = Join-Path $LogDir "uvicorn-err.log"
+
 while ($true) {
   try {
     Write-BridgeLog ("Starting FastAPI bridge on " + $BindAddress + ":" + $Port)
-    & $PythonExe -m uvicorn main:app --host $BindAddress --port $Port 2>&1 | Tee-Object -FilePath $LogFile -Append
-    $exitCode = $LASTEXITCODE
+    $arguments = @("-m","uvicorn","main:app","--host",$BindAddress,"--port",[string]$Port)
+    $bridgeProcess = Start-Process -FilePath $PythonExe -ArgumentList $arguments -WorkingDirectory $BridgeDir -RedirectStandardOutput $UvicornStdout -RedirectStandardError $UvicornStderr -PassThru -WindowStyle Hidden
+    Write-BridgeLog ("Bridge child process started. PID=" + $bridgeProcess.Id)
+    $bridgeProcess.WaitForExit()
+    $exitCode = $bridgeProcess.ExitCode
     Write-BridgeLog "Bridge exited with code $exitCode. Restarting in $RestartDelaySec seconds."
+    if (Test-Path $UvicornStderr) {
+      Get-Content $UvicornStderr -Tail 8 -ErrorAction SilentlyContinue | ForEach-Object { Write-BridgeLog ("uvicorn: " + $_) }
+    }
   } catch {
-    Write-BridgeLog "Bridge process failed: $($_.Exception.Message). Restarting in $RestartDelaySec seconds."
+    Write-BridgeLog "Bridge supervisor failed: $($_.Exception.Message). Restarting in $RestartDelaySec seconds."
   }
   Start-Sleep -Seconds $RestartDelaySec
   try { Ensure-Mt5Running -Terminal $Mt5Path } catch { Write-BridgeLog $_.Exception.Message }
