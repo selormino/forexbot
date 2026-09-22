@@ -43,3 +43,13 @@ test('ALFRED vintages return only revisions known by the as-of date',()=>{
   assert.equal(macro.pointInTimeSeries('DGS10',Date.parse('2026-01-11T12:00:00Z'),1)[0].value,4.2);
   delete process.env.ALFRED_AVAILABILITY_LAG_DAYS;
 });
+
+
+test('v38 research costs widen conservatively at rollover and in volatile regimes',()=>{
+  const liquid=r.costs('EURUSD',Date.parse('2026-09-21T13:00:00Z'),{regime:'trend'});
+  const rollover=r.costs('EURUSD',Date.parse('2026-09-21T22:00:00Z'),{regime:'volatile'});
+  assert.ok(rollover.total>liquid.total);
+  assert.ok(rollover.spread>liquid.spread);
+  assert.ok(rollover.financingBpsPerDay>0);
+  assert.equal(rollover.observed,false);
+});
