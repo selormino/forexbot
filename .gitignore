@@ -5,3 +5,5 @@ data/*.db-shm
 data/*.db-wal
 .DS_Store
 npm-debug.log*
+
+bridge/mt5/logs/
