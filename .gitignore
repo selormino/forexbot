@@ -7,3 +7,5 @@ data/*.db-wal
 npm-debug.log*
 
 bridge/mt5/logs/
+
+bridge/mt5/cloudflare-hostname.txt
