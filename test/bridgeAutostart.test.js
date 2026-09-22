@@ -17,12 +17,15 @@ test('AWS MT5 autostart installer uses current-user logon task without storing c
   assert.doesNotMatch(installer,/BRIDGE_TOKEN\s*=/);
 });
 
-test('MT5 supervisor starts terminal and restarts uvicorn on exit',()=>{
+test('MT5 supervisor starts terminal and supervises uvicorn as a native child process',()=>{
   const runner=read('run-autostart.ps1');
   assert.match(runner,/Start-Process -FilePath \$Terminal/);
   assert.match(runner,/while \(\$true\)/);
-  assert.match(runner,/-m uvicorn main:app/);
+  assert.match(runner,/Start-Process -FilePath \$PythonExe/);
+  assert.match(runner,/RedirectStandardError \$UvicornStderr/);
+  assert.match(runner,/WaitForExit\(\)/);
   assert.match(runner,/Restarting in \$RestartDelaySec seconds/);
+  assert.doesNotMatch(runner,/2>&1 \| Tee-Object/);
 });
 
 test('autostart verifier checks task, MT5, listener and authenticated bridge health',()=>{
