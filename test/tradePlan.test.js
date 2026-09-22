@@ -30,3 +30,14 @@ test('sub-1R target profiles are preserved for higher-win-rate research',()=>{
   assert.ok(p.targetDistance<p.stopDistance);
   assert.ok(p.tp1<=p.target);
 });
+
+
+test('CTA plan preserves asymmetric payoff and long holding window',()=>{
+  const sig={symbol:'EURUSD',price:1.10,leanDirection:'LONG',features:{atr:.01},priceAction:{resistancePrice:1.105}};
+  const p=buildTradePlan(sig,{strategyFamily:'cta',entryBufferAtr:.05,stopAtr:2,targetR:4,entryExpiryBars:5,holdBars:55});
+  assert.equal(p.strategyFamily,'cta');
+  assert.ok(p.entry>1.105);
+  assert.ok(Math.abs(p.riskReward-4)<1e-9);
+  assert.equal(p.holdBars,55);
+  assert.match(p.rationale,/trend-following/i);
+});
