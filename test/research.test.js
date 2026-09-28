@@ -100,8 +100,12 @@ test('intraday research uses separate 15m/30m horizons and timeframe-specific pl
   if(prior===undefined)delete process.env.INTRADAY_MIN_PROBABILITY;else process.env.INTRADAY_MIN_PROBABILITY=prior;
 });
 
-test('intraday setup eligibility requires more ATR room over estimated costs',()=>{
+test('intraday setup eligibility requires more ATR room and aligned higher timeframe trend',()=>{
   const row={price:1,atr:.0015,trend:1,technicalBias:1,regime:'trend',priceAction:{bias:.5},context:{}};
   assert.equal(r.setupModel.eligible({...row,timeframe:'1h'},'LONG',6,'trend'),true);
   assert.equal(r.setupModel.eligible({...row,timeframe:'15m'},'LONG',6,'trend'),false);
+  const liquid={...row,atr:.003,timeframe:'15m'};
+  assert.equal(r.setupModel.eligible(liquid,'LONG',6,'trend'),false);
+  assert.equal(r.setupModel.eligible({...liquid,higherTimeframeTrend:.8},'LONG',6,'trend'),true);
+  assert.equal(r.setupModel.eligible({...liquid,higherTimeframeTrend:-.8},'LONG',6,'trend'),false);
 });
