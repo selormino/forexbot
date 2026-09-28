@@ -743,7 +743,8 @@ function signal(symbol,tf='1h',events=null){
   const scoredSides=['LONG','SHORT'].filter(side=>Number.isFinite(setupScores[side].probability)).sort((a,b)=>setupScores[b].probability-setupScores[a].probability);
   const lean=scoredSides[0]||directionalLean,setupProbability=scoredSides.length?setupScores[scoredSides[0]].probability:null;
   const setupAllowed=setupScores[lean]?.allowed??false,distributionAllowed=setupScores[lean]?.inDistribution??false;
-  const planOptions=m?.model?.setup?.planOptions||{};
+  const storedPlanOptions=m?.model?.setup?.planOptions||null;
+  const planOptions=storedPlanOptions||defaultPlanFor(tf);
   const strategyFamily=tf==='1d'?'cta':planOptions.strategyFamily==='range'?'range':'trend';
   const rangeScore=strategyFamily==='range'?setupModel.rangeReversionScore(f,lean):null;
   const candidate=setupProbability!==null&&setupProbability>=threshold?lean:'WAIT';
