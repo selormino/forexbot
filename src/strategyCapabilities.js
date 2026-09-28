@@ -4,7 +4,7 @@ function status(){
       implemented:true,
       executionMode:'gated-demo-compatible',
       timeframes:['15m','30m'],
-      markets:'current ForexBot symbol universe',
+      markets:String(process.env.INTRADAY_SYMBOLS||'EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,XAUUSD').split(',').map(x=>x.trim()).filter(Boolean),
       primaryEdges:[
         'trend continuation with 1H higher-timeframe alignment',
         'range mean-reversion with RSI/Bollinger/momentum reversal confirmation',
