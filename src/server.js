@@ -9,6 +9,7 @@ const brokerBridge=require('./brokerBridge');
 const settings=require('./settings');
 const strategyCapabilities=require('./strategyCapabilities');
 const storageMaintenance=require('./storageMaintenance');
+const SIGNAL_TIMEFRAMES=['15m','30m','1h','4h','1d'];
 const app=express();app.use(helmet({contentSecurityPolicy:false}));app.use(cors());app.use(express.json({limit:'1mb'}));app.use(express.static(path.join(__dirname,'../public')));
 const enabled=()=>process.env.TRADING_ENABLED==='true';
 const admin=(req,res,next)=>{const configured=process.env.ADMIN_API_KEY;if(!configured)return res.status(503).json({error:'ADMIN_API_KEY is not configured'});const supplied=req.get('x-admin-token')||String(req.get('authorization')||'').replace(/^Bearer\s+/i,'');if(supplied!==configured)return res.status(401).json({error:'Invalid admin token'});next();};
@@ -26,7 +27,7 @@ app.get('/api/operations/status',(req,res)=>res.json({
   modelAutoTrain:process.env.MODEL_AUTO_TRAIN==='true',
   autoDemoStrict:process.env.AUTO_DEMO_STRICT==='true',
   autoDemoResearch:process.env.AUTO_DEMO_RESEARCH==='true',
-  timeframes:String(process.env.HISTORICAL_TIMEFRAMES||'1h,4h,1d').split(',').map(x=>x.trim()).filter(Boolean),
+  timeframes:String(process.env.HISTORICAL_TIMEFRAMES||'15m,30m,1h,4h,1d').split(',').map(x=>x.trim()).filter(Boolean),
   executionMode:String(process.env.EXECUTION_MODE||'off').toLowerCase()
 }));
 app.get('/api/storage/status',(req,res)=>res.json(storageMaintenance.status()));
@@ -34,8 +35,8 @@ app.post('/api/storage/maintenance',(req,res)=>{try{res.json(storageMaintenance.
 app.get('/api/research/edge',(req,res)=>{const models=research.status();res.json({version:research.VERSION,target:Number(process.env.SIGNAL_TARGET_ACCURACY||.70),series:models.map(m=>({symbol:m.symbol,timeframe:m.timeframe,approved:m.approved,samples:m.samples,setupBacktest:m.setupBacktest,setupProbability:m.setupProbability,thresholdSweep:m.thresholdSweep||[],contextSamples:m.contextSamples||0,fundamentalCoverage:m.fundamentalCoverage||0,newsCoverage:m.newsCoverage||0}))});});
 app.get('/api/signals/metrics',(req,res)=>res.json(signalMonitor.metrics()));
 app.get('/api/signals/history',(req,res)=>res.json(signalMonitor.history(req.query.limit)));
-app.get('/api/signals/board',async(req,res)=>{try{const e=await calendar().catch(()=>null);const out=[];for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h','1d']){try{out.push(research.signal(symbol,timeframe,e));}catch(err){out.push({symbol,timeframe,direction:'WAIT',candidateDirection:'WAIT',directionalProbability:0,filters:[err.message],priceAction:null,regime:'unknown'});}}res.json(out);}catch(e){res.status(500).json({error:e.message});}});
-app.get('/api/signals/chart',(req,res)=>{try{const symbol=String(req.query.symbol||'').toUpperCase(),timeframe=String(req.query.timeframe||'1h');if(!SYMBOLS.includes(symbol))return res.status(400).json({error:'Unsupported symbol'});if(!['1h','4h','1d'].includes(timeframe))return res.status(400).json({error:'Unsupported timeframe'});res.json(research.chartSnapshot(symbol,timeframe,{limit:Number(req.query.limit||90),at:req.query.at==null?null:Number(req.query.at)}));}catch(e){res.status(400).json({error:e.message});}});
+app.get('/api/signals/board',async(req,res)=>{try{const e=await calendar().catch(()=>null);const out=[];for(const symbol of SYMBOLS)for(const timeframe of SIGNAL_TIMEFRAMES){try{out.push(research.signal(symbol,timeframe,e));}catch(err){out.push({symbol,timeframe,direction:'WAIT',candidateDirection:'WAIT',directionalProbability:0,filters:[err.message],priceAction:null,regime:'unknown'});}}res.json(out);}catch(e){res.status(500).json({error:e.message});}});
+app.get('/api/signals/chart',(req,res)=>{try{const symbol=String(req.query.symbol||'').toUpperCase(),timeframe=String(req.query.timeframe||'1h');if(!SYMBOLS.includes(symbol))return res.status(400).json({error:'Unsupported symbol'});if(!SIGNAL_TIMEFRAMES.includes(timeframe))return res.status(400).json({error:'Unsupported timeframe'});res.json(research.chartSnapshot(symbol,timeframe,{limit:Number(req.query.limit||90),at:req.query.at==null?null:Number(req.query.at)}));}catch(e){res.status(400).json({error:e.message});}});
 app.get('/api/execution/status',(req,res)=>res.json(execution.status()));
 app.get('/api/broker/status',async(req,res)=>res.json(await brokerBridge.health()));
 app.post('/api/broker/demo-dispatch/:id',admin,async(req,res)=>{try{res.json(await brokerBridge.dispatchDemo(Number(req.params.id)));}catch(e){res.status(400).json({error:e.message});}});
