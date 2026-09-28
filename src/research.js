@@ -766,14 +766,17 @@ function signal(symbol,tf='1h',events=null){
     if(lean==='SHORT'&&f.context.macroBias>.35)reasons.push('Macro backdrop conflicts with SHORT bias');
   }
   let higherTimeframe=null;
-  if(tf==='1h'){
+  const higherTf=higherTimeframeFor(tf);
+  if(higherTf){
     try{
-      const hRows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,'4h',ms('4h'),now).reverse();
-      const hf=features(hRows,symbol,now);higherTimeframe={trend:hf.trend,regime:hf.regime,priceAction:hf.priceAction.structure};
-      if(strategyFamily==='trend'&&(lean==='LONG'?1:-1)*hf.trend<0)reasons.push('4H trend conflicts with 1H directional lean');
+      const hRows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,higherTf,ms(higherTf),now).reverse();
+      const hf=features(hRows,symbol,now);higherTimeframe={timeframe:higherTf,trend:hf.trend,regime:hf.regime,priceAction:hf.priceAction.structure};
+      if(strategyFamily==='trend'&&(lean==='LONG'?1:-1)*hf.trend<0)reasons.push(higherTf.toUpperCase()+' trend conflicts with '+tf.toUpperCase()+' directional lean');
     }catch{}
   }
-  if(f.atr/f.price*10000<cost.total*2)reasons.push('Expected range too small relative to estimated costs');
+  if(isIntraday(tf)&&!['BTCUSD','ETHUSD','SOLUSD','XRPUSD','LTCUSD'].includes(symbol)&&f.session.utcHour>=21&&f.session.utcHour<23)reasons.push('Intraday execution paused during the 21:00–23:00 UTC rollover/liquidity window');
+  const costRangeMultiplier=isIntraday(tf)?3:2;
+  if(f.atr/f.price*10000<cost.total*costRangeMultiplier)reasons.push('Expected range too small relative to estimated costs');
   const eventFundamentals=eventFundamentalBias(events,symbol,now);
   const fundamentalBias=Math.max(-1,Math.min(1,.50*Number(f.context.macroBias||0)+.30*Number(f.context.newsSentiment||0)+.20*eventFundamentals.bias));
   const confluence=strategyFamily==='range'?rangeConfluenceFor(lean,f):strategyFamily==='cta'?ctaConfluenceFor(lean,f):confluenceFor(lean,f,higherTimeframe,fundamentalBias);
@@ -788,8 +791,9 @@ function signal(symbol,tf='1h',events=null){
     const t=new Date(e.time).getTime();return Number.isFinite(t)&&t>=now-3600000&&t<=now+24*3600000;
   }).sort((a,b)=>new Date(a.time)-new Date(b.time)).slice(0,5):[];
   if(strategyFamily!=='cta'){
+    const eventWindowMs=isIntraday(tf)?90*60000:3600000;
     if(!Array.isArray(events)||!events.length)reasons.push('Economic calendar unavailable');
-    else if(relevantEvents.some(e=>String(e.impact).toLowerCase()==='high'&&Math.abs(new Date(e.time).getTime()-now)<=3600000))reasons.push('High-impact event within one hour');
+    else if(relevantEvents.some(e=>String(e.impact).toLowerCase()==='high'&&Math.abs(new Date(e.time).getTime()-now)<=eventWindowMs))reasons.push(isIntraday(tf)?'High-impact event within 90 minutes':'High-impact event within one hour');
   }
   const paSummary=[f.priceAction.structure,...f.priceAction.patterns].filter(Boolean).join(', ');
   const patternSummary=(f.priceAction.classicalPatterns||[]).slice(0,3).map(p=>p.label+' '+Math.round(p.confidence*100)+'%'+(p.confirmed?' confirmed':''));
@@ -821,16 +825,20 @@ function signal(symbol,tf='1h',events=null){
     if((lean==='LONG'&&eventFundamentals.bias>0)||(lean==='SHORT'&&eventFundamentals.bias<0))confirmations.push('Recent economic surprise confirms direction');
   }
   if(strongestPattern&&((lean==='LONG'?1:-1)*strongestPattern.bias>0)&&strongestPattern.confidence>=.60)confirmations.push(strongestPattern.label+' pattern supports '+lean+' ('+Math.round(strongestPattern.confidence*100)+'% pattern confidence)');
-  if(strategyFamily==='trend'&&higherTimeframe&&(lean==='LONG'?1:-1)*higherTimeframe.trend>0)confirmations.push('4H trend confirms 1H direction');
+  if(strategyFamily==='trend'&&higherTimeframe&&(lean==='LONG'?1:-1)*higherTimeframe.trend>0)confirmations.push(higherTimeframe.timeframe.toUpperCase()+' trend confirms '+tf.toUpperCase()+' direction');
   if(strategyFamily==='range'&&confluence.score>=.45)confirmations.push('Mean-reversion confluence is strong');
   else if(strategyFamily==='cta'&&confluence.agreement>=70)confirmations.push('Slow trend-following confluence is strong');
   else if(strategyFamily==='trend'&&confluence.score>=.35)confirmations.push('Technical + fundamental confluence is strong');
   const risks=[...reasons,...softRisks];
   const explanation=reasons.length?reasons:[`All strict ${strategyFamily} gates passed; price action: ${paSummary||'neutral'}`];
+  const strategyMode=isIntraday(tf)?'intraday':strategyFamily==='cta'?'cta':'swing';
+  const thesisLabel=isIntraday(tf)
+    ?(strategyFamily==='range'?'Intraday range mean-reversion':'Intraday trend continuation')
+    :(strategyFamily==='range'?'Range mean-reversion':strategyFamily==='cta'?'Daily CTA trend-following':'Trend continuation');
   const base={symbol,timeframe:tf,price:f.price,leanDirection:lean,candidateDirection:candidate,direction:reasons.length?'WAIT':candidate,probability:setupProbability??directionalProbability,setupProbability,directionalProbability,directionalLean,setupScores:{LONG:setupScores.LONG.probability,SHORT:setupScores.SHORT.probability},minProbability:threshold,directionalMinProbability:directionalFloor,
-    probabilityMeaning:strategyFamily==='cta'?'CTA setup probability estimates the chance of a positive long-horizon outcome; because targets are 2.5R–5R, profitable CTA operation can have a win rate below 50%.':'Setup probability estimates P(success | confirmation entry triggers) for this entry/SL/TP structure; directional probability is reported separately',
-    confidence:setupProbability??0,strategyFamily,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,
-    analysis:{strategyFamily,thesis:`${strategyFamily==='range'?'Range mean-reversion':strategyFamily==='cta'?'Daily CTA trend-following':'Trend continuation'} ${lean} setup; directional lean ${(directionalProbability*100).toFixed(1)}%; triggered setup success probability is ${setupProbability===null?'unavailable':(setupProbability*100).toFixed(1)+'%'}; evidence agreement is ${confluence.agreement}%.`,
+    probabilityMeaning:strategyFamily==='cta'?'CTA setup probability estimates the chance of a positive long-horizon outcome; because targets are 2.5R–5R, profitable CTA operation can have a win rate below 50%.':isIntraday(tf)?'Intraday setup probability estimates P(success | confirmation entry triggers) after conservative spread/slippage costs, with a timeframe-specific exit window designed to resolve within the trading day.':'Setup probability estimates P(success | confirmation entry triggers) for this entry/SL/TP structure; directional probability is reported separately',
+    confidence:setupProbability??0,strategyFamily,strategyMode,features:{...f,context:undefined,x:undefined},priceAction:f.priceAction,higherTimeframe,regime:f.regime,costs:cost,filters:reasons,explanation,
+    analysis:{strategyFamily,strategyMode,thesis:`${thesisLabel} ${lean} setup on ${tf.toUpperCase()}; directional lean ${(directionalProbability*100).toFixed(1)}%; triggered setup success probability is ${setupProbability===null?'unavailable':(setupProbability*100).toFixed(1)+'%'}; evidence agreement is ${confluence.agreement}%.`,
       directionalModel:{lean:directionalLean,probability:directionalProbability,agreesWithSetup:directionalLean===lean},
       technical:technicalReasons,technicalBias:f.technicalBias,priceAction:{structure:f.priceAction.structure,patterns:f.priceAction.patterns,bias:f.priceAction.bias,baseBias:f.priceAction.baseBias,patternBias:f.priceAction.patternBias,patternConfidence:f.priceAction.patternConfidence,classicalPatterns:f.priceAction.classicalPatterns,summary:patternSummary},
       news:{available:f.context.newsAvailable,count:f.context.newsCount,sentiment:f.context.newsSentiment,headlines:f.context.newsHeadlines},
@@ -839,7 +847,7 @@ function signal(symbol,tf='1h',events=null){
       confluence,
       calendar:relevantEvents.map(e=>({time:e.time,event:e.event,currency:e.currency||e.country,impact:e.impact,actual:e.actual,forecast:e.forecast??e.estimate,previous:e.previous})),
       confirmations,risks},
-    eventRisk:strategyFamily==='cta'?0:(reasons.some(r=>r.includes('event'))?1:0),generatedAt:now,sourceCandleTs:rows.at(-1).ts,horizonBars:m?.model?.horizon||4,modelId:m?.id||null,modelVersion:VERSION,modelApproved:!!m?.approved,execution:'gated'};
+    eventRisk:strategyFamily==='cta'?0:(reasons.some(r=>r.includes('event'))?1:0),generatedAt:now,sourceCandleTs:rows.at(-1).ts,horizonBars:m?.model?.horizon||horizonBars(tf),modelId:m?.id||null,modelVersion:VERSION,modelApproved:!!m?.approved,execution:'gated'};
   return {...base,tradePlan:buildTradePlan(base,{side:lean,...planOptions})};
 }
 function alignSeries(length,values,map=x=>x){
