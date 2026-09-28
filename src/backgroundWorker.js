@@ -11,6 +11,8 @@ const storageMaintenance=require('./storageMaintenance');
 
 const sleepImmediate=()=>new Promise(resolve=>setImmediate(resolve));
 const SIGNAL_TIMEFRAMES=['15m','30m','1h','4h','1d'];
+const INTRADAY_SYMBOLS=String(process.env.INTRADAY_SYMBOLS||'EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,XAUUSD')
+  .split(',').map(x=>x.trim().toUpperCase()).filter(x=>SYMBOLS.includes(x));
 let syncing=false;
 
 async function autoDemoStrict(signals){
@@ -106,9 +108,12 @@ async function trainAll(){
   if(process.env.MODEL_AUTO_TRAIN!=='true')return learning;
   const priority=[['XAUUSD','4h']];
   const rest=[];
-  for(const timeframe of ['30m','15m','1h','4h','1d'])for(const symbol of SYMBOLS){
-    if(symbol==='XAUUSD'&&timeframe==='4h')continue;
-    rest.push([symbol,timeframe]);
+  for(const timeframe of ['1h','4h','30m','15m','1d']){
+    const symbols=['15m','30m'].includes(timeframe)?INTRADAY_SYMBOLS:SYMBOLS;
+    for(const symbol of symbols){
+      if(symbol==='XAUUSD'&&timeframe==='4h')continue;
+      rest.push([symbol,timeframe]);
+    }
   }
   for(const [symbol,timeframe] of [...priority,...rest]){
     let report;
@@ -172,6 +177,7 @@ async function trainAll(){
 async function generateSignals(){
   const events=await calendar().catch(()=>null),recordedSignals=[],generatedSignals=[];
   for(const symbol of SYMBOLS)for(const timeframe of SIGNAL_TIMEFRAMES){
+    if(['15m','30m'].includes(timeframe)&&!INTRADAY_SYMBOLS.includes(symbol))continue;
     try{
       const signal=research.signal(symbol,timeframe,events);
       generatedSignals.push(signal);
@@ -205,10 +211,14 @@ async function runCycle({bootstrap=false}={}){
     const macroVintages=process.env.FRED_API_KEY?await syncPointInTimeMacro():[];
     research.captureMacro();
     const newsRuns=await collectNews();
-    const market=process.env.HISTORY_AUTO_SYNC==='true'?await history.syncHistory():[];
+    const market=[];
+    if(process.env.HISTORY_AUTO_SYNC==='true'){
+      market.push(...await history.syncHistory({timeframes:['1h','4h','1d']}));
+      market.push(...await history.syncHistory({symbols:INTRADAY_SYMBOLS,timeframes:['15m','30m']}));
+    }
     const intradayBackfill=bootstrap&&process.env.INTRADAY_BACKFILL_ENABLED==='true'
       ?await history.backfillHistory({
-          timeframes:['15m','30m'],
+          symbols:INTRADAY_SYMBOLS,timeframes:['15m','30m'],
           targetBars:Number(process.env.INTRADAY_BACKFILL_TARGET_BARS||10000),
           maxPages:Number(process.env.INTRADAY_BACKFILL_PAGES||1)
         })
@@ -216,10 +226,13 @@ async function runCycle({bootstrap=false}={}){
     const settledSignals=signalMonitor.settle();
     const storage=storageMaintenance.maybeRun();
     const trainingPolicy=storageMaintenance.shouldTrainResearch(research.VERSION);
-    const learning=trainingPolicy.due?await trainAll():[];
+    let learning=[];
+    const currentModels=research.status();
+    if(trainingPolicy.due&&bootstrap&&!currentModels.length)learning=await trainAll();
     const {recordedSignals,generatedSignals}=await generateSignals();
     const autoDemoRuns=await autoDemoStrict(generatedSignals);
     const autoResearchDemoRuns=await autoDemoResearch(generatedSignals);
+    if(trainingPolicy.due&&!learning.length)learning=await trainAll();
     const brokerHealth=await brokerBridge.health().catch(e=>({configured:false,reachable:false,reason:e.message}));
     const executionRuns=[];
 
