@@ -378,6 +378,18 @@ function examples(rows,symbol,costBps,planOptions={}){
   return out;
 }
 const PLAN_PROFILES=[
+  // Intraday profiles are intentionally timeframe-specific so entry expiry and
+  // maximum holding time stay inside the same trading day in normal conditions.
+  {name:'intraday-15m-range-0.8r',timeframes:['15m'],strategyFamily:'range',entryBufferAtr:.04,stopAtr:.9,targetR:.8,entryExpiryBars:4,holdBars:16},
+  {name:'intraday-15m-range-1r',timeframes:['15m'],strategyFamily:'range',entryBufferAtr:.05,stopAtr:1.0,targetR:1.0,entryExpiryBars:4,holdBars:24},
+  {name:'intraday-15m-trend-1r',timeframes:['15m'],strategyFamily:'trend',entryBufferAtr:.05,stopAtr:1.0,targetR:1.0,entryExpiryBars:4,holdBars:24},
+  {name:'intraday-15m-trend-1.25r',timeframes:['15m'],strategyFamily:'trend',entryBufferAtr:.06,stopAtr:1.1,targetR:1.25,entryExpiryBars:6,holdBars:40},
+  {name:'intraday-15m-trend-1.5r',timeframes:['15m'],strategyFamily:'trend',entryBufferAtr:.08,stopAtr:1.2,targetR:1.5,entryExpiryBars:8,holdBars:64},
+  {name:'intraday-30m-range-0.8r',timeframes:['30m'],strategyFamily:'range',entryBufferAtr:.04,stopAtr:.9,targetR:.8,entryExpiryBars:3,holdBars:12},
+  {name:'intraday-30m-range-1r',timeframes:['30m'],strategyFamily:'range',entryBufferAtr:.05,stopAtr:1.0,targetR:1.0,entryExpiryBars:3,holdBars:18},
+  {name:'intraday-30m-trend-1r',timeframes:['30m'],strategyFamily:'trend',entryBufferAtr:.05,stopAtr:1.0,targetR:1.0,entryExpiryBars:3,holdBars:16},
+  {name:'intraday-30m-trend-1.25r',timeframes:['30m'],strategyFamily:'trend',entryBufferAtr:.06,stopAtr:1.1,targetR:1.25,entryExpiryBars:4,holdBars:24},
+  {name:'intraday-30m-trend-1.5r',timeframes:['30m'],strategyFamily:'trend',entryBufferAtr:.08,stopAtr:1.2,targetR:1.5,entryExpiryBars:4,holdBars:36},
   {name:'cta-fast-2.5r',strategyFamily:'cta',entryBufferAtr:.05,stopAtr:1.75,targetR:2.5,entryExpiryBars:5,holdBars:30},
   {name:'cta-balanced-3r',strategyFamily:'cta',entryBufferAtr:.06,stopAtr:2.0,targetR:3.0,entryExpiryBars:5,holdBars:40},
   {name:'cta-wide-4r',strategyFamily:'cta',entryBufferAtr:.08,stopAtr:2.5,targetR:4.0,entryExpiryBars:7,holdBars:55},
