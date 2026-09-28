@@ -299,7 +299,8 @@ function rangeReversionScore(row,side){
 function eligible(row,side,costBps,family='trend'){
   const sign=side==='LONG'?1:-1;
   const effectiveCostBps=Number(row.costBps??costBps??0);
-  if(Number(row.atr||0)/Math.max(Number(row.price||0),1e-12)*10000<effectiveCostBps*2)return false;
+  const costRangeMultiple=['15m','30m'].includes(String(row.timeframe||''))?3:2;
+  if(Number(row.atr||0)/Math.max(Number(row.price||0),1e-12)*10000<effectiveCostBps*costRangeMultiple)return false;
   if(family==='cta'){
     const score=Number(row.ctaScore||0),strength=Number(row.ctaTrendStrength||0);
     if(sign*score<.35||strength<.15)return false;
