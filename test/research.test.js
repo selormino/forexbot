@@ -79,3 +79,29 @@ test('daily features expose CTA momentum, channel and trend-strength evidence',(
   assert.ok(Number.isFinite(f.cta.momentum60Atr));
   assert.ok(f.cta.breakoutPosition<=1&&f.cta.breakoutPosition>=-1);
 });
+
+
+test('intraday research uses separate 15m/30m horizons and timeframe-specific plans',()=>{
+  const prior=process.env.INTRADAY_MIN_PROBABILITY;
+  process.env.INTRADAY_MIN_PROBABILITY='0.60';
+  assert.equal(r.ms('15m'),900000);
+  assert.equal(r.ms('30m'),1800000);
+  assert.equal(r.horizonBars('15m'),8);
+  assert.equal(r.horizonBars('30m'),6);
+  assert.equal(r.strategyThreshold('15m'),.60);
+  assert.equal(r.strategyThreshold('30m'),.60);
+  const p15=r.planProfilesFor('15m'),p30=r.planProfilesFor('30m');
+  assert.ok(p15.length>=4&&p15.every(p=>p.timeframes.includes('15m')));
+  assert.ok(p30.length>=4&&p30.every(p=>p.timeframes.includes('30m')));
+  assert.ok(p15.every(p=>(p.entryExpiryBars+p.holdBars)*r.ms('15m')<=24*3600000));
+  assert.ok(p30.every(p=>(p.entryExpiryBars+p.holdBars)*r.ms('30m')<=24*3600000));
+  assert.equal(r.higherTimeframeFor('15m'),'1h');
+  assert.equal(r.higherTimeframeFor('30m'),'1h');
+  if(prior===undefined)delete process.env.INTRADAY_MIN_PROBABILITY;else process.env.INTRADAY_MIN_PROBABILITY=prior;
+});
+
+test('intraday setup eligibility requires more ATR room over estimated costs',()=>{
+  const row={price:1,atr:.0015,trend:1,technicalBias:1,regime:'trend',priceAction:{bias:.5},context:{}};
+  assert.equal(r.setupModel.eligible({...row,timeframe:'1h'},'LONG',6,'trend'),true);
+  assert.equal(r.setupModel.eligible({...row,timeframe:'15m'},'LONG',6,'trend'),false);
+});
