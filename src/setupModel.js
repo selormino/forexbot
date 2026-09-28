@@ -8,8 +8,7 @@ function vector(row,side){
   const x=(row.x||[]).map(v=>Number(v)||0);
   const signed=x.map(v=>sign*v);
   const magnitude=x.slice(0,16).map(v=>Math.abs(v));
-  const higherTrend=Number.isFinite(Number(row.higherTimeframeTrend))?Math.tanh(Number(row.higherTimeframeTrend)):0;
-  return [sign,...signed,...magnitude,sign*higherTrend];
+  return [sign,...signed,...magnitude];
 }
 function fit(rows){
   if(rows.length<100)throw new Error('Insufficient triggered setup samples');
