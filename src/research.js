@@ -750,7 +750,8 @@ function signal(symbol,tf='1h',events=null){
   const candidate=setupProbability!==null&&setupProbability>=threshold?lean:'WAIT';
   if(!m?.approved)reasons.push('Model has not passed out-of-sample validation gates');
   if(now-(rows.at(-1).ts+step)>(tf==='1d'?step*4:step*2))reasons.push('Stale closed candles');
-  if(rows.some((r,i)=>r.provider==='demo'||(i&&!continuousGap(rows[i-1].ts,r.ts,tf))))reasons.push('Candle gaps or synthetic data');
+  const continuityRows=isIntraday(tf)?rows.slice(-32):rows;
+  if(continuityRows.some((r,i)=>r.provider==='demo'||(i&&!continuousGap(continuityRows[i-1].ts,r.ts,tf))))reasons.push('Candle gaps or synthetic data');
   if(rows.some(r=>r.provider==='yahoo'))reasons.push('Research-only fallback feed');
   if(strategyFamily!=='cta'&&(!f.context.macroAvailable||!f.context.newsAvailable))reasons.push('Missing fresh macro/news confirmation');
   if(directionalProbability<directionalFloor)softRisks.push(`Directional model is low-confidence (${Math.round(directionalProbability*100)}%); setup model carries the decision`);
