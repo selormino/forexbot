@@ -16,9 +16,13 @@ function cached(key){
 }
 function put(key,value){ cache.set(key,{at:Date.now(),value}); return value; }
 
-function demoCandles(symbol, count=250){
-  const base=BASE[symbol]||1; let p=base; const out=[]; let seed=symbol.split('').reduce((a,c)=>a+c.charCodeAt(0),0);
-  for(let i=count;i>0;i--){ seed=(seed*9301+49297)%233280; const noise=(seed/233280-.5)*0.006; const open=p; const close=Math.max(0.0001,p*(1+noise)); const high=Math.max(open,close)*(1+Math.abs(noise)*0.8); const low=Math.min(open,close)*(1-Math.abs(noise)*0.8); out.push({time:Date.now()-i*3600000,open,high,low,close,volume:1000+Math.floor((seed/233280)*9000)}); p=close; }
+function intervalMs(interval='1h'){
+  const match=String(interval).match(/^(\d+)(m|h|d)$/);
+  return match?Number(match[1])*({m:60000,h:3600000,d:86400000}[match[2]]):3600000;
+}
+function demoCandles(symbol, count=250, interval='1h'){
+  const base=BASE[symbol]||1; let p=base; const out=[]; let seed=symbol.split('').reduce((a,c)=>a+c.charCodeAt(0),0),step=intervalMs(interval);
+  for(let i=count;i>0;i--){ seed=(seed*9301+49297)%233280; const noise=(seed/233280-.5)*0.006; const open=p; const close=Math.max(0.0001,p*(1+noise)); const high=Math.max(open,close)*(1+Math.abs(noise)*0.8); const low=Math.min(open,close)*(1-Math.abs(noise)*0.8); out.push({time:Date.now()-i*step,open,high,low,close,volume:1000+Math.floor((seed/233280)*9000)}); p=close; }
   return out;
 }
 
@@ -35,7 +39,8 @@ function yahooRange(interval, outputsize){
   if(interval==='1d') return outputsize>1000?'5y':outputsize>500?'2y':'1y';
   if(interval==='1wk') return outputsize>260?'10y':'5y';
   if(interval==='1mo') return '10y';
-  const days=Math.min(60,Math.max(5,Math.ceil(outputsize/24)+4));
+  const barsPerDay={'1m':1440,'5m':288,'15m':96,'30m':48,'1h':24}[interval]||24;
+  const days=Math.min(60,Math.max(5,Math.ceil(outputsize/barsPerDay)+4));
   return `${days}d`;
 }
 
@@ -86,7 +91,7 @@ async function twelveDataCandles(symbol, interval='1h', outputsize=250, options=
 async function historicalCandles(symbol, interval='1h', options={}){
   const outputsize=Math.max(1,Math.min(5000,Number(options.outputsize||1500)));
   const provider=(process.env.MARKET_PROVIDER||'auto').toLowerCase();
-  if(provider==='demo') return demoCandles(symbol,outputsize).filter(x=>!options.startTime||x.time>=options.startTime).map(x=>({...x,provider:'demo'}));
+  if(provider==='demo') return demoCandles(symbol,outputsize,interval).filter(x=>!options.startTime||x.time>=options.startTime).map(x=>({...x,provider:'demo'}));
   if(!usesYahooFallback(symbol) && (provider==='twelvedata'||provider==='auto') && process.env.TWELVE_DATA_API_KEY){
     try{return await twelveDataCandles(symbol,interval,outputsize,options);}catch(e){if(provider==='twelvedata')throw e;}
   }
@@ -106,7 +111,7 @@ function aggregateCandles(rows, hours){
 
 async function candles(symbol, interval='1h', outputsize=250){
   const provider=(process.env.MARKET_PROVIDER||'auto').toLowerCase();
-  if(provider==='demo') return demoCandles(symbol,outputsize);
+  if(provider==='demo') return demoCandles(symbol,outputsize,interval);
   if(!usesYahooFallback(symbol) && (provider==='twelvedata'||provider==='auto') && process.env.TWELVE_DATA_API_KEY){
     try{return await twelveDataCandles(symbol,interval,outputsize);}catch(e){ if(provider==='twelvedata') throw e; }
   }

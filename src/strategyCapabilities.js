@@ -1,5 +1,29 @@
 function status(){
   return {
+    intradayTrading:{
+      implemented:true,
+      executionMode:'gated-demo-compatible',
+      timeframes:['15m','30m'],
+      markets:String(process.env.INTRADAY_SYMBOLS||'EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,XAUUSD').split(',').map(x=>x.trim()).filter(Boolean),
+      primaryEdges:[
+        'trend continuation with 1H higher-timeframe alignment',
+        'range mean-reversion with RSI/Bollinger/momentum reversal confirmation',
+        'price-action structure and classical-pattern confirmation'
+      ],
+      design:{
+        probabilityFloor:Number(process.env.INTRADAY_MIN_PROBABILITY||0.60),
+        evidenceFloorPct:60,
+        targetHoldingWindow:'roughly 4–18 hours depending on selected 15m/30m plan',
+        rolloverGuard:'non-crypto entries blocked from 21:00–23:00 UTC',
+        costGuard:'intraday ATR must exceed estimated round-trip costs by at least 3x',
+        validation:'separate chronological purged models with untouched final holdout and minimum intraday history span'
+      },
+      limitations:[
+        'Historical bid/ask ticks are still unavailable, so spread/slippage costs remain conservative estimates.',
+        '15m/30m models must accumulate enough market-specific history and OOS selections before strict approval.',
+        'Fallback Yahoo-fed symbols remain research-only and cannot become automatic broker candidates.'
+      ]
+    },
     ctaTrendFollowing:{
       implemented:true,
       executionMode:'gated-demo-compatible',

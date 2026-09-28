@@ -299,7 +299,8 @@ function rangeReversionScore(row,side){
 function eligible(row,side,costBps,family='trend'){
   const sign=side==='LONG'?1:-1;
   const effectiveCostBps=Number(row.costBps??costBps??0);
-  if(Number(row.atr||0)/Math.max(Number(row.price||0),1e-12)*10000<effectiveCostBps*2)return false;
+  const costRangeMultiple=['15m','30m'].includes(String(row.timeframe||''))?3:2;
+  if(Number(row.atr||0)/Math.max(Number(row.price||0),1e-12)*10000<effectiveCostBps*costRangeMultiple)return false;
   if(family==='cta'){
     const score=Number(row.ctaScore||0),strength=Number(row.ctaTrendStrength||0);
     if(sign*score<.35||strength<.15)return false;
@@ -317,6 +318,10 @@ function eligible(row,side,costBps,family='trend'){
     return true;
   }
   if(row.regime!=='trend'||sign*Number(row.trend||0)<=0)return false;
+  if(['15m','30m'].includes(String(row.timeframe||''))){
+    if(!Number.isFinite(Number(row.higherTimeframeTrend)))return false;
+    if(sign*Number(row.higherTimeframeTrend)<=0)return false;
+  }
   if(side==='LONG'&&Number(row.priceAction?.bias||0)<-.34)return false;
   if(side==='SHORT'&&Number(row.priceAction?.bias||0)>.34)return false;
   const fundamentalBias=.6*Number(row.context?.macroBias||0)+.4*Number(row.context?.newsSentiment||0);
@@ -378,6 +383,18 @@ function examples(rows,symbol,costBps,planOptions={}){
   return out;
 }
 const PLAN_PROFILES=[
+  // Intraday profiles are intentionally timeframe-specific so entry expiry and
+  // maximum holding time stay inside the same trading day in normal conditions.
+  {name:'intraday-15m-range-0.8r',timeframes:['15m'],strategyFamily:'range',entryBufferAtr:.04,stopAtr:.9,targetR:.8,entryExpiryBars:4,holdBars:16},
+  {name:'intraday-15m-range-1r',timeframes:['15m'],strategyFamily:'range',entryBufferAtr:.05,stopAtr:1.0,targetR:1.0,entryExpiryBars:4,holdBars:24},
+  {name:'intraday-15m-trend-1r',timeframes:['15m'],strategyFamily:'trend',entryBufferAtr:.05,stopAtr:1.0,targetR:1.0,entryExpiryBars:4,holdBars:24},
+  {name:'intraday-15m-trend-1.25r',timeframes:['15m'],strategyFamily:'trend',entryBufferAtr:.06,stopAtr:1.1,targetR:1.25,entryExpiryBars:6,holdBars:40},
+  {name:'intraday-15m-trend-1.5r',timeframes:['15m'],strategyFamily:'trend',entryBufferAtr:.08,stopAtr:1.2,targetR:1.5,entryExpiryBars:8,holdBars:64},
+  {name:'intraday-30m-range-0.8r',timeframes:['30m'],strategyFamily:'range',entryBufferAtr:.04,stopAtr:.9,targetR:.8,entryExpiryBars:3,holdBars:12},
+  {name:'intraday-30m-range-1r',timeframes:['30m'],strategyFamily:'range',entryBufferAtr:.05,stopAtr:1.0,targetR:1.0,entryExpiryBars:3,holdBars:18},
+  {name:'intraday-30m-trend-1r',timeframes:['30m'],strategyFamily:'trend',entryBufferAtr:.05,stopAtr:1.0,targetR:1.0,entryExpiryBars:3,holdBars:16},
+  {name:'intraday-30m-trend-1.25r',timeframes:['30m'],strategyFamily:'trend',entryBufferAtr:.06,stopAtr:1.1,targetR:1.25,entryExpiryBars:4,holdBars:24},
+  {name:'intraday-30m-trend-1.5r',timeframes:['30m'],strategyFamily:'trend',entryBufferAtr:.08,stopAtr:1.2,targetR:1.5,entryExpiryBars:4,holdBars:36},
   {name:'cta-fast-2.5r',strategyFamily:'cta',entryBufferAtr:.05,stopAtr:1.75,targetR:2.5,entryExpiryBars:5,holdBars:30},
   {name:'cta-balanced-3r',strategyFamily:'cta',entryBufferAtr:.06,stopAtr:2.0,targetR:3.0,entryExpiryBars:5,holdBars:40},
   {name:'cta-wide-4r',strategyFamily:'cta',entryBufferAtr:.08,stopAtr:2.5,targetR:4.0,entryExpiryBars:7,holdBars:55},

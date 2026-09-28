@@ -92,3 +92,19 @@ test('daily CTA setup can be recorded and monitored',()=>{
   assert.equal(row.status,'PENDING_ENTRY');
   assert.ok(row.due_at>source+30*86_400_000);
 });
+
+
+test('15m intraday setup uses intraday lifecycle timing',()=>{
+  const source=20_000_000;
+  const row=monitor.record({
+    symbol:'EURUSD',timeframe:'15m',sourceCandleTs:source,
+    candidateDirection:'LONG',direction:'WAIT',leanDirection:'LONG',
+    probability:.66,setupProbability:.66,directionalProbability:.62,directionalMinProbability:.55,
+    minProbability:.60,price:1.1,modelId:15,modelVersion:'intraday-test',horizonBars:8,
+    costs:{total:5},filters:['Model has not passed out-of-sample validation gates'],priceAction:{bias:.3},analysis:{strategyMode:'intraday'},
+    tradePlan:{entry:1.101,stop:1.095,target:1.108,tp1:1.106,stopPips:60,targetPips:70,unitLabel:'pips',entryExpiryBars:4,holdBars:24}
+  });
+  assert.equal(row.qualified,1);
+  assert.equal(row.status,'PENDING_ENTRY');
+  assert.equal(row.due_at,source+(1+4+24)*900000);
+});
