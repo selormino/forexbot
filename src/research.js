@@ -141,20 +141,36 @@ function costs(symbol,at=null,featureContext=null){
   const total=spread+2*slippage+2*commission;
   return {baseSpread,spread,slippage,commission,financingBpsPerDay,total,sessionMultiplier,volatilityMultiplier,model:'session-volatility-estimate',observed:false};
 }
+function trendSnapshot(rows){
+  const c=(rows||[]).slice(-120);
+  if(c.length<60)return null;
+  const close=c.map(r=>Number(r.close)),high=c.map(r=>Number(r.high)),low=c.map(r=>Number(r.low));
+  const ema20=ti.EMA.calculate({period:20,values:close}).at(-1),ema50=ti.EMA.calculate({period:50,values:close}).at(-1);
+  const atr=ti.ATR.calculate({period:14,high,low,close}).at(-1);
+  if(![ema20,ema50,atr].every(Number.isFinite)||atr<=0)return null;
+  const trend=(ema20-ema50)/atr;
+  return {trend,regime:Math.abs(trend)>.8?'trend':'range'};
+}
 function dataset(symbol,tf){
   if(!ms(tf))throw new Error('Timeframe must be 15m, 30m, 1h, 4h or 1d');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts').all(symbol,tf,ms(tf),Date.now());
+  const higherTf=higherTimeframeFor(tf),higherRows=higherTf
+    ?db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? ORDER BY ts').all(symbol,higherTf)
+    :[];
+  let higherIndex=-1;
   const profiles=planProfilesFor(tf),maxPlanBars=profiles.length?Math.max(...profiles.map(p=>Number(p.entryExpiryBars||0)+Number(p.holdBars||0))):10;
   const out=[],horizon=horizonBars(tf),lookahead=Math.max(horizon+1,tf==='1d'?70:maxPlanBars+2);
   for(let i=59;i+lookahead<rows.length;i++){
     const at=rows[i].ts+ms(tf),f=features(rows.slice(Math.max(0,i-119),i+1),symbol,at),rowCost=costs(symbol,at,f);
+    while(higherIndex+1<higherRows.length&&higherRows[higherIndex+1].ts+ms(higherTf)<=at)higherIndex++;
+    const higher= higherTf&&higherIndex>=59 ? trendSnapshot(higherRows.slice(Math.max(0,higherIndex-119),higherIndex+1)) : null;
     const segment=rows.slice(i,i+lookahead+1);
     if(segment.some((row,j)=>row.provider!==rows[i].provider||(j&&!continuousGap(segment[j-1].ts,row.ts,tf))))continue;
     const ret=rows[i+horizon].close/rows[i+1].open-1;
     const priceAction={bias:Number(f.priceAction?.bias||0),breakoutUp:!!f.priceAction?.breakoutUp,breakoutDown:!!f.priceAction?.breakoutDown,supportPrice:Number(f.priceAction?.supportPrice),resistancePrice:Number(f.priceAction?.resistancePrice),swingSupportPrice:Number(f.priceAction?.swingSupportPrice),swingResistancePrice:Number(f.priceAction?.swingResistancePrice)};
     const context={macroAvailable:!!f.context?.macroAvailable,newsAvailable:!!f.context?.newsAvailable,newsSentiment:Number(f.context?.newsSentiment||0),macroBias:Number(f.context?.macroBias||0)};
     out.push({
-      timeframe:tf,price:f.price,atr:f.atr,trend:f.trend,technicalBias:f.technicalBias,regime:f.regime,ctaScore:f.cta.score,ctaTrendStrength:f.cta.trendStrength,
+      timeframe:tf,price:f.price,atr:f.atr,trend:f.trend,higherTimeframeTrend:higher?.trend??null,higherTimeframeRegime:higher?.regime??null,technicalBias:f.technicalBias,regime:f.regime,ctaScore:f.cta.score,ctaTrendStrength:f.cta.trendStrength,
       priceAction,context,x:f.x,costBps:rowCost.total,financingBpsPerDay:rowCost.financingBpsPerDay,barMs:ms(tf),costModel:rowCost.model,
       at,end:rows[i+horizon].ts+ms(tf),setupEnd:rows[i+lookahead].ts+ms(tf),ret,y:ret>0?1:0,
       futureBars:rows.slice(i+1,i+lookahead+1).map(row=>({ts:row.ts,open:row.open,high:row.high,low:row.low,close:row.close}))
@@ -894,4 +910,4 @@ function chartSnapshot(symbol,tf='1h',{limit=90,at=null}={}){
   };
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
-module.exports={VERSION,ms,isIntraday,strategyThreshold,horizonBars,planProfilesFor,higherTimeframeFor,continuousGap,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,stableSideGate,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,chartSnapshot,status,setupModel};
+module.exports={VERSION,ms,isIntraday,strategyThreshold,horizonBars,planProfilesFor,higherTimeframeFor,trendSnapshot,continuousGap,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,stableSideGate,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,chartSnapshot,status,setupModel};
