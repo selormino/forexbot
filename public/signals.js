@@ -166,7 +166,7 @@ function opportunityCard(s,i,{compact=false}={}){
    '<div class="operator-buttons"><button class="small-btn" onclick="showChart('+i+')">Chart</button><button class="small-btn" onclick="explain('+i+')">Why?</button>'+(q.status==='STRICT'?'<button class="small-btn primary" onclick="trade('+i+')">XM preview</button>':'')+'</div>'+
  '</div>';
 }
-function renderOperator(rows,m,broker,intents,ops){
+function renderOperator(rows,m,broker,intents,ops,storage){
  const now=new Date(),qs=rows.map((s,i)=>({s,i,q:qualification(s)})).sort((a,b)=>b.q.score-a.q.score);
  const strict=qs.filter(x=>x.q.status==='STRICT');
  const brokerPending=(intents||[]).filter(x=>intentState(x)==='pending');
@@ -199,7 +199,12 @@ function renderOperator(rows,m,broker,intents,ops){
    '<div><span class="dot '+(brokerOk?'ok':'')+'"></span><div><b>XM bridge</b><small>'+(brokerOk?'Connected and account available':'Broker connection needs attention')+'</small></div></div>'+
    '<div><span class="health-icon">↻</span><div><b>Market/research cycle</b><small>'+(cadence?'Every '+cadence+' minutes':'Configured by worker')+' · closed candles only</small></div></div>'+
    '<div><span class="health-icon">⚡</span><div><b>Broker reconciliation</b><small>'+(ops?.brokerReconcileSeconds?'Every '+ops.brokerReconcileSeconds+' seconds':'Not enabled')+'</small></div></div>'+
-   '<div><span class="health-icon">M</span><div><b>Research model</b><small>'+esc(ops?.researchVersion||'—')+'</small></div></div>';
+   '<div><span class="health-icon">M</span><div><b>Research model</b><small>'+esc(ops?.researchVersion||'—')+'</small></div></div>'+
+   '<div><span class="health-icon">D</span><div><b>Persistent storage</b><small>'+(
+     storage?.current?.files?.capacityMB
+       ? num(storage.current.files.sqliteFilesMB)+' MB SQLite / '+num(storage.current.files.capacityMB)+' MB volume · '+num(storage.current.files.percentOfConfiguredCapacity)+'%'
+       : num(storage?.current?.files?.sqliteFilesMB)+' MB SQLite'
+   )+'</small></div></div>';
  renderTradeNow(qs,intents);
  renderWatching(qs);
  renderNearQualification(qs);
@@ -355,9 +360,9 @@ function renderHistory(rows){historyRows=rows||[];$('signalHistory').innerHTML=h
 
 window.load=async()=>{
  try{
-  const [m,b,h,e,s,broker,x,ops]=await Promise.all([get('/api/signals/metrics'),get('/api/signals/board'),get('/api/signals/history?limit=200'),get('/api/research/edge'),get('/api/settings'),get('/api/broker/status'),get('/api/execution/intents?limit=100'),get('/api/operations/status')]);
+  const [m,b,h,e,s,broker,x,ops,storage]=await Promise.all([get('/api/signals/metrics'),get('/api/signals/board'),get('/api/signals/history?limit=200'),get('/api/research/edge'),get('/api/settings'),get('/api/broker/status'),get('/api/execution/intents?limit=100'),get('/api/operations/status'),get('/api/storage/status')]);
   executionIntents=x||[];operationsStatus=ops||{};settings=s;board=b||[];
-  renderSettings(s);renderBroker(broker);renderOperator(board,m,broker,executionIntents,operationsStatus);
+  renderSettings(s);renderBroker(broker);renderOperator(board,m,broker,executionIntents,operationsStatus,storage);
   renderAccuracy(m);renderBoard(board);renderHistory(h);renderEdge(e);renderSeries(m);renderBrokerActivity(executionIntents);
  }catch(e){toast(friendly(e))}
 };

@@ -8,6 +8,7 @@ const signalMonitor=require('./signalMonitor');
 const brokerBridge=require('./brokerBridge');
 const settings=require('./settings');
 const strategyCapabilities=require('./strategyCapabilities');
+const storageMaintenance=require('./storageMaintenance');
 const app=express();app.use(helmet({contentSecurityPolicy:false}));app.use(cors());app.use(express.json({limit:'1mb'}));app.use(express.static(path.join(__dirname,'../public')));
 const enabled=()=>process.env.TRADING_ENABLED==='true';
 const admin=(req,res,next)=>{const configured=process.env.ADMIN_API_KEY;if(!configured)return res.status(503).json({error:'ADMIN_API_KEY is not configured'});const supplied=req.get('x-admin-token')||String(req.get('authorization')||'').replace(/^Bearer\s+/i,'');if(supplied!==configured)return res.status(401).json({error:'Invalid admin token'});next();};
@@ -28,6 +29,8 @@ app.get('/api/operations/status',(req,res)=>res.json({
   timeframes:String(process.env.HISTORICAL_TIMEFRAMES||'1h,4h,1d').split(',').map(x=>x.trim()).filter(Boolean),
   executionMode:String(process.env.EXECUTION_MODE||'off').toLowerCase()
 }));
+app.get('/api/storage/status',(req,res)=>res.json(storageMaintenance.status()));
+app.post('/api/storage/maintenance',(req,res)=>{try{res.json(storageMaintenance.run());}catch(e){res.status(500).json({error:e.message});}});
 app.get('/api/research/edge',(req,res)=>{const models=research.status();res.json({version:research.VERSION,target:Number(process.env.SIGNAL_TARGET_ACCURACY||.70),series:models.map(m=>({symbol:m.symbol,timeframe:m.timeframe,approved:m.approved,samples:m.samples,setupBacktest:m.setupBacktest,setupProbability:m.setupProbability,thresholdSweep:m.thresholdSweep||[],contextSamples:m.contextSamples||0,fundamentalCoverage:m.fundamentalCoverage||0,newsCoverage:m.newsCoverage||0}))});});
 app.get('/api/signals/metrics',(req,res)=>res.json(signalMonitor.metrics()));
 app.get('/api/signals/history',(req,res)=>res.json(signalMonitor.history(req.query.limit)));
