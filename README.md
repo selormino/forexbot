@@ -138,6 +138,27 @@ Automatic demo dispatch also has a forward-performance guard. After `AUTO_PERFOR
 
 The MT5 bridge rejects an order when the live broker spread consumes too much of the planned stop or target. Use `MAX_SPREAD_STOP_RATIO` and `MAX_SPREAD_TARGET_RATIO` on the bridge host to tune those execution-cost guards.
 
+## Storage retention and volume health
+
+ForexBot stores market history and research artifacts in SQLite on the Railway volume. To prevent the persistent database from growing without bound, the background worker runs storage maintenance at most once per `STORAGE_MAINTENANCE_HOURS` (default 24 hours).
+
+The maintenance policy is deliberately conservative:
+
+- signal/trade outcomes are preserved;
+- current research keeps the most recent `STORAGE_RESEARCH_KEEP_PER_SERIES` snapshots per market/timeframe;
+- only the newest `STORAGE_RESEARCH_KEEP_VERSIONS` research versions are retained, with one snapshot per market/timeframe for older retained versions;
+- ingestion-run logs older than `STORAGE_INGESTION_RUN_DAYS` are removed;
+- legacy backtests/models are capped;
+- candle history is capped at `STORAGE_CANDLE_MAX_PER_SERIES` per symbol/timeframe (default 20,000);
+- orphaned legacy observations are removed after candle pruning;
+- SQLite runs a WAL checkpoint and `PRAGMA optimize` after maintenance.
+
+Automatic maintenance does **not** run `VACUUM`, because a full vacuum can temporarily require another database-sized copy and can block writers. Freed SQLite pages are instead reused by future writes, which stops rapid filesystem growth without risking the active service.
+
+Research retraining is also throttled independently from the 15-minute scan cycle using `MODEL_TRAIN_INTERVAL_MINUTES` (default 60). Signals continue to scan on their existing cadence; expensive model snapshots are no longer written every 15 minutes when nothing requires that frequency.
+
+Use `GET /api/storage/status` to see SQLite file sizes, reclaimable pages, configured volume capacity, table row counts, retention policy, and the last cleanup run. `POST /api/storage/maintenance` requires the admin token and performs an immediate safe cleanup.
+
 ## Operator console
 
 The primary `/signals.html` experience is an operator console rather than a research dump. It answers four questions first: whether any action is required, whether XM is monitoring/filling an order, which market is currently closest to qualification, and exactly which blockers remain.
