@@ -8,7 +8,8 @@ function vector(row,side){
   const x=(row.x||[]).map(v=>Number(v)||0);
   const signed=x.map(v=>sign*v);
   const magnitude=x.slice(0,16).map(v=>Math.abs(v));
-  return [sign,...signed,...magnitude];
+  const higherTrend=Number.isFinite(Number(row.higherTimeframeTrend))?Math.tanh(Number(row.higherTimeframeTrend)):0;
+  return [sign,...signed,...magnitude,sign*higherTrend];
 }
 function fit(rows){
   if(rows.length<100)throw new Error('Insufficient triggered setup samples');
@@ -318,6 +319,10 @@ function eligible(row,side,costBps,family='trend'){
     return true;
   }
   if(row.regime!=='trend'||sign*Number(row.trend||0)<=0)return false;
+  if(['15m','30m'].includes(String(row.timeframe||''))){
+    if(!Number.isFinite(Number(row.higherTimeframeTrend)))return false;
+    if(sign*Number(row.higherTimeframeTrend)<=0)return false;
+  }
   if(side==='LONG'&&Number(row.priceAction?.bias||0)<-.34)return false;
   if(side==='SHORT'&&Number(row.priceAction?.bias||0)>.34)return false;
   const fundamentalBias=.6*Number(row.context?.macroBias||0)+.4*Number(row.context?.newsSentiment||0);
