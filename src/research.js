@@ -154,7 +154,7 @@ function dataset(symbol,tf){
     const priceAction={bias:Number(f.priceAction?.bias||0),breakoutUp:!!f.priceAction?.breakoutUp,breakoutDown:!!f.priceAction?.breakoutDown,supportPrice:Number(f.priceAction?.supportPrice),resistancePrice:Number(f.priceAction?.resistancePrice),swingSupportPrice:Number(f.priceAction?.swingSupportPrice),swingResistancePrice:Number(f.priceAction?.swingResistancePrice)};
     const context={macroAvailable:!!f.context?.macroAvailable,newsAvailable:!!f.context?.newsAvailable,newsSentiment:Number(f.context?.newsSentiment||0),macroBias:Number(f.context?.macroBias||0)};
     out.push({
-      price:f.price,atr:f.atr,trend:f.trend,technicalBias:f.technicalBias,regime:f.regime,ctaScore:f.cta.score,ctaTrendStrength:f.cta.trendStrength,
+      timeframe:tf,price:f.price,atr:f.atr,trend:f.trend,technicalBias:f.technicalBias,regime:f.regime,ctaScore:f.cta.score,ctaTrendStrength:f.cta.trendStrength,
       priceAction,context,x:f.x,costBps:rowCost.total,financingBpsPerDay:rowCost.financingBpsPerDay,barMs:ms(tf),costModel:rowCost.model,
       at,end:rows[i+horizon].ts+ms(tf),setupEnd:rows[i+lookahead].ts+ms(tf),ret,y:ret>0?1:0,
       futureBars:rows.slice(i+1,i+lookahead+1).map(row=>({ts:row.ts,open:row.open,high:row.high,low:row.low,close:row.close}))
@@ -772,7 +772,7 @@ function signal(symbol,tf='1h',events=null){
       const hRows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts DESC LIMIT 120').all(symbol,higherTf,ms(higherTf),now).reverse();
       const hf=features(hRows,symbol,now);higherTimeframe={timeframe:higherTf,trend:hf.trend,regime:hf.regime,priceAction:hf.priceAction.structure};
       if(strategyFamily==='trend'&&(lean==='LONG'?1:-1)*hf.trend<0)reasons.push(higherTf.toUpperCase()+' trend conflicts with '+tf.toUpperCase()+' directional lean');
-    }catch{}
+    }catch{if(isIntraday(tf))reasons.push('Missing 1H higher-timeframe confirmation');}
   }
   if(isIntraday(tf)&&!['BTCUSD','ETHUSD','SOLUSD','XRPUSD','LTCUSD'].includes(symbol)&&f.session.utcHour>=21&&f.session.utcHour<23)reasons.push('Intraday execution paused during the 21:00–23:00 UTC rollover/liquidity window');
   const costRangeMultiplier=isIntraday(tf)?3:2;
@@ -787,8 +787,9 @@ function signal(symbol,tf='1h',events=null){
   }else if(strategyFamily==='cta'){
     if(confluence.agreement<60)reasons.push('Daily CTA trend evidence is below 60% agreement');
   }else if(confluence.score<.12)reasons.push('Technical and fundamental evidence lacks directional confluence');
+  const eventLookbackMs=isIntraday(tf)?90*60000:3600000;
   const relevantEvents=Array.isArray(events)?events.filter(e=>{
-    const t=new Date(e.time).getTime();return Number.isFinite(t)&&t>=now-3600000&&t<=now+24*3600000;
+    const t=new Date(e.time).getTime();return Number.isFinite(t)&&t>=now-eventLookbackMs&&t<=now+24*3600000;
   }).sort((a,b)=>new Date(a.time)-new Date(b.time)).slice(0,5):[];
   if(strategyFamily!=='cta'){
     const eventWindowMs=isIntraday(tf)?90*60000:3600000;
@@ -805,7 +806,7 @@ function signal(symbol,tf='1h',events=null){
     `EMA20 slope ${Number(f.emaSlope||0).toFixed(2)} ATR · 5-bar momentum ${Number(f.momentum5||0).toFixed(2)} ATR`,
     `Bollinger position ${(f.bollinger.position*100).toFixed(0)}% of band`,
     `Volatility regime: ${f.regime}`,
-    `CTA score ${Number(f.cta?.score||0).toFixed(2)} · 20-day momentum ${Number(f.cta?.momentum20Atr||0).toFixed(2)} ATR · 60-day momentum ${Number(f.cta?.momentum60Atr||0).toFixed(2)} ATR · 55-day channel position ${Number(f.cta?.breakoutPosition||0).toFixed(2)}`
+    `CTA score ${Number(f.cta?.score||0).toFixed(2)} · 20-${tf==='1d'?'day':'bar'} momentum ${Number(f.cta?.momentum20Atr||0).toFixed(2)} ATR · 60-${tf==='1d'?'day':'bar'} momentum ${Number(f.cta?.momentum60Atr||0).toFixed(2)} ATR · 55-${tf==='1d'?'day':'bar'} channel position ${Number(f.cta?.breakoutPosition||0).toFixed(2)}`
   ];
   const confirmations=[];
   if(strategyFamily==='range'){
@@ -893,4 +894,4 @@ function chartSnapshot(symbol,tf='1h',{limit=90,at=null}={}){
   };
 }
 function status(){return db.prepare('SELECT symbol,timeframe,MAX(id) id FROM research_models WHERE version=? GROUP BY symbol,timeframe').all(VERSION).map(r=>latest(r.symbol,r.timeframe).report);}
-module.exports={VERSION,ms,strategyThreshold,horizonBars,continuousGap,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,stableSideGate,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,chartSnapshot,status,setupModel};
+module.exports={VERSION,ms,isIntraday,strategyThreshold,horizonBars,planProfilesFor,higherTimeframeFor,continuousGap,snapshot,captureMacro,recordNews,context,features,costs,dataset,poolSplitRows,assetFamily,chooseTargetPlanFallback,chooseValidatedSides,stableSideGate,policyOperatingStats,adaptSetupModel,jointPolicyExamples,fitDirectionalModel,fitTargetSetupFallback,fit,calibrate,predict,evaluate,evaluateTradePlans,thresholdDiagnostics,split,trainSeries,signal,chartSnapshot,status,setupModel};
