@@ -7,6 +7,7 @@ const signalMonitor=require('./signalMonitor');
 const brokerBridge=require('./brokerBridge');
 const execution=require('./execution');
 const {syncMacro,syncPointInTimeMacro}=require('./macro');
+const storageMaintenance=require('./storageMaintenance');
 
 const sleepImmediate=()=>new Promise(resolve=>setImmediate(resolve));
 let syncing=false;
@@ -205,7 +206,9 @@ async function runCycle({bootstrap=false}={}){
     const newsRuns=await collectNews();
     const market=process.env.HISTORY_AUTO_SYNC==='true'?await history.syncHistory():[];
     const settledSignals=signalMonitor.settle();
-    const learning=await trainAll();
+    const storage=storageMaintenance.maybeRun();
+    const trainingPolicy=storageMaintenance.shouldTrainResearch(research.VERSION);
+    const learning=trainingPolicy.due?await trainAll():[];
     const {recordedSignals,generatedSignals}=await generateSignals();
     const autoDemoRuns=await autoDemoStrict(generatedSignals);
     const autoResearchDemoRuns=await autoDemoResearch(generatedSignals);
@@ -232,7 +235,7 @@ async function runCycle({bootstrap=false}={}){
     console.log(JSON.stringify({
       event:bootstrap?'signal-bootstrap':'research-sync',
       role:'background-worker',version:research.VERSION,startedAt,finishedAt:Date.now(),durationMs:Date.now()-startedAt,
-      historyBackfill,macro,macroVintages,newsRuns,market,settledSignals,learning:learningSummary,
+      historyBackfill,macro,macroVintages,newsRuns,market,settledSignals,storage,trainingPolicy,learning:learningSummary,
       recordedSignals,autoDemoRuns,autoResearchDemoRuns,brokerHealth,signalMetrics:signalMonitor.metrics(),executionRuns
     }));
     return {ok:true,approvedCount};
