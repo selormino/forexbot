@@ -7,17 +7,36 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v39-cta-trend';
+const VERSION='technical-fundamental-v40-intraday';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
 CREATE TABLE IF NOT EXISTS research_models(id INTEGER PRIMARY KEY,created_at INTEGER,symbol TEXT,timeframe TEXT,version TEXT,model TEXT,report TEXT,approved INTEGER);
 CREATE INDEX IF NOT EXISTS context_lookup ON context_snapshots(kind,symbol,known_at);
 CREATE INDEX IF NOT EXISTS news_lookup ON news_history(symbol,known_at);`);
-const ms=tf=>({'1h':3600000,'4h':14400000,'1d':86400000}[tf]||0);
-const strategyThreshold=tf=>tf==='1d'?Math.max(.30,Math.min(.70,Number(process.env.CTA_MIN_PROBABILITY||.40))):MIN_PROB();
-const horizonBars=tf=>tf==='1d'?10:4;
-const planProfilesFor=tf=>setupModel.PLAN_PROFILES.filter(p=>tf==='1d'?p.strategyFamily==='cta':p.strategyFamily!=='cta');
+const INTRADAY_TIMEFRAMES=new Set(['15m','30m']);
+const ms=tf=>({'15m':900000,'30m':1800000,'1h':3600000,'4h':14400000,'1d':86400000}[tf]||0);
+const isIntraday=tf=>INTRADAY_TIMEFRAMES.has(tf);
+const strategyThreshold=tf=>tf==='1d'
+  ?Math.max(.30,Math.min(.70,Number(process.env.CTA_MIN_PROBABILITY||.40)))
+  :isIntraday(tf)
+    ?Math.max(.50,Math.min(.85,Number(process.env.INTRADAY_MIN_PROBABILITY||MIN_PROB())))
+    :MIN_PROB();
+const horizonBars=tf=>tf==='15m'?8:tf==='30m'?6:tf==='1d'?10:4;
+const planProfilesFor=tf=>setupModel.PLAN_PROFILES.filter(p=>{
+  if(tf==='1d')return p.strategyFamily==='cta';
+  if(isIntraday(tf))return Array.isArray(p.timeframes)&&p.timeframes.includes(tf);
+  return p.strategyFamily!=='cta'&&!Array.isArray(p.timeframes);
+});
+const higherTimeframeFor=tf=>({'15m':'1h','30m':'1h','1h':'4h'}[tf]||null);
+const strategyModeFor=tf=>tf==='1d'?'cta-daily':isIntraday(tf)?'intraday-'+tf:'standard';
+const defaultPlanFor=tf=>tf==='1d'
+  ?{name:'cta-default-3r',strategyFamily:'cta',entryBufferAtr:.06,stopAtr:2.0,targetR:3.0,entryExpiryBars:5,holdBars:40}
+  :tf==='15m'
+    ?{name:'intraday-15m-default-1.25r',strategyFamily:'trend',entryBufferAtr:.06,stopAtr:1.1,targetR:1.25,entryExpiryBars:6,holdBars:40}
+    :tf==='30m'
+      ?{name:'intraday-30m-default-1.25r',strategyFamily:'trend',entryBufferAtr:.06,stopAtr:1.1,targetR:1.25,entryExpiryBars:4,holdBars:24}
+      :{name:'default',entryBufferAtr:.12,stopAtr:1.4,targetR:1.6,entryExpiryBars:4,holdBars:6};
 const continuousGap=(prev,next,tf)=>{
   const step=ms(tf),delta=Number(next)-Number(prev);
   if(!step||delta<step)return false;
@@ -123,9 +142,10 @@ function costs(symbol,at=null,featureContext=null){
   return {baseSpread,spread,slippage,commission,financingBpsPerDay,total,sessionMultiplier,volatilityMultiplier,model:'session-volatility-estimate',observed:false};
 }
 function dataset(symbol,tf){
-  if(!ms(tf))throw new Error('Timeframe must be 1h, 4h or 1d');
+  if(!ms(tf))throw new Error('Timeframe must be 15m, 30m, 1h, 4h or 1d');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts').all(symbol,tf,ms(tf),Date.now());
-  const out=[],horizon=horizonBars(tf),lookahead=tf==='1d'?70:10;
+  const profiles=planProfilesFor(tf),maxPlanBars=profiles.length?Math.max(...profiles.map(p=>Number(p.entryExpiryBars||0)+Number(p.holdBars||0))):10;
+  const out=[],horizon=horizonBars(tf),lookahead=Math.max(horizon+1,tf==='1d'?70:maxPlanBars+2);
   for(let i=59;i+lookahead<rows.length;i++){
     const at=rows[i].ts+ms(tf),f=features(rows.slice(Math.max(0,i-119),i+1),symbol,at),rowCost=costs(symbol,at,f);
     const segment=rows.slice(i,i+lookahead+1);
@@ -518,7 +538,7 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
     const pooledChosen=setupModel.choosePlan(candidates,Math.max(40,Math.floor(peerParts.reduce((sum,peer)=>sum+peer.parts.tune.length,0)*.02)));
     const chosen=pooledChosen||targetPlanFallback?.chosen||null;
     const planSource=pooledChosen?'pooled-family':targetPlanFallback?.chosen?'target-local-fallback':'generic-default';
-    const planOptions=chosen?.planOptions||(tf==='1d'?{name:'cta-default-3r',strategyFamily:'cta',entryBufferAtr:.06,stopAtr:2.0,targetR:3.0,entryExpiryBars:5,holdBars:40}:{name:'default',entryBufferAtr:.12,stopAtr:1.4,targetR:1.6,entryExpiryBars:4,holdBars:6});
+    const planOptions=chosen?.planOptions||defaultPlanFor(tf);
     const trainExamples=[],calExamples=[];
     for(const peer of peerParts){
       trainExamples.push(...setupModel.examples(peer.parts.train,peer.peer,peer.cost,planOptions));
@@ -562,7 +582,7 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
   const policyCalibration=allowedCalibration.filter(x=>setupModel.predict(adapted.model,x.z)>=threshold);
   const distributionGates=setupModel.fitSideDistributionGates(policyCalibration,{model:adapted.model,maxFeatures:10,quantile:.90});
   const distributionAllowedSides=sideGate.allowedSides.filter(side=>!!distributionGates[side]);
-  const finalModel={...adapted.model,allowedSides:distributionAllowedSides,distributionGates,strategyMode:tf==='1d'?'cta-daily':xau4hLongOnly?'xauusd-4h-long-only':'standard'};
+  const finalModel={...adapted.model,allowedSides:distributionAllowedSides,distributionGates,strategyMode:xau4hLongOnly?'xauusd-4h-long-only':strategyModeFor(tf)};
   const allowedTestBeforeGate=rawTargetExamples.filter(x=>sideGate.allowedSides.includes(x.side));
   const rawPolicyTest=setupModel.statsAt(adapted.model,allowedTestBeforeGate,threshold);
   const allowedTest=rawTargetExamples.filter(x=>distributionAllowedSides.includes(x.side));
@@ -576,7 +596,7 @@ function pooledSetup(symbol,tf,targetParts,threshold,directionalModel=null,direc
   const distributionReport={
     type:'policy-aligned-robust',
     quantile:.90,maxFeatures:10,rawPolicyTest,
-    strategyMode:tf==='1d'?'cta-daily':xau4hLongOnly?'xauusd-4h-long-only':'standard',
+    strategyMode:xau4hLongOnly?'xauusd-4h-long-only':strategyModeFor(tf),
     regimeValidation:{...regimeValidation,allowedRegimes:regimeAllowed,testAfter:targetExamples.length},
     allowedSidesBefore:sideGate.allowedSides,allowedSidesAfter:distributionAllowedSides,
     calibrationBefore:allowedCalibration.length,policyCalibration:policyCalibration.length,calibrationAfter:targetCalSelected.length,
@@ -632,12 +652,14 @@ function trainSeries(symbol,tf){
     folds.push({...evaluate(foldModel,parts.test,cost.total),directionalModelCompetition:directionalFold.comparison,setup:evaluateTradePlans(foldModel,parts.test,symbol,cost.total,threshold,setupFold.planOptions||{}),setupProbability:setupFold});
   }
   const setupReport=setupTraining.report;
-  const requiredSelections=symbol==='XAUUSD'&&tf==='4h'?50:30;
+  const requiredSelections=isIntraday(tf)?50:(symbol==='XAUUSD'&&tf==='4h'?50:30);
   const minProfitFactor=Math.max(1,Number(process.env.RESEARCH_MIN_PROFIT_FACTOR||1.10));
-  const setupApproved=setupReport.status==='trained'&&setupReport.selected>=requiredSelections&&(setupReport.averageR||0)>0&&(setupReport.expectancyLower95??-Infinity)>0&&(setupReport.profitFactorR??0)>=minProfitFactor&&setupReport.logLoss<setupReport.baselineLoss&&(setupReport.worstRolling20R===null||setupReport.worstRolling20R>0);
+  const historyDays=rows.length>1?(rows.at(-1).at-rows[0].at)/86400000:0;
+  const minHistoryDays=isIntraday(tf)?Math.max(30,Number(process.env.INTRADAY_MIN_HISTORY_DAYS||90)):0;
+  const setupApproved=setupReport.status==='trained'&&setupReport.selected>=requiredSelections&&historyDays>=minHistoryDays&&(setupReport.averageR||0)>0&&(setupReport.expectancyLower95??-Infinity)>0&&(setupReport.profitFactorR??0)>=minProfitFactor&&setupReport.logLoss<setupReport.baselineLoss&&(setupReport.worstRolling20R===null||setupReport.worstRolling20R>0);
   const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||((f.setupProbability.recommendedTest.averageR||0)>0&&(f.setupProbability.recommendedTest.profitFactorR===null||f.setupProbability.recommendedTest.profitFactorR>1))));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,minProfitFactor,approved,approvalRule:'v38 is expectancy-first. All plan/model/side/distribution/regime selection remains pre-test-only, and the final chronological test window stays untouched. Approval requires enough market-specific OOS selections, positive average R after conservative dynamic costs, a positive 95% lower confidence bound for mean R, profit factor at or above the configured floor, positive rolling-20R stability, baseline-beating probability loss, and chronological fold stability. Win rate is reported but is not an approval target.',costModel:'Session/volatility-adjusted estimated spread + slippage + commission, plus financing estimate by holding time. Historical broker bid/ask/tick costs are not yet available.',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,historyDays,minHistoryDays,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,minProfitFactor,approved,approvalRule:'v40 is expectancy-first. Intraday models are separate 15m/30m research series with timeframe-specific trade plans, minimum history-span requirements, conservative cost gates and higher-timeframe confirmation. All plan/model/side/distribution selection remains pre-test-only, and the final chronological test window stays untouched. Approval requires enough market-specific OOS selections, positive average R after costs, a positive 95% lower confidence bound for mean R, profit factor at or above the configured floor, rolling stability, baseline-beating probability loss, and chronological fold stability. Win rate is diagnostic, not the optimization target.',costModel:'Session/volatility-adjusted estimated spread + slippage + commission, plus financing estimate by holding time. Historical broker bid/ask/tick costs are not yet available.',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
