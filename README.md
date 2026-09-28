@@ -119,7 +119,7 @@ Run `npm test` locally. GitHub CI also runs syntax checks and price-action unit 
 
 Research v40 adds dedicated **15-minute and 30-minute** models so ForexBot can identify opportunities that are intended to resolve within the same trading day rather than waiting mainly on 4H/1D setups.
 
-The intraday layer is not just the 4H strategy copied onto a smaller chart. It uses separate timeframe-specific plan candidates:
+The intraday layer is not just the 4H strategy copied onto a smaller chart. By default it focuses on the liquid `EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, XAUUSD` set (configurable with `INTRADAY_SYMBOLS`) rather than multiplying API load across every crypto/commodity symbol. It uses separate timeframe-specific plan candidates:
 
 - trend continuation entries with 1H higher-timeframe alignment;
 - range mean-reversion entries using RSI/Bollinger/momentum reversal evidence;
