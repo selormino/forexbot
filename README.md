@@ -47,6 +47,7 @@ ALFRED_AVAILABILITY_LAG_DAYS=1
 ADMIN_API_KEY=<generate-a-long-random-value>
 HISTORY_AUTO_SYNC=true
 HISTORY_SYNC_MINUTES=60
+HISTORICAL_TIMEFRAMES=15m,30m,1h,4h,1d
 HISTORY_REQUEST_DELAY_MS=8500
 MODEL_AUTO_TRAIN=true
 MODEL_MIN_NEW_OBSERVATIONS=50
@@ -113,6 +114,24 @@ The current model version includes price-action features in every training row a
 ## Quality gates
 Run `npm test` locally. GitHub CI also runs syntax checks and price-action unit tests on pushes and pull requests.
 
+
+## Intraday 15m/30m strategy
+
+Research v40 adds dedicated **15-minute and 30-minute** models so ForexBot can identify opportunities that are intended to resolve within the same trading day rather than waiting mainly on 4H/1D setups.
+
+The intraday layer is not just the 4H strategy copied onto a smaller chart. It uses separate timeframe-specific plan candidates:
+
+- trend continuation entries with 1H higher-timeframe alignment;
+- range mean-reversion entries using RSI/Bollinger/momentum reversal evidence;
+- existing price-action structure and classical chart patterns such as head-and-shoulders, flags, triangles and double tops/bottoms;
+- tighter intraday entry-expiry windows and holding limits, with typical selected plan windows of roughly 4–18 hours;
+- a stricter cost/range gate because spread and slippage consume a larger fraction of a 15m/30m move;
+- a 21:00–23:00 UTC rollover/liquidity block for non-crypto intraday entries;
+- a wider high-impact-news exclusion window of 90 minutes.
+
+Intraday model approval remains expectancy-first. Each 15m/30m series must have at least the configured history span (default 90 days), enough untouched OOS selections, positive average R after costs, a positive 95% lower expectancy bound, acceptable profit factor and chronological fold stability. Until those gates pass, qualifying 60%+ probability/evidence setups remain demo-research candidates or internal shadow observations rather than approved live-quality signals.
+
+The bootstrap worker can seed up to 5,000 recent bars per series and then page older Twelve Data history to `INTRADAY_BACKFILL_TARGET_BARS` (default 10,000). Yahoo fallback markets remain research-only.
 
 ## CTA trend-following strategy
 
