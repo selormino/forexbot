@@ -10,6 +10,7 @@ const {syncMacro,syncPointInTimeMacro}=require('./macro');
 const storageMaintenance=require('./storageMaintenance');
 
 const sleepImmediate=()=>new Promise(resolve=>setImmediate(resolve));
+const SIGNAL_TIMEFRAMES=['15m','30m','1h','4h','1d'];
 let syncing=false;
 
 async function autoDemoStrict(signals){
@@ -105,7 +106,7 @@ async function trainAll(){
   if(process.env.MODEL_AUTO_TRAIN!=='true')return learning;
   const priority=[['XAUUSD','4h']];
   const rest=[];
-  for(const timeframe of ['4h','1h','1d'])for(const symbol of SYMBOLS){
+  for(const timeframe of ['30m','15m','1h','4h','1d'])for(const symbol of SYMBOLS){
     if(symbol==='XAUUSD'&&timeframe==='4h')continue;
     rest.push([symbol,timeframe]);
   }
@@ -170,7 +171,7 @@ async function trainAll(){
 
 async function generateSignals(){
   const events=await calendar().catch(()=>null),recordedSignals=[],generatedSignals=[];
-  for(const symbol of SYMBOLS)for(const timeframe of ['1h','4h','1d']){
+  for(const symbol of SYMBOLS)for(const timeframe of SIGNAL_TIMEFRAMES){
     try{
       const signal=research.signal(symbol,timeframe,events);
       generatedSignals.push(signal);
@@ -205,6 +206,13 @@ async function runCycle({bootstrap=false}={}){
     research.captureMacro();
     const newsRuns=await collectNews();
     const market=process.env.HISTORY_AUTO_SYNC==='true'?await history.syncHistory():[];
+    const intradayBackfill=bootstrap&&process.env.INTRADAY_BACKFILL_ENABLED==='true'
+      ?await history.backfillHistory({
+          timeframes:['15m','30m'],
+          targetBars:Number(process.env.INTRADAY_BACKFILL_TARGET_BARS||10000),
+          maxPages:Number(process.env.INTRADAY_BACKFILL_PAGES||1)
+        })
+      :[];
     const settledSignals=signalMonitor.settle();
     const storage=storageMaintenance.maybeRun();
     const trainingPolicy=storageMaintenance.shouldTrainResearch(research.VERSION);
@@ -235,7 +243,7 @@ async function runCycle({bootstrap=false}={}){
     console.log(JSON.stringify({
       event:bootstrap?'signal-bootstrap':'research-sync',
       role:'background-worker',version:research.VERSION,startedAt,finishedAt:Date.now(),durationMs:Date.now()-startedAt,
-      historyBackfill,macro,macroVintages,newsRuns,market,settledSignals,storage,trainingPolicy,learning:learningSummary,
+      historyBackfill,intradayBackfill,macro,macroVintages,newsRuns,market,settledSignals,storage,trainingPolicy,learning:learningSummary,
       recordedSignals,autoDemoRuns,autoResearchDemoRuns,brokerHealth,signalMetrics:signalMonitor.metrics(),executionRuns
     }));
     return {ok:true,approvedCount};
