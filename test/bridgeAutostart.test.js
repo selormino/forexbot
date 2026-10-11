@@ -62,3 +62,14 @@ test('Cloudflare uninstall script removes only the Windows connector service',()
   assert.match(uninstall,/Cloudflare Windows service removed/);
   assert.match(uninstall,/dashboard tunnel\/DNS configuration was not deleted/i);
 });
+
+
+test('MT5 bridge exposes authenticated closed-bar rates for scalp research',()=>{
+  const bridge=read('main.py');
+  assert.match(bridge,/@app\.get\("\/rates"\)/);
+  assert.match(bridge,/TIMEFRAME_M5/);
+  assert.match(bridge,/copy_rates_/);
+  assert.match(bridge,/auth\(authorization\)/);
+  assert.match(bridge,/spreadBps/);
+  assert.match(bridge,/ts\+step_ms>now_ms/);
+});
