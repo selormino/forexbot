@@ -7,36 +7,43 @@ const {signalMinProbability}=require('./settings');
 const {pointInTimeContext}=require('./macro');
 const {createHash}=require('crypto');
 const setupModel=require('./setupModel');
-const VERSION='technical-fundamental-v40-intraday';
+const VERSION='technical-fundamental-v41-scalp-research';
 const MIN_PROB=()=>signalMinProbability();
 db.exec(`CREATE TABLE IF NOT EXISTS context_snapshots(kind TEXT,symbol TEXT,known_at INTEGER,payload TEXT,PRIMARY KEY(kind,symbol,known_at));
 CREATE TABLE IF NOT EXISTS news_history(id TEXT PRIMARY KEY,symbol TEXT,published_at INTEGER,known_at INTEGER,headline TEXT,score REAL,provider TEXT);
 CREATE TABLE IF NOT EXISTS research_models(id INTEGER PRIMARY KEY,created_at INTEGER,symbol TEXT,timeframe TEXT,version TEXT,model TEXT,report TEXT,approved INTEGER);
 CREATE INDEX IF NOT EXISTS context_lookup ON context_snapshots(kind,symbol,known_at);
 CREATE INDEX IF NOT EXISTS news_lookup ON news_history(symbol,known_at);`);
+const SCALP_TIMEFRAMES=new Set(['5m']);
 const INTRADAY_TIMEFRAMES=new Set(['15m','30m']);
-const ms=tf=>({'15m':900000,'30m':1800000,'1h':3600000,'4h':14400000,'1d':86400000}[tf]||0);
+const ms=tf=>({'5m':300000,'15m':900000,'30m':1800000,'1h':3600000,'4h':14400000,'1d':86400000}[tf]||0);
+const isScalp=tf=>SCALP_TIMEFRAMES.has(tf);
 const isIntraday=tf=>INTRADAY_TIMEFRAMES.has(tf);
+const isShortTerm=tf=>isScalp(tf)||isIntraday(tf);
 const strategyThreshold=tf=>tf==='1d'
   ?Math.max(.30,Math.min(.70,Number(process.env.CTA_MIN_PROBABILITY||.40)))
-  :isIntraday(tf)
-    ?Math.max(.50,Math.min(.85,Number(process.env.INTRADAY_MIN_PROBABILITY||MIN_PROB())))
-    :MIN_PROB();
-const horizonBars=tf=>tf==='15m'?8:tf==='30m'?6:tf==='1d'?10:4;
+  :isScalp(tf)
+    ?Math.max(.55,Math.min(.90,Number(process.env.SCALP_MIN_PROBABILITY||.65)))
+    :isIntraday(tf)
+      ?Math.max(.50,Math.min(.85,Number(process.env.INTRADAY_MIN_PROBABILITY||MIN_PROB())))
+      :MIN_PROB();
+const horizonBars=tf=>tf==='5m'?6:tf==='15m'?8:tf==='30m'?6:tf==='1d'?10:4;
 const planProfilesFor=tf=>setupModel.PLAN_PROFILES.filter(p=>{
   if(tf==='1d')return p.strategyFamily==='cta';
-  if(isIntraday(tf))return Array.isArray(p.timeframes)&&p.timeframes.includes(tf);
+  if(isShortTerm(tf))return Array.isArray(p.timeframes)&&p.timeframes.includes(tf);
   return p.strategyFamily!=='cta'&&!Array.isArray(p.timeframes);
 });
-const higherTimeframeFor=tf=>({'15m':'1h','30m':'1h','1h':'4h'}[tf]||null);
-const strategyModeFor=tf=>tf==='1d'?'cta-daily':isIntraday(tf)?'intraday-'+tf:'standard';
+const higherTimeframeFor=tf=>({'5m':'15m','15m':'1h','30m':'1h','1h':'4h'}[tf]||null);
+const strategyModeFor=tf=>tf==='1d'?'cta-daily':isScalp(tf)?'scalp-5m':isIntraday(tf)?'intraday-'+tf:'standard';
 const defaultPlanFor=tf=>tf==='1d'
   ?{name:'cta-default-3r',strategyFamily:'cta',entryBufferAtr:.06,stopAtr:2.0,targetR:3.0,entryExpiryBars:5,holdBars:40}
-  :tf==='15m'
-    ?{name:'intraday-15m-default-1.25r',strategyFamily:'trend',entryBufferAtr:.06,stopAtr:1.1,targetR:1.25,entryExpiryBars:6,holdBars:40}
-    :tf==='30m'
-      ?{name:'intraday-30m-default-1.25r',strategyFamily:'trend',entryBufferAtr:.06,stopAtr:1.1,targetR:1.25,entryExpiryBars:4,holdBars:24}
-      :{name:'default',entryBufferAtr:.12,stopAtr:1.4,targetR:1.6,entryExpiryBars:4,holdBars:6};
+  :tf==='5m'
+    ?{name:'scalp-5m-default-0.8r',strategyFamily:'trend',entryBufferAtr:.03,stopAtr:.70,targetR:.8,entryExpiryBars:2,holdBars:12}
+    :tf==='15m'
+      ?{name:'intraday-15m-default-1.25r',strategyFamily:'trend',entryBufferAtr:.06,stopAtr:1.1,targetR:1.25,entryExpiryBars:6,holdBars:40}
+      :tf==='30m'
+        ?{name:'intraday-30m-default-1.25r',strategyFamily:'trend',entryBufferAtr:.06,stopAtr:1.1,targetR:1.25,entryExpiryBars:4,holdBars:24}
+        :{name:'default',entryBufferAtr:.12,stopAtr:1.4,targetR:1.6,entryExpiryBars:4,holdBars:6};
 const continuousGap=(prev,next,tf)=>{
   const step=ms(tf),delta=Number(next)-Number(prev);
   if(!step||delta<step)return false;
@@ -119,14 +126,15 @@ function features(rows,symbol,at){
   const ctaTrendStrength=Math.max(0,Math.min(1,Number(adx.adx||0)/30));
   return {price,atr,rsi,trend,ema20,ema50,emaSlope,momentum5,adx:{value:Number(adx.adx||0),pdi:Number(adx.pdi||0),mdi:Number(adx.mdi||0),direction:adxDirection},technicalBias,regime,session,macd:{value:macd.MACD||0,signal:macd.signal||0,histogram:macd.histogram||0},bollinger:{...bb,width:bbWidth,position:bbPosition},priceAction,context:ctx,cta:{score:ctaScore,trendStrength:ctaTrendStrength,momentum20Atr,momentum60Atr,breakoutPosition,high55,low55},x:[Math.tanh(trend),Math.tanh(emaSlope),Math.tanh(momentum5),rsiBias,Math.tanh(atr/price*100),Math.tanh(ratio-1),regime==='trend'?1:0,regime==='volatile'?1:0,Math.tanh(macdNorm),adxDirection,Math.tanh(Number(adx.adx||0)/25-1),Math.tanh((bbPosition-.5)*2),Math.tanh(bbWidth*100),technicalBias,...priceAction.vector,...ctx.x,...sessionX,ctaScore,Math.tanh(momentum20Atr/4),Math.tanh(momentum60Atr/8),breakoutPosition,ctaTrendStrength]};
 }
-function costs(symbol,at=null,featureContext=null){
-  // Conservative research estimates until broker-grade historical bid/ask data is ingested.
+function costs(symbol,at=null,featureContext=null,marketContext={}){
   const defaults={EURUSD:2,GBPUSD:3,USDJPY:3,AUDUSD:3,USDCAD:3,XAUUSD:5,XAGUSD:12,WTI:10,BTCUSD:12,ETHUSD:14,SOLUSD:18,XRPUSD:20,LTCUSD:18};
   const financingDefaults={EURUSD:.15,GBPUSD:.18,USDJPY:.18,AUDUSD:.18,USDCAD:.18,XAUUSD:.45,XAGUSD:.60,WTI:.55,BTCUSD:2.0,ETHUSD:2.2,SOLUSD:2.5,XRPUSD:2.5,LTCUSD:2.3};
-  const baseSpread=Number(process.env['SPREAD_BPS_'+symbol]??defaults[symbol]??5);
+  const configuredSpread=Number(process.env['SPREAD_BPS_'+symbol]??defaults[symbol]??5);
+  const observedSpread=Number(marketContext?.observedSpreadBps);
+  const hasObservedSpread=Number.isFinite(observedSpread)&&observedSpread>=0;
   const baseSlippage=Number(process.env.SLIPPAGE_BPS??1),commission=Number(process.env.COMMISSION_BPS??.5);
   const financingBpsPerDay=Number(process.env['FINANCING_BPS_PER_DAY_'+symbol]??process.env.FINANCING_BPS_PER_DAY??financingDefaults[symbol]??.25);
-  if(![baseSpread,baseSlippage,commission,financingBpsPerDay].every(v=>Number.isFinite(v)&&v>=0))throw new Error('Invalid transaction costs');
+  if(![configuredSpread,baseSlippage,commission,financingBpsPerDay].every(v=>Number.isFinite(v)&&v>=0))throw new Error('Invalid transaction costs');
   let sessionMultiplier=1,volatilityMultiplier=1;
   if(Number.isFinite(Number(at))){
     const hour=new Date(Number(at)).getUTCHours();
@@ -136,10 +144,11 @@ function costs(symbol,at=null,featureContext=null){
   }
   if(featureContext?.regime==='volatile')volatilityMultiplier=1.35;
   else if(featureContext?.regime==='range')volatilityMultiplier=1.05;
-  const spread=baseSpread*sessionMultiplier*volatilityMultiplier;
+  const spread=hasObservedSpread?observedSpread:configuredSpread*sessionMultiplier*volatilityMultiplier;
   const slippage=baseSlippage*(featureContext?.regime==='volatile'?1.5:1);
   const total=spread+2*slippage+2*commission;
-  return {baseSpread,spread,slippage,commission,financingBpsPerDay,total,sessionMultiplier,volatilityMultiplier,model:'session-volatility-estimate',observed:false};
+  return {baseSpread:configuredSpread,spread,slippage,commission,financingBpsPerDay,total,sessionMultiplier,volatilityMultiplier,
+    model:hasObservedSpread?'mt5-observed-spread+estimated-slippage':'session-volatility-estimate',observed:hasObservedSpread};
 }
 function trendSnapshot(rows){
   const c=(rows||[]).slice(-120);
