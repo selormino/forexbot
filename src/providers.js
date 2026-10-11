@@ -6,7 +6,7 @@ const YAHOO_SYMBOLS = {EURUSD:'EURUSD=X',GBPUSD:'GBPUSD=X',USDJPY:'USDJPY=X',AUD
 const TD_SYMBOLS = {EURUSD:'EUR/USD',GBPUSD:'GBP/USD',USDJPY:'USD/JPY',AUDUSD:'AUD/USD',USDCAD:'USD/CAD',XAUUSD:'XAU/USD',XAGUSD:'XAG/USD',WTI:'WTI/USD',BTCUSD:'BTC/USD',ETHUSD:'ETH/USD',SOLUSD:'SOL/USD',XRPUSD:'XRP/USD',LTCUSD:'LTC/USD'};
 const FALLBACK_SYMBOLS = (process.env.MARKET_FALLBACK_SYMBOLS || 'XAGUSD,WTI').split(',').map(x => x.trim().toUpperCase()).filter(Boolean);
 const usesYahooFallback = symbol => FALLBACK_SYMBOLS.includes(symbol);
-const MT5_MARKET_DATA_TIMEFRAMES=(process.env.MT5_MARKET_DATA_TIMEFRAMES||'5m,15m,30m').split(',').map(x=>x.trim()).filter(Boolean);
+const MT5_MARKET_DATA_TIMEFRAMES=(process.env.MT5_MARKET_DATA_TIMEFRAMES||'5m,15m,30m,1h,4h,1d').split(',').map(x=>x.trim()).filter(Boolean);
 const MT5_MARKET_DATA_SYMBOLS=(process.env.MT5_MARKET_DATA_SYMBOLS||'EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,XAUUSD').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean);
 const mt5MarketDataEnabled=()=>process.env.MT5_MARKET_DATA_ENABLED==='true'&&!!process.env.MT5_BRIDGE_URL&&!!process.env.MT5_BRIDGE_TOKEN;
 const useMt5MarketData=(symbol,interval)=>mt5MarketDataEnabled()&&MT5_MARKET_DATA_SYMBOLS.includes(symbol)&&MT5_MARKET_DATA_TIMEFRAMES.includes(interval);
