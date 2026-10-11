@@ -8,6 +8,16 @@ const HORIZON = Math.max(1, Number(process.env.LABEL_HORIZON_BARS || 4));
 const MIN_MOVE_BPS = Math.max(0, Number(process.env.LABEL_MIN_MOVE_BPS || 3));
 const REQUEST_DELAY_MS = Math.max(0, Number(process.env.HISTORY_REQUEST_DELAY_MS || 8500));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const CRYPTO_SYMBOLS=new Set(['BTCUSD','ETHUSD','SOLUSD','XRPUSD','LTCUSD']);
+const CLOSE_GRACE_MS=Math.max(0,Number(process.env.HISTORY_CLOSE_GRACE_MS||120000));
+function marketLikelyOpen(symbol,now=Date.now()){
+  if(CRYPTO_SYMBOLS.has(symbol))return true;
+  const d=new Date(now),day=d.getUTCDay(),hour=d.getUTCHours()+d.getUTCMinutes()/60;
+  if(day===6)return false;
+  if(day===0&&hour<22)return false;
+  if(day===5&&hour>=22)return false;
+  return true;
+}
 function timeframeMs(timeframe) {
   const match = String(timeframe).match(/^(\d+)(m|h|d)$/);
   if (!match) return 3600000;
@@ -62,6 +72,15 @@ async function ingestOne(symbol, timeframe, options = {}) {
     const expectedProvider = marketProviderFor(symbol,timeframe);
     const resetProvider = ['twelvedata','yahoo','mt5'].includes(expectedProvider) && latestRow && latestRow.provider !== expectedProvider;
     const latest = resetProvider ? null : (latestRow?.ts || null);
+    const step=timeframeMs(timeframe),now=Date.now();
+    if(latest&&!resetProvider&&!marketLikelyOpen(symbol,now)){
+      db.prepare(`UPDATE ingestion_runs SET finished_at=?,provider=?,status='SUCCESS' WHERE id=?`).run(now,expectedProvider,run.lastInsertRowid);
+      return {symbol,timeframe,latestBefore:latest,providerReset:false,fetched:0,upserted:0,observations:0,status:'MARKET_CLOSED'};
+    }
+    if(latest&&!resetProvider&&now<latest+2*step+CLOSE_GRACE_MS){
+      db.prepare(`UPDATE ingestion_runs SET finished_at=?,provider=?,status='SUCCESS' WHERE id=?`).run(now,expectedProvider,run.lastInsertRowid);
+      return {symbol,timeframe,latestBefore:latest,providerReset:false,fetched:0,upserted:0,observations:0,status:'UP_TO_DATE'};
+    }
     const fetched = await historicalCandles(symbol, timeframe, {
       outputsize: Number(options.outputsize || MAX_BARS),
       startTime: latest ? Math.max(0, latest - timeframeMs(timeframe) * 2) : null
@@ -160,4 +179,4 @@ function status() {
   };
 }
 
-module.exports = { ingestOne, syncHistory, backfillOne, backfillHistory, rebuildObservations, status, featureVector, DEFAULT_TIMEFRAMES };
+module.exports = { ingestOne, syncHistory, backfillOne, backfillHistory, rebuildObservations, status, featureVector, timeframeMs, marketLikelyOpen, DEFAULT_TIMEFRAMES };
