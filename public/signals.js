@@ -163,7 +163,7 @@ function opportunityCard(s,i,{compact=false}={}){
    (!compact?'<div class="opportunity-plan"><span>Entry <b>'+fmt(p.entry)+'</b></span><span>SL <b>'+fmt(p.stop)+'</b></span><span>TP <b>'+fmt(p.target)+'</b></span></div>':'')+
    '<div class="why-line"><span class="label">Why not yet?</span><b>'+esc(q.status==='STRICT'?'Nothing — setup is ready':nextReason(q))+'</b></div>'+
    (q.brokerState!=='none'?'<div class="broker-state '+track.css+'"><b>'+esc(track.label)+'</b><small>'+esc(track.detail)+'</small></div>':'')+
-   '<div class="operator-buttons"><button class="small-btn" onclick="showChart('+i+')">Chart</button><button class="small-btn" onclick="explain('+i+')">Why?</button>'+(q.status==='STRICT'?'<button class="small-btn primary" onclick="trade('+i+')">XM preview</button>':'')+'</div>'+
+   '<div class="operator-buttons"><button class="small-btn" onclick="showChart('+i+')">Chart</button><button class="small-btn" onclick="explain('+i+')">Why?</button>'+(q.status==='STRICT'&&!(s.timeframe==='5m'&&!operationsStatus?.scalpDemoDispatch)?'<button class="small-btn primary" onclick="trade('+i+')">XM preview</button>':'')+'</div>'+
  '</div>';
 }
 function renderOperator(rows,m,broker,intents,ops,storage,edge){
@@ -276,7 +276,7 @@ function renderBoard(rows){
    <td><b>${fmt(p.entry)}</b><small>SL ${fmt(p.stop)} · TP ${fmt(p.target)} · ${num(p.targetPips)} ${esc(unit)}</small></td>
    <td><b>${p.riskReward?Number(p.riskReward).toFixed(2):'—'}</b></td>
    <td>${stateHtml(signalStatusMeta(status),status==='STRICT'?'good':'neutral')}<small>${esc((s.filters||[])[0]||'All gates passed')}</small>${['LONG','SHORT'].includes(s.candidateDirection)?stateHtml(brokerTrackingMeta(executionForSignal(s)),brokerTrackingMeta(executionForSignal(s)).css):''}</td>
-   <td><div class="action-stack"><button class="small-btn" onclick="showChart(${i})">Chart</button><button class="small-btn" onclick="explain(${i})">Details</button><button class="small-btn primary" onclick="trade(${i})">Trade</button></div></td>
+   <td><div class="action-stack"><button class="small-btn" onclick="showChart(${i})">Chart</button><button class="small-btn" onclick="explain(${i})">Details</button>${s.timeframe==='5m'&&!operationsStatus?.scalpDemoDispatch?'<span class="pill neutral">SHADOW ONLY</span>':'<button class="small-btn primary" onclick="trade('+i+')">Trade</button>'}</div></td>
   </tr>`;
  }).join('');
  $('boardUpdated').textContent=new Date().toLocaleTimeString();
