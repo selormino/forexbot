@@ -6,6 +6,15 @@ const YAHOO_SYMBOLS = {EURUSD:'EURUSD=X',GBPUSD:'GBPUSD=X',USDJPY:'USDJPY=X',AUD
 const TD_SYMBOLS = {EURUSD:'EUR/USD',GBPUSD:'GBP/USD',USDJPY:'USD/JPY',AUDUSD:'AUD/USD',USDCAD:'USD/CAD',XAUUSD:'XAU/USD',XAGUSD:'XAG/USD',WTI:'WTI/USD',BTCUSD:'BTC/USD',ETHUSD:'ETH/USD',SOLUSD:'SOL/USD',XRPUSD:'XRP/USD',LTCUSD:'LTC/USD'};
 const FALLBACK_SYMBOLS = (process.env.MARKET_FALLBACK_SYMBOLS || 'XAGUSD,WTI').split(',').map(x => x.trim().toUpperCase()).filter(Boolean);
 const usesYahooFallback = symbol => FALLBACK_SYMBOLS.includes(symbol);
+const MT5_MARKET_DATA_TIMEFRAMES=(process.env.MT5_MARKET_DATA_TIMEFRAMES||'5m,15m,30m').split(',').map(x=>x.trim()).filter(Boolean);
+const MT5_MARKET_DATA_SYMBOLS=(process.env.MT5_MARKET_DATA_SYMBOLS||'EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,XAUUSD').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean);
+const mt5MarketDataEnabled=()=>process.env.MT5_MARKET_DATA_ENABLED==='true'&&!!process.env.MT5_BRIDGE_URL&&!!process.env.MT5_BRIDGE_TOKEN;
+const useMt5MarketData=(symbol,interval)=>mt5MarketDataEnabled()&&MT5_MARKET_DATA_SYMBOLS.includes(symbol)&&MT5_MARKET_DATA_TIMEFRAMES.includes(interval);
+const marketProviderFor=(symbol,interval)=>{
+  if(useMt5MarketData(symbol,interval))return 'mt5';
+  if(usesYahooFallback(symbol))return 'yahoo';
+  return (process.env.MARKET_PROVIDER||'auto').toLowerCase();
+};
 const cache = new Map();
 const TTL = Math.max(15, Number(process.env.DATA_REFRESH_SECONDS || 120)) * 1000;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -67,6 +76,29 @@ async function yahooChart(symbol, interval='1h', outputsize=250){
   return put(key,rows.slice(-outputsize));
 }
 
+async function mt5BridgeCandles(symbol,interval='5m',outputsize=250,options={}){
+  const base=String(process.env.MT5_BRIDGE_URL||'').replace(/\/+$/,'');
+  const token=String(process.env.MT5_BRIDGE_TOKEN||'');
+  if(!base||!token)throw new Error('MT5 bridge market data is not configured');
+  const key=`mt5:${symbol}:${interval}:${outputsize}:${options.startTime||''}:${options.endTime||''}`;
+  const hit=cached(key);if(hit)return hit;
+  const params={symbol,timeframe:interval,count:Math.max(1,Math.min(5000,Number(outputsize)||250))};
+  if(options.startTime)params.from_ts=Math.trunc(Number(options.startTime));
+  if(options.endTime)params.to_ts=Math.trunc(Number(options.endTime));
+  let r;
+  try{
+    r=await axios.get(base+'/rates',{params,headers:{Authorization:`Bearer ${token}`},timeout:20000});
+  }catch(error){
+    const detail=error.response?.data?.detail||error.message;
+    throw new Error(`MT5 market data ${symbol} ${interval}: ${detail}`);
+  }
+  if(!Array.isArray(r.data?.rates))throw new Error(`MT5 market data returned no candles for ${symbol}`);
+  return put(key,r.data.rates.map(x=>({
+    time:Number(x.time),open:Number(x.open),high:Number(x.high),low:Number(x.low),close:Number(x.close),
+    volume:Number(x.volume||0),spreadBps:Number.isFinite(Number(x.spreadBps))?Number(x.spreadBps):null,provider:'mt5'
+  })).filter(x=>[x.time,x.open,x.high,x.low,x.close].every(Number.isFinite)));
+}
+
 async function twelveDataCandles(symbol, interval='1h', outputsize=250, options={}){
   const key=`td:${symbol}:${interval}:${outputsize}:${options.startTime||''}:${options.endTime||''}`; const hit=cached(key); if(hit) return hit;
   const params={symbol:TD_SYMBOLS[symbol]||symbol,interval:intervalToTwelve(interval),outputsize,apikey:process.env.TWELVE_DATA_API_KEY,format:'JSON',timezone:'UTC'};
@@ -90,6 +122,7 @@ async function twelveDataCandles(symbol, interval='1h', outputsize=250, options=
 
 async function historicalCandles(symbol, interval='1h', options={}){
   const outputsize=Math.max(1,Math.min(5000,Number(options.outputsize||1500)));
+  if(useMt5MarketData(symbol,interval))return mt5BridgeCandles(symbol,interval,outputsize,options);
   const provider=(process.env.MARKET_PROVIDER||'auto').toLowerCase();
   if(provider==='demo') return demoCandles(symbol,outputsize,interval).filter(x=>!options.startTime||x.time>=options.startTime).map(x=>({...x,provider:'demo'}));
   if(!usesYahooFallback(symbol) && (provider==='twelvedata'||provider==='auto') && process.env.TWELVE_DATA_API_KEY){
@@ -110,6 +143,7 @@ function aggregateCandles(rows, hours){
 }
 
 async function candles(symbol, interval='1h', outputsize=250){
+  if(useMt5MarketData(symbol,interval))return mt5BridgeCandles(symbol,interval,outputsize);
   const provider=(process.env.MARKET_PROVIDER||'auto').toLowerCase();
   if(provider==='demo') return demoCandles(symbol,outputsize,interval);
   if(!usesYahooFallback(symbol) && (provider==='twelvedata'||provider==='auto') && process.env.TWELVE_DATA_API_KEY){
@@ -176,6 +210,6 @@ async function calendar(){
 }
 
 function providerStatus(){
-  return {market:(process.env.MARKET_PROVIDER||'auto'),marketFallbackSymbols:FALLBACK_SYMBOLS,news:(process.env.NEWS_PROVIDER||'auto'),calendar:(process.env.CALENDAR_PROVIDER||'auto'),symbols:SYMBOLS,assetClasses:{forex:['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD'],metals:['XAUUSD','XAGUSD'],energy:['WTI'],crypto:['BTCUSD','ETHUSD','SOLUSD','XRPUSD','LTCUSD']},twelveDataConfigured:!!process.env.TWELVE_DATA_API_KEY,finnhubConfigured:!!process.env.FINNHUB_API_KEY,fredConfigured:!!process.env.FRED_API_KEY,realData:true};
+  return {market:(process.env.MARKET_PROVIDER||'auto'),marketFallbackSymbols:FALLBACK_SYMBOLS,news:(process.env.NEWS_PROVIDER||'auto'),calendar:(process.env.CALENDAR_PROVIDER||'auto'),symbols:SYMBOLS,assetClasses:{forex:['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD'],metals:['XAUUSD','XAGUSD'],energy:['WTI'],crypto:['BTCUSD','ETHUSD','SOLUSD','XRPUSD','LTCUSD']},twelveDataConfigured:!!process.env.TWELVE_DATA_API_KEY,mt5MarketDataEnabled:mt5MarketDataEnabled(),mt5MarketDataTimeframes:MT5_MARKET_DATA_TIMEFRAMES,mt5MarketDataSymbols:MT5_MARKET_DATA_SYMBOLS,finnhubConfigured:!!process.env.FINNHUB_API_KEY,fredConfigured:!!process.env.FRED_API_KEY,realData:true};
 }
-module.exports={SYMBOLS,candles,historicalCandles,news,calendar,providerStatus};
+module.exports={SYMBOLS,candles,historicalCandles,news,calendar,providerStatus,marketProviderFor,useMt5MarketData,mt5BridgeCandles};
