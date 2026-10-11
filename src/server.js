@@ -35,7 +35,7 @@ app.get('/api/operations/status',(req,res)=>res.json({
   modelAutoTrain:process.env.MODEL_AUTO_TRAIN==='true',
   autoDemoStrict:process.env.AUTO_DEMO_STRICT==='true',
   autoDemoResearch:process.env.AUTO_DEMO_RESEARCH==='true',
-  timeframes:String(process.env.HISTORICAL_TIMEFRAMES||'5m,15m,30m,1h,4h,1d').split(',').map(x=>x.trim()).filter(Boolean),
+  timeframes:[...(scalpEnabled()?['5m']:[]),...String(process.env.HISTORICAL_TIMEFRAMES||'15m,30m,1h,4h,1d').split(',').map(x=>x.trim()).filter(Boolean)],
   intradaySymbols:INTRADAY_SYMBOLS,
   scalpEnabled:scalpEnabled(),
   scalpSymbols:SCALP_SYMBOLS,
