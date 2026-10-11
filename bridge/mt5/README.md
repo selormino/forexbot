@@ -19,6 +19,22 @@ This bridge runs on a Windows PC/VPS where XM MetaTrader 5 is installed. Keep th
 9. Set Railway variables `MT5_BRIDGE_URL` and matching `MT5_BRIDGE_TOKEN`.
 10. ForexBot will call the bridge's `/preview` endpoint first. The preview validates the pending entry, SL, TP and XM lot size without placing an order. Only after you confirm will `/orders` submit the pending order.
 
+## Broker-native candle data for scalping
+
+Bridge v1.3 adds an authenticated `GET /rates` endpoint for closed MT5 candles. This lets ForexBot research short timeframes using the same broker environment used for demo execution instead of consuming a high-frequency third-party API quota.
+
+Supported intervals are `1m, 5m, 15m, 30m, 1h, 4h, 1d`. Returned bars include OHLC, tick volume, MT5 historical spread points and normalized spread basis points. The still-forming candle is excluded.
+
+Example from the Windows host (do not paste the real token into chat):
+
+```powershell
+$token = (Get-Content .\.env | Where-Object { $_ -match '^BRIDGE_TOKEN=' } | Select-Object -Last 1).Split('=',2)[1].Trim()
+Invoke-RestMethod -Uri "http://127.0.0.1:8765/rates?symbol=EURUSD&timeframe=5m&count=20" `
+  -Headers @{ Authorization = "Bearer $token" }
+```
+
+Railway should enable `MT5_MARKET_DATA_ENABLED=true` only after this endpoint has been deployed and verified on the Windows host. The broker-data endpoint is read-only; it does not place orders.
+
 ## How manual execution works
 ForexBot sends a BUY STOP or SELL STOP at the signal confirmation entry. Position size is calculated by the bridge from actual XM contract/tick values and the selected risk percentage. The browser never calculates broker lots itself.
 
