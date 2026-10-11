@@ -13,7 +13,11 @@ const sleepImmediate=()=>new Promise(resolve=>setImmediate(resolve));
 const SIGNAL_TIMEFRAMES=['15m','30m','1h','4h','1d'];
 const INTRADAY_SYMBOLS=String(process.env.INTRADAY_SYMBOLS||'EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,XAUUSD')
   .split(',').map(x=>x.trim().toUpperCase()).filter(x=>SYMBOLS.includes(x));
-let syncing=false;
+const SCALP_SYMBOLS=String(process.env.SCALP_SYMBOLS||'EURUSD,GBPUSD,USDJPY,XAUUSD')
+  .split(',').map(x=>x.trim().toUpperCase()).filter(x=>SYMBOLS.includes(x));
+const scalpEnabled=()=>process.env.SCALP_ENABLED==='true';
+const scalpDispatchEnabled=()=>process.env.SCALP_DEMO_DISPATCH==='true';
+let syncing=false,scalpSyncing=false;
 
 async function autoDemoStrict(signals){
   if(process.env.AUTO_DEMO_STRICT!=='true')return [];
@@ -21,6 +25,7 @@ async function autoDemoStrict(signals){
   const runs=[];
   for(const signal of signals){
     if(!['LONG','SHORT'].includes(signal.direction))continue;
+    if(signal.timeframe==='5m'&&!scalpDispatchEnabled())continue;
     try{
       const intent=execution.createAutoDemoIntent(signal,{riskPct:Number(process.env.RISK_PER_TRADE_PCT||0.5)});
       if(!intent.created){runs.push({symbol:signal.symbol,timeframe:signal.timeframe,...intent});continue;}
@@ -39,6 +44,7 @@ async function autoDemoResearch(signals){
   const runs=[];
   for(const signal of signals){
     if(signal.modelApproved||!['LONG','SHORT'].includes(signal.candidateDirection)||['LONG','SHORT'].includes(signal.direction))continue;
+    if(signal.timeframe==='5m'&&!scalpDispatchEnabled())continue;
     try{
       const intent=execution.createAutoResearchDemoIntent(signal,{riskPct:Number(process.env.AUTO_DEMO_RESEARCH_RISK_PCT||0.25)});
       if(!intent.created){runs.push({symbol:signal.symbol,timeframe:signal.timeframe,...intent});continue;}
@@ -108,8 +114,8 @@ async function trainAll(){
   if(process.env.MODEL_AUTO_TRAIN!=='true')return learning;
   const priority=[['XAUUSD','4h']];
   const rest=[];
-  for(const timeframe of ['1h','4h','30m','15m','1d']){
-    const symbols=['15m','30m'].includes(timeframe)?INTRADAY_SYMBOLS:SYMBOLS;
+  for(const timeframe of ['1h','4h','30m','15m',...(scalpEnabled()?['5m']:[]),'1d']){
+    const symbols=timeframe==='5m'?SCALP_SYMBOLS:['15m','30m'].includes(timeframe)?INTRADAY_SYMBOLS:SYMBOLS;
     for(const symbol of symbols){
       if(symbol==='XAUUSD'&&timeframe==='4h')continue;
       rest.push([symbol,timeframe]);
@@ -194,6 +200,46 @@ async function generateSignals(){
   return {recordedSignals,generatedSignals};
 }
 
+async function generateScalpSignals(){
+  if(!scalpEnabled())return {recordedSignals:[],generatedSignals:[]};
+  const events=await calendar().catch(()=>null),recordedSignals=[],generatedSignals=[];
+  for(const symbol of SCALP_SYMBOLS){
+    try{
+      const signal=research.signal(symbol,'5m',events);
+      generatedSignals.push(signal);
+      const row=signalMonitor.record(signal);
+      recordedSignals.push({symbol,timeframe:'5m',id:row.id,direction:signal.direction,candidateDirection:signal.candidateDirection,
+        setupProbability:signal.setupProbability,directionalProbability:signal.directionalProbability,confluence:signal.analysis?.confluence?.agreement});
+    }catch(error){recordedSignals.push({symbol,timeframe:'5m',error:error.message});}
+  }
+  return {recordedSignals,generatedSignals};
+}
+
+async function runScalpCycle({bootstrap=false}={}){
+  if(!scalpEnabled())return {skipped:'scalping disabled'};
+  if(scalpSyncing)return {skipped:'scalp cycle already running'};
+  scalpSyncing=true;
+  const startedAt=Date.now();
+  try{
+    const market=process.env.HISTORY_AUTO_SYNC==='true'
+      ?await history.syncHistory({symbols:SCALP_SYMBOLS,timeframes:['5m'],outputsize:Number(process.env.SCALP_SYNC_BARS||500)})
+      :[];
+    const scalpBackfill=bootstrap&&process.env.SCALP_BACKFILL_ENABLED==='true'
+      ?await history.backfillHistory({symbols:SCALP_SYMBOLS,timeframes:['5m'],targetBars:Number(process.env.SCALP_BACKFILL_TARGET_BARS||10000),maxPages:Number(process.env.SCALP_BACKFILL_PAGES||2)})
+      :[];
+    const settledSignals=signalMonitor.settle();
+    const {recordedSignals,generatedSignals}=await generateScalpSignals();
+    const autoDemoRuns=scalpDispatchEnabled()?await autoDemoStrict(generatedSignals):[];
+    const autoResearchDemoRuns=scalpDispatchEnabled()?await autoDemoResearch(generatedSignals):[];
+    console.log(JSON.stringify({event:'scalp-sync',role:'background-worker',version:research.VERSION,startedAt,finishedAt:Date.now(),durationMs:Date.now()-startedAt,
+      market,scalpBackfill,settledSignals,recordedSignals,autoDemoRuns,autoResearchDemoRuns,dispatchEnabled:scalpDispatchEnabled()}));
+    return {ok:true,signals:generatedSignals.length};
+  }catch(error){
+    console.error(JSON.stringify({event:'scalp-worker-error',error:error.message}));
+    return {ok:false,error:error.message};
+  }finally{scalpSyncing=false;}
+}
+
 async function runCycle({bootstrap=false}={}){
   if(syncing)return {skipped:'cycle already running'};
   syncing=true;
@@ -273,6 +319,11 @@ setTimeout(()=>runCycle({bootstrap:true}),1000);
 
 const minutes=Math.max(15,Number(process.env.HISTORY_SYNC_MINUTES||60));
 setInterval(()=>runCycle({bootstrap:false}),minutes*60000);
+if(scalpEnabled()){
+  setTimeout(()=>runScalpCycle({bootstrap:true}),5000);
+  const scalpMinutes=Math.max(5,Number(process.env.SCALP_SYNC_MINUTES||5));
+  setInterval(()=>runScalpCycle({bootstrap:false}),scalpMinutes*60000);
+}
 
 process.on('SIGTERM',()=>process.exit(0));
 process.on('SIGINT',()=>process.exit(0));
