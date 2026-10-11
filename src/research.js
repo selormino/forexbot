@@ -161,7 +161,7 @@ function trendSnapshot(rows){
   return {trend,regime:Math.abs(trend)>.8?'trend':'range'};
 }
 function dataset(symbol,tf){
-  if(!ms(tf))throw new Error('Timeframe must be 15m, 30m, 1h, 4h or 1d');
+  if(!ms(tf))throw new Error('Timeframe must be 5m, 15m, 30m, 1h, 4h or 1d');
   const rows=db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? AND ts+?<=? ORDER BY ts').all(symbol,tf,ms(tf),Date.now());
   const higherTf=higherTimeframeFor(tf),higherRows=higherTf
     ?db.prepare('SELECT * FROM candles WHERE symbol=? AND timeframe=? ORDER BY ts').all(symbol,higherTf)
@@ -170,7 +170,7 @@ function dataset(symbol,tf){
   const profiles=planProfilesFor(tf),maxPlanBars=profiles.length?Math.max(...profiles.map(p=>Number(p.entryExpiryBars||0)+Number(p.holdBars||0))):10;
   const out=[],horizon=horizonBars(tf),lookahead=Math.max(horizon+1,tf==='1d'?70:maxPlanBars+2);
   for(let i=59;i+lookahead<rows.length;i++){
-    const at=rows[i].ts+ms(tf),f=features(rows.slice(Math.max(0,i-119),i+1),symbol,at),rowCost=costs(symbol,at,f);
+    const at=rows[i].ts+ms(tf),f=features(rows.slice(Math.max(0,i-119),i+1),symbol,at),rowCost=costs(symbol,at,f,{observedSpreadBps:rows[i].spread_bps});
     while(higherIndex+1<higherRows.length&&higherRows[higherIndex+1].ts+ms(higherTf)<=at)higherIndex++;
     const higher= higherTf&&higherIndex>=59 ? trendSnapshot(higherRows.slice(Math.max(0,higherIndex-119),higherIndex+1)) : null;
     const segment=rows.slice(i,i+lookahead+1);
@@ -179,8 +179,8 @@ function dataset(symbol,tf){
     const priceAction={bias:Number(f.priceAction?.bias||0),breakoutUp:!!f.priceAction?.breakoutUp,breakoutDown:!!f.priceAction?.breakoutDown,supportPrice:Number(f.priceAction?.supportPrice),resistancePrice:Number(f.priceAction?.resistancePrice),swingSupportPrice:Number(f.priceAction?.swingSupportPrice),swingResistancePrice:Number(f.priceAction?.swingResistancePrice)};
     const context={macroAvailable:!!f.context?.macroAvailable,newsAvailable:!!f.context?.newsAvailable,newsSentiment:Number(f.context?.newsSentiment||0),macroBias:Number(f.context?.macroBias||0)};
     out.push({
-      timeframe:tf,price:f.price,atr:f.atr,trend:f.trend,higherTimeframeTrend:higher?.trend??null,higherTimeframeRegime:higher?.regime??null,technicalBias:f.technicalBias,regime:f.regime,ctaScore:f.cta.score,ctaTrendStrength:f.cta.trendStrength,
-      priceAction,context,x:f.x,costBps:rowCost.total,financingBpsPerDay:rowCost.financingBpsPerDay,barMs:ms(tf),costModel:rowCost.model,
+      symbol,timeframe:tf,price:f.price,atr:f.atr,trend:f.trend,higherTimeframeTrend:higher?.trend??null,higherTimeframeRegime:higher?.regime??null,technicalBias:f.technicalBias,regime:f.regime,ctaScore:f.cta.score,ctaTrendStrength:f.cta.trendStrength,
+      sessionHour:f.session.utcHour,priceAction,context,x:f.x,costBps:rowCost.total,costObserved:rowCost.observed,observedSpreadBps:rowCost.observed?rowCost.spread:null,financingBpsPerDay:rowCost.financingBpsPerDay,barMs:ms(tf),costModel:rowCost.model,
       at,end:rows[i+horizon].ts+ms(tf),setupEnd:rows[i+lookahead].ts+ms(tf),ret,y:ret>0?1:0,
       futureBars:rows.slice(i+1,i+lookahead+1).map(row=>({ts:row.ts,open:row.open,high:row.high,low:row.low,close:row.close}))
     });
@@ -677,14 +677,20 @@ function trainSeries(symbol,tf){
     folds.push({...evaluate(foldModel,parts.test,cost.total),directionalModelCompetition:directionalFold.comparison,setup:evaluateTradePlans(foldModel,parts.test,symbol,cost.total,threshold,setupFold.planOptions||{}),setupProbability:setupFold});
   }
   const setupReport=setupTraining.report;
-  const requiredSelections=isIntraday(tf)?50:(symbol==='XAUUSD'&&tf==='4h'?50:30);
+  const requiredSelections=isScalp(tf)
+    ?Math.max(50,Number(process.env.SCALP_MIN_OOS_SELECTIONS||100))
+    :isIntraday(tf)?50:(symbol==='XAUUSD'&&tf==='4h'?50:30);
   const minProfitFactor=Math.max(1,Number(process.env.RESEARCH_MIN_PROFIT_FACTOR||1.10));
   const historyDays=rows.length>1?(rows.at(-1).at-rows[0].at)/86400000:0;
-  const minHistoryDays=isIntraday(tf)?Math.max(30,Number(process.env.INTRADAY_MIN_HISTORY_DAYS||90)):0;
-  const setupApproved=setupReport.status==='trained'&&setupReport.selected>=requiredSelections&&historyDays>=minHistoryDays&&(setupReport.averageR||0)>0&&(setupReport.expectancyLower95??-Infinity)>0&&(setupReport.profitFactorR??0)>=minProfitFactor&&setupReport.logLoss<setupReport.baselineLoss&&(setupReport.worstRolling20R===null||setupReport.worstRolling20R>0);
+  const minHistoryDays=isScalp(tf)
+    ?Math.max(14,Number(process.env.SCALP_MIN_HISTORY_DAYS||30))
+    :isIntraday(tf)?Math.max(30,Number(process.env.INTRADAY_MIN_HISTORY_DAYS||90)):0;
+  const observedCostCoverage=rows.length?rows.filter(r=>r.costObserved).length/rows.length:0;
+  const costCoveragePassed=!isScalp(tf)||observedCostCoverage>=Math.max(.80,Number(process.env.SCALP_MIN_OBSERVED_COST_COVERAGE||.95));
+  const setupApproved=setupReport.status==='trained'&&setupReport.selected>=requiredSelections&&historyDays>=minHistoryDays&&costCoveragePassed&&(setupReport.averageR||0)>0&&(setupReport.expectancyLower95??-Infinity)>0&&(setupReport.profitFactorR??0)>=minProfitFactor&&setupReport.logLoss<setupReport.baselineLoss&&(setupReport.worstRolling20R===null||setupReport.worstRolling20R>0);
   const foldStable=folds.every(f=>f.logLoss<0.78&&f.setupProbability.status==='trained'&&f.setupProbability.logLoss<f.setupProbability.baselineLoss&&(!f.setupProbability.recommendedTest||f.setupProbability.recommendedTest.selected<20||((f.setupProbability.recommendedTest.averageR||0)>0&&(f.setupProbability.recommendedTest.profitFactorR===null||f.setupProbability.recommendedTest.profitFactorR>1))));
   const approved=setupApproved&&metrics.logLoss<baselineLoss&&foldStable;
-  const report={symbol,timeframe:tf,samples:rows.length,historyDays,minHistoryDays,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,minProfitFactor,approved,approvalRule:'v40 is expectancy-first. Intraday models are separate 15m/30m research series with timeframe-specific trade plans, minimum history-span requirements, conservative cost gates and higher-timeframe confirmation. All plan/model/side/distribution selection remains pre-test-only, and the final chronological test window stays untouched. Approval requires enough market-specific OOS selections, positive average R after costs, a positive 95% lower confidence bound for mean R, profit factor at or above the configured floor, rolling stability, baseline-beating probability loss, and chronological fold stability. Win rate is diagnostic, not the optimization target.',costModel:'Session/volatility-adjusted estimated spread + slippage + commission, plus financing estimate by holding time. Historical broker bid/ask/tick costs are not yet available.',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
+  const report={symbol,timeframe:tf,samples:rows.length,historyDays,minHistoryDays,requiredSelections,observedCostCoverage,costCoveragePassed,trainSamples:train.length,calibrationSamples:cal.length,contextSamples,macroContextSamples,newsContextSamples,fundamentalCoverage,newsCoverage,baselineLoss,metrics,directionalModelCompetition:directionalTraining.comparison,setupBacktest,setupProbability:setupReport,thresholdSweep,folds,qualifiedSignals:qualified.length,qualifiedAccuracy,directionalMinProbability:directionalFloor,minProbability:threshold,minProfitFactor,approved,approvalRule:'v41 remains expectancy-first. The 5m scalping family is a separate research strategy and cannot be approved without broker-observed spread coverage, enough market-specific OOS selections, positive average R after costs, a positive 95% lower confidence bound, adequate profit factor, rolling stability, baseline-beating probability loss and chronological fold stability. 15m/30m intraday and slower strategies retain their existing validation gates. Win rate is reported but is not sufficient for approval.',costModel:isScalp(tf)?'5m scalping requires historical MT5 bar spread observations plus estimated slippage/commission and financing.':'Session/volatility-adjusted estimated spread + slippage + commission, plus financing estimate by holding time.',split:'Directional model uses 60/20/20 chronological purged splits. Setup history before the target test cutoff is split into 65% model-train, 17% plan-tune and 18% probability-calibration; the frozen plan/model is then evaluated only on the target market test window',createdAt:Date.now()};
   db.prepare('INSERT INTO research_models(created_at,symbol,timeframe,version,model,report,approved) VALUES(?,?,?,?,?,?,?)').run(Date.now(),symbol,tf,VERSION,JSON.stringify(m),JSON.stringify(report),+approved);
   return report;
 }
