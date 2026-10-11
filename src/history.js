@@ -66,7 +66,7 @@ async function ingestOne(symbol, timeframe, options = {}) {
   if (!SYMBOLS.includes(symbol)) throw new Error(`Unsupported symbol: ${symbol}`);
   const startedAt = Date.now();
   const run = db.prepare(`INSERT INTO ingestion_runs(started_at,symbol,timeframe,provider,status)
-    VALUES(?,?,?,?,?)`).run(startedAt, symbol, timeframe, providerStatus().market, 'RUNNING');
+    VALUES(?,?,?,?,?)`).run(startedAt, symbol, timeframe, marketProviderFor(symbol,timeframe), 'RUNNING');
   try {
     const latestRow = db.prepare('SELECT ts,provider FROM candles WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT 1').get(symbol, timeframe);
     const expectedProvider = marketProviderFor(symbol,timeframe);
