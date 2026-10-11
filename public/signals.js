@@ -122,14 +122,14 @@ const setupProb=s=>finite(s?.setupProbability);
 const directionalProb=s=>finite(s?.directionalProbability);
 const uniq=a=>[...new Set((a||[]).filter(Boolean))];
 function qualification(s){
- const status=statusOf(s),prob=setupProb(s),floor=signalProbabilityFloor(s),evidence=evidencePct(s),dir=directionalProb(s);
+ const status=statusOf(s),prob=setupProb(s),floor=signalProbabilityFloor(s),evidence=evidencePct(s),dir=directionalProb(s),evidenceFloor=finite(s?.minEvidence)??60;
  const blockers=[...(s.filters||[])];
  if(prob==null&&!blockers.some(x=>/probability|data|candles|model|setup/i.test(String(x))))blockers.push('Setup-success probability is not available yet');
  if(prob!=null&&prob<floor&&!blockers.some(x=>/probability/i.test(String(x))))blockers.push('Setup probability is below '+Math.round(floor*100)+'%');
- if(evidence!=null&&evidence<60&&!blockers.some(x=>/confluence|evidence/i.test(String(x))))blockers.push('Evidence is below 60%');
+ if(evidence!=null&&evidence<evidenceFloor&&!blockers.some(x=>/confluence|evidence/i.test(String(x))))blockers.push('Evidence is below '+Math.round(evidenceFloor)+'%');
  const clean=uniq(blockers.map(x=>String(x).trim()).filter(Boolean));
  const probProgress=prob==null?0:Math.min(1,prob/Math.max(floor,.01));
- const evidenceProgress=evidence==null?0:Math.min(1,evidence/60);
+ const evidenceProgress=evidence==null?0:Math.min(1,evidence/evidenceFloor);
  const directionalProgress=dir==null?0:Math.min(1,dir/.55);
  let score=probProgress*45+evidenceProgress*35+directionalProgress*20-clean.length*2;
  if(status==='FILTERED')score+=120;
@@ -137,7 +137,7 @@ function qualification(s){
  const intent=executionForSignal(s),brokerState=intentState(intent);
  if(brokerState==='pending')score+=700;
  if(brokerState==='active')score+=900;
- return {status,prob,floor,evidence,dir,blockers:clean,score,intent,brokerState};
+ return {status,prob,floor,evidence,evidenceFloor,dir,blockers:clean,score,intent,brokerState};
 }
 function dateValue(v){
  const n=Number(v);return new Date(Number.isFinite(n)&&n>100000000000?n:v);
@@ -159,14 +159,14 @@ function opportunityCard(s,i,{compact=false}={}){
  const side=s.leanDirection||s.candidateDirection||'WAIT',unit=p.unitLabel||'pips';
  return '<div class="opportunity-card '+(q.status==='STRICT'?'ready':'')+'">'+
    '<div class="opportunity-head"><div><b>'+esc(s.symbol)+' <span class="'+cls(side)+'">'+esc(side)+'</span></b><small>'+esc(String(s.timeframe||'').toUpperCase())+' · '+esc(s.analysis?.strategyFamily||s.regime||'market scan')+'</small></div><span class="pill '+(q.status==='STRICT'?'good':'neutral')+'">'+esc(signalStatusMeta(q.status).label)+'</span></div>'+
-   '<div class="opportunity-numbers"><div><span>Probability</span><b>'+pct(q.prob)+'</b><small>floor '+pct(q.floor)+'</small></div><div><span>Evidence</span><b>'+(q.evidence==null?'—':Math.round(q.evidence)+'%')+'</b><small>floor 60%</small></div><div><span>R:R</span><b>'+(p.riskReward?Number(p.riskReward).toFixed(2):'—')+'</b><small>'+esc(p.targetPips==null?'':num(p.targetPips)+' '+unit)+'</small></div></div>'+
+   '<div class="opportunity-numbers"><div><span>Probability</span><b>'+pct(q.prob)+'</b><small>floor '+pct(q.floor)+'</small></div><div><span>Evidence</span><b>'+(q.evidence==null?'—':Math.round(q.evidence)+'%')+'</b><small>floor '+Math.round(q.evidenceFloor)+'%</small></div><div><span>R:R</span><b>'+(p.riskReward?Number(p.riskReward).toFixed(2):'—')+'</b><small>'+esc(p.targetPips==null?'':num(p.targetPips)+' '+unit)+'</small></div></div>'+
    (!compact?'<div class="opportunity-plan"><span>Entry <b>'+fmt(p.entry)+'</b></span><span>SL <b>'+fmt(p.stop)+'</b></span><span>TP <b>'+fmt(p.target)+'</b></span></div>':'')+
    '<div class="why-line"><span class="label">Why not yet?</span><b>'+esc(q.status==='STRICT'?'Nothing — setup is ready':nextReason(q))+'</b></div>'+
    (q.brokerState!=='none'?'<div class="broker-state '+track.css+'"><b>'+esc(track.label)+'</b><small>'+esc(track.detail)+'</small></div>':'')+
    '<div class="operator-buttons"><button class="small-btn" onclick="showChart('+i+')">Chart</button><button class="small-btn" onclick="explain('+i+')">Why?</button>'+(q.status==='STRICT'?'<button class="small-btn primary" onclick="trade('+i+')">XM preview</button>':'')+'</div>'+
  '</div>';
 }
-function renderOperator(rows,m,broker,intents,ops,storage){
+function renderOperator(rows,m,broker,intents,ops,storage,edge){
  const now=new Date(),qs=rows.map((s,i)=>({s,i,q:qualification(s)})).sort((a,b)=>b.q.score-a.q.score);
  const strict=qs.filter(x=>x.q.status==='STRICT');
  const brokerPending=(intents||[]).filter(x=>intentState(x)==='pending');
@@ -180,6 +180,11 @@ function renderOperator(rows,m,broker,intents,ops,storage){
  else if(brokerPending.length){state='XM MONITORING';css='good';title=brokerPending.length+' pending order'+(brokerPending.length===1?' is':'s are')+' at XM';message='XM is watching live price for the pending entry. The bot does not need a 15-minute cycle to trigger that broker-side order.';action='WAIT';actionNote='XM will trigger the entry if price reaches it.';}
  else if(strict.length){state='TRADE READY';css='good';title=strict.length+' setup'+(strict.length===1?' has':'s have')+' passed the gates';message=ops?.autoDemoStrict?'Automatic demo execution is enabled. ForexBot should create and dispatch the eligible intent through the broker checks.':'A strict setup exists but automatic strict demo execution is not enabled.';action=ops?.autoDemoStrict?'AUTO-SEND':'REVIEW';actionNote=ops?.autoDemoStrict?'No manual action unless broker dispatch reports a problem.':'Review the setup and XM preview.';}
  else if(candidates.length){state='WATCHING';css='warn';title='Setups exist, but none are executable';message='The closest ideas are being shadow-tracked. One or more probability, evidence, model or risk gates are still blocking broker execution.';action='WAIT';actionNote='Use Near Qualification below to see what is missing.';}
+ if(!brokerActive.length&&!brokerPending.length&&!strict.length&&edge?.dataHealth==='DEGRADED'){
+   state='DATA WARNING';css='warn';title='Prediction data needs attention';
+   message=(edge.reasons||[]).find(x=>/data|quota|ingestion/i.test(x))||'Recent market-data failures are reducing prediction freshness.';
+   action='WAIT';actionNote='Do not judge or increase trading risk until the feed is healthy.';
+ }
  $('botStateBadge').className='operator-badge '+css;
  $('botStateBadge').textContent=state;
  $('botStateTitle').textContent=title;
@@ -196,6 +201,8 @@ function renderOperator(rows,m,broker,intents,ops,storage){
  $('bestOpportunity').innerHTML=best?opportunityCard(best.s,best.i):'<div class="operator-empty">No market data available.</div>';
  $('systemMode').textContent=esc(String(broker?.mode||ops?.executionMode||'demo').toUpperCase());
  $('systemHealth').innerHTML=
+   '<div><span class="dot '+(edge?.convincing?'ok':'')+'"></span><div><b>Prediction quality: '+esc(edge?.verdict||'UNKNOWN')+'</b><small>'+esc(edge?.convincing?'Positive validated edge after costs':(edge?.reasons?.[0]||'Validation evidence is still accumulating'))+'</small></div></div>'+
+   '<div><span class="dot '+(edge?.dataHealth==='HEALTHY'?'ok':'')+'"></span><div><b>Market data: '+esc(edge?.dataHealth||'UNKNOWN')+'</b><small>'+esc(edge?.data?.quotaFailures?edge.data.quotaFailures+' recent quota/rate-limit failures':(edge?.data?.failures||0)+' recent ingestion failures')+'</small></div></div>'+
    '<div><span class="dot '+(brokerOk?'ok':'')+'"></span><div><b>XM bridge</b><small>'+(brokerOk?'Connected and account available':'Broker connection needs attention')+'</small></div></div>'+
    '<div><span class="health-icon">↻</span><div><b>Market/research cycle</b><small>'+(cadence?'Every '+cadence+' minutes':'Configured by worker')+' · closed candles only</small></div></div>'+
    '<div><span class="health-icon">⚡</span><div><b>Broker reconciliation</b><small>'+(ops?.brokerReconcileSeconds?'Every '+ops.brokerReconcileSeconds+' seconds':'Not enabled')+'</small></div></div>'+
@@ -232,18 +239,19 @@ function renderNearQualification(qs){
    const blockerCount=q.blockers.length;
    return '<div class="near-row"><div class="near-main"><div><b>'+esc(s.symbol)+' · '+esc(String(s.timeframe||'').toUpperCase())+'</b><small class="'+cls(s.leanDirection)+'">'+esc(s.leanDirection||'WAIT')+'</small></div><span class="pill neutral">'+blockerCount+' blocker'+(blockerCount===1?'':'s')+'</span></div>'+
      progressRow('Setup probability',q.prob,q.floor,q.prob==null?'waiting':pct(q.prob)+' / '+pct(q.floor))+
-     progressRow('Evidence',q.evidence,60,q.evidence==null?'waiting':Math.round(q.evidence)+'% / 60%')+
+     progressRow('Evidence',q.evidence,q.evidenceFloor,q.evidence==null?'waiting':Math.round(q.evidence)+'% / '+Math.round(q.evidenceFloor)+'%')+
      '<div class="blocker-list">'+(q.blockers.slice(0,3).map(b=>'<span>• '+esc(b)+'</span>').join('')||'<span>• Waiting for the next qualifying candle</span>')+'</div>'+
      '<div class="operator-buttons"><button class="small-btn" onclick="showChart('+i+')">Chart</button><button class="small-btn" onclick="explain('+i+')">Full explanation</button></div></div>';
  }).join('')||'<div class="operator-empty">No blocked setups to explain.</div>';
 }
 
-function renderAccuracy(m){
+function renderAccuracy(m,edge){
  const strict=m.strict||m.actionable,research=m.researchCandidates||m.qualified,all=m.allTimeActionable||strict;
  const r=x=>x==null?'—':Number(x).toFixed(2)+'R',pf=x=>x==null?'—':Number(x).toFixed(2);
  const currentExpectancy=strict.settled?r(strict.averageR):'—';
  const priorNote=!strict.settled&&all.settled?`<small>Current model: no finished approved setups yet · all-time ${r(all.averageR)} across ${all.settled} finished</small>`:'';
  $('accuracyCards').innerHTML=`
+ <div class="card metric"><span class="label">Overall prediction quality</span><div class="big compact">${esc(edge?.verdict||'UNKNOWN')}</div><span class="muted">${edge?.approvedSeries||0} approved series · data ${esc(edge?.dataHealth||'unknown')} · ${edge?.convincing?'evidence is convincing':'not proven profitable yet'}</span></div>
  <div class="card metric"><span class="label">Approved-trade expectancy</span><div class="big">${currentExpectancy}</div><span class="muted">95% lower ${r(strict.expectancyLower95)} · PF ${pf(strict.profitFactorR)} · win rate ${pct(strict.accuracy)}</span>${priorNote}</div>
  <div class="card metric"><span class="label">Approved setups open</span><div class="big compact">${strict.pendingEntry+strict.active} open</div><span class="muted">${strict.pendingEntry} waiting for entry · ${strict.active} entry triggered</span></div>
  <div class="card metric"><span class="label">Profitability validation</span><div class="big compact">${m.readyForBrokerValidation?'READY':'RESEARCH'}</div><span class="muted">${strict.settled} settled · drawdown ${r(strict.maxDrawdownR)} · expectancy must stay positive after costs</span></div>
@@ -360,10 +368,10 @@ function renderHistory(rows){historyRows=rows||[];$('signalHistory').innerHTML=h
 
 window.load=async()=>{
  try{
-  const [m,b,h,e,s,broker,x,ops,storage]=await Promise.all([get('/api/signals/metrics'),get('/api/signals/board'),get('/api/signals/history?limit=200'),get('/api/research/edge'),get('/api/settings'),get('/api/broker/status'),get('/api/execution/intents?limit=100'),get('/api/operations/status'),get('/api/storage/status')]);
+  const [m,b,h,e,s,broker,x,ops,storage,edge]=await Promise.all([get('/api/signals/metrics'),get('/api/signals/board'),get('/api/signals/history?limit=200'),get('/api/research/edge'),get('/api/settings'),get('/api/broker/status'),get('/api/execution/intents?limit=100'),get('/api/operations/status'),get('/api/storage/status'),get('/api/system/edge-status')]);
   executionIntents=x||[];operationsStatus=ops||{};settings=s;board=b||[];
-  renderSettings(s);renderBroker(broker);renderOperator(board,m,broker,executionIntents,operationsStatus,storage);
-  renderAccuracy(m);renderBoard(board);renderHistory(h);renderEdge(e);renderSeries(m);renderBrokerActivity(executionIntents);
+  renderSettings(s);renderBroker(broker);renderOperator(board,m,broker,executionIntents,operationsStatus,storage,edge);
+  renderAccuracy(m,edge);renderBoard(board);renderHistory(h);renderEdge(e);renderSeries(m);renderBrokerActivity(executionIntents);
  }catch(e){toast(friendly(e))}
 };
 load();setInterval(load,60000);
