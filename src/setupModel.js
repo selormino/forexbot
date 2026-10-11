@@ -296,11 +296,22 @@ function rangeReversionScore(row,side){
   const raw=-.45*rsiBias-.35*bbBias-.20*Math.tanh(momentum);
   return sign*raw;
 }
+function scalpSessionAllowed(symbol,hour){
+  const h=Number(hour);
+  if(!Number.isFinite(h))return false;
+  if(symbol==='USDJPY')return (h>=0&&h<4)||(h>=6&&h<18);
+  return h>=6&&h<20;
+}
+
 function eligible(row,side,costBps,family='trend'){
   const sign=side==='LONG'?1:-1;
   const effectiveCostBps=Number(row.costBps??costBps??0);
   const tf=String(row.timeframe||'');
   const costRangeMultiple=tf==='5m'?4:['15m','30m'].includes(tf)?3:2;
+  if(tf==='5m'){
+    if(row.costObserved!==true)return false;
+    if(!scalpSessionAllowed(String(row.symbol||''),row.sessionHour))return false;
+  }
   if(Number(row.atr||0)/Math.max(Number(row.price||0),1e-12)*10000<effectiveCostBps*costRangeMultiple)return false;
   if(family==='cta'){
     const score=Number(row.ctaScore||0),strength=Number(row.ctaTrendStrength||0);
