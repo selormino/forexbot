@@ -17,7 +17,7 @@ const SCALP_SYMBOLS=String(process.env.SCALP_SYMBOLS||'EURUSD,GBPUSD,USDJPY,XAUU
   .split(',').map(x=>x.trim().toUpperCase()).filter(x=>SYMBOLS.includes(x));
 const scalpEnabled=()=>process.env.SCALP_ENABLED==='true';
 const scalpDispatchEnabled=()=>process.env.SCALP_DEMO_DISPATCH==='true';
-let syncing=false,scalpSyncing=false;
+let syncing=false,scalpSyncing=false,scalpBootstrapPending=true;
 
 async function autoDemoStrict(signals){
   if(process.env.AUTO_DEMO_STRICT!=='true')return [];
@@ -217,6 +217,7 @@ async function generateScalpSignals(){
 
 async function runScalpCycle({bootstrap=false}={}){
   if(!scalpEnabled())return {skipped:'scalping disabled'};
+  if(syncing)return {skipped:'main research cycle active'};
   if(scalpSyncing)return {skipped:'scalp cycle already running'};
   scalpSyncing=true;
   const startedAt=Date.now();
@@ -224,9 +225,11 @@ async function runScalpCycle({bootstrap=false}={}){
     const market=process.env.HISTORY_AUTO_SYNC==='true'
       ?await history.syncHistory({symbols:SCALP_SYMBOLS,timeframes:['5m'],outputsize:Number(process.env.SCALP_SYNC_BARS||500)})
       :[];
-    const scalpBackfill=bootstrap&&process.env.SCALP_BACKFILL_ENABLED==='true'
+    const doBackfill=(bootstrap||scalpBootstrapPending)&&process.env.SCALP_BACKFILL_ENABLED==='true';
+    const scalpBackfill=doBackfill
       ?await history.backfillHistory({symbols:SCALP_SYMBOLS,timeframes:['5m'],targetBars:Number(process.env.SCALP_BACKFILL_TARGET_BARS||10000),maxPages:Number(process.env.SCALP_BACKFILL_PAGES||2)})
       :[];
+    if(doBackfill)scalpBootstrapPending=false;
     const settledSignals=signalMonitor.settle();
     const {recordedSignals,generatedSignals}=await generateScalpSignals();
     const autoDemoRuns=scalpDispatchEnabled()?await autoDemoStrict(generatedSignals):[];
