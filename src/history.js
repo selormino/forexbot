@@ -1,8 +1,8 @@
 const db = require('./db');
-const { SYMBOLS, historicalCandles, providerStatus } = require('./providers');
+const { SYMBOLS, historicalCandles, providerStatus, marketProviderFor } = require('./providers');
 const { features } = require('./analysis');
 
-const DEFAULT_TIMEFRAMES = (process.env.HISTORICAL_TIMEFRAMES || '15m,30m,1h,4h,1d').split(',').map(x => x.trim()).filter(Boolean);
+const DEFAULT_TIMEFRAMES = (process.env.HISTORICAL_TIMEFRAMES || '5m,15m,30m,1h,4h,1d').split(',').map(x => x.trim()).filter(Boolean);
 const MAX_BARS = Math.max(250, Math.min(5000, Number(process.env.HISTORICAL_BARS || 1500)));
 const HORIZON = Math.max(1, Number(process.env.LABEL_HORIZON_BARS || 4));
 const MIN_MOVE_BPS = Math.max(0, Number(process.env.LABEL_MIN_MOVE_BPS || 3));
@@ -59,18 +59,16 @@ async function ingestOne(symbol, timeframe, options = {}) {
     VALUES(?,?,?,?,?)`).run(startedAt, symbol, timeframe, providerStatus().market, 'RUNNING');
   try {
     const latestRow = db.prepare('SELECT ts,provider FROM candles WHERE symbol=? AND timeframe=? ORDER BY ts DESC LIMIT 1').get(symbol, timeframe);
-    const strictProvider = String(process.env.MARKET_PROVIDER || 'auto').toLowerCase();
-    const fallbackSymbols = String(process.env.MARKET_FALLBACK_SYMBOLS || 'XAGUSD,WTI').split(',').map(x => x.trim().toUpperCase());
-    const expectedProvider = fallbackSymbols.includes(symbol) ? 'yahoo' : strictProvider;
-    const resetProvider = ['twelvedata','yahoo'].includes(expectedProvider) && latestRow && latestRow.provider !== expectedProvider;
+    const expectedProvider = marketProviderFor(symbol,timeframe);
+    const resetProvider = ['twelvedata','yahoo','mt5'].includes(expectedProvider) && latestRow && latestRow.provider !== expectedProvider;
     const latest = resetProvider ? null : (latestRow?.ts || null);
     const fetched = await historicalCandles(symbol, timeframe, {
       outputsize: Number(options.outputsize || MAX_BARS),
       startTime: latest ? Math.max(0, latest - timeframeMs(timeframe) * 2) : null
     });
-    const insert = db.prepare(`INSERT INTO candles(symbol,timeframe,ts,open,high,low,close,volume,provider,ingested_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,ts) DO UPDATE SET
-      open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,provider=excluded.provider,ingested_at=excluded.ingested_at`);
+    const insert = db.prepare(`INSERT INTO candles(symbol,timeframe,ts,open,high,low,close,volume,provider,spread_bps,ingested_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,ts) DO UPDATE SET
+      open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,provider=excluded.provider,spread_bps=excluded.spread_bps,ingested_at=excluded.ingested_at`);
     let upserted = 0;
     const tx = db.transaction(() => {
       if (resetProvider) {
@@ -78,7 +76,7 @@ async function ingestOne(symbol, timeframe, options = {}) {
         db.prepare('DELETE FROM observations WHERE symbol=? AND timeframe=?').run(symbol, timeframe);
       }
       for (const c of fetched) {
-        const r = insert.run(symbol, timeframe, c.time, c.open, c.high, c.low, c.close, c.volume || 0, c.provider || providerStatus().market, Date.now());
+        const r = insert.run(symbol, timeframe, c.time, c.open, c.high, c.low, c.close, c.volume || 0, c.provider || expectedProvider, Number.isFinite(Number(c.spreadBps))?Number(c.spreadBps):null, Date.now());
         upserted += r.changes;
       }
     });
@@ -101,18 +99,18 @@ async function backfillOne(symbol,timeframe,{targetBars=Math.max(MAX_BARS,Number
     const meta=db.prepare('SELECT COUNT(*) n,MIN(ts) oldest,MAX(ts) newest,MIN(provider) provider FROM candles WHERE symbol=? AND timeframe=?').get(symbol,timeframe);
     if((meta?.n||0)>=targetBars){result.status='TARGET_REACHED';result.candles=meta.n;break;}
     if(!meta?.oldest){result.status='NO_EXISTING_HISTORY';break;}
-    if(meta.provider!=='twelvedata'){result.status='PROVIDER_NO_BACKWARD_PAGING';result.provider=meta.provider;result.candles=meta.n;break;}
+    if(!['twelvedata','mt5'].includes(meta.provider)){result.status='PROVIDER_NO_BACKWARD_PAGING';result.provider=meta.provider;result.candles=meta.n;break;}
     const need=Math.min(5000,Math.max(250,targetBars-meta.n+120));
     result.requests++;
     const fetched=await historicalCandles(symbol,timeframe,{outputsize:need,endTime:meta.oldest-step});
     if(!fetched.length){result.status='NO_OLDER_DATA';result.candles=meta.n;break;}
-    const insert=db.prepare(`INSERT INTO candles(symbol,timeframe,ts,open,high,low,close,volume,provider,ingested_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,ts) DO UPDATE SET
-      open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,provider=excluded.provider,ingested_at=excluded.ingested_at`);
+    const insert=db.prepare(`INSERT INTO candles(symbol,timeframe,ts,open,high,low,close,volume,provider,spread_bps,ingested_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,ts) DO UPDATE SET
+      open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,provider=excluded.provider,spread_bps=excluded.spread_bps,ingested_at=excluded.ingested_at`);
     let changes=0;
     const tx=db.transaction(()=>{
       for(const bar of fetched){
-        const r=insert.run(symbol,timeframe,bar.time,bar.open,bar.high,bar.low,bar.close,bar.volume||0,bar.provider||'twelvedata',Date.now());
+        const r=insert.run(symbol,timeframe,bar.time,bar.open,bar.high,bar.low,bar.close,bar.volume||0,bar.provider||meta.provider,Number.isFinite(Number(bar.spreadBps))?Number(bar.spreadBps):null,Date.now());
         changes+=r.changes;
       }
     });tx();
@@ -133,7 +131,7 @@ async function backfillHistory({symbols=SYMBOLS,timeframes=DEFAULT_TIMEFRAMES,ta
     catch(error){result={symbol,timeframe,status:'FAILED',requests:1,error:error.message};}
     results.push(result);
     index++;
-    if(index<total&&REQUEST_DELAY_MS&&Number(result.requests||0)>0)await sleep(REQUEST_DELAY_MS);
+    if(index<total&&REQUEST_DELAY_MS&&Number(result.requests||0)>0&&marketProviderFor(symbol,timeframe)!=='mt5')await sleep(REQUEST_DELAY_MS);
   }
   return results;
 }
@@ -147,7 +145,7 @@ async function syncHistory({ symbols = SYMBOLS, timeframes = DEFAULT_TIMEFRAMES,
       try { results.push(await ingestOne(symbol, timeframe, { outputsize })); }
       catch (error) { results.push({ symbol, timeframe, status: 'FAILED', error: error.message }); }
       requestIndex++;
-      if (requestIndex < totalRequests && REQUEST_DELAY_MS) await sleep(REQUEST_DELAY_MS);
+      if (requestIndex < totalRequests && REQUEST_DELAY_MS && marketProviderFor(symbol,timeframe)!=='mt5') await sleep(REQUEST_DELAY_MS);
     }
   }
   return results;
