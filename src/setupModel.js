@@ -299,7 +299,8 @@ function rangeReversionScore(row,side){
 function eligible(row,side,costBps,family='trend'){
   const sign=side==='LONG'?1:-1;
   const effectiveCostBps=Number(row.costBps??costBps??0);
-  const costRangeMultiple=['15m','30m'].includes(String(row.timeframe||''))?3:2;
+  const tf=String(row.timeframe||'');
+  const costRangeMultiple=tf==='5m'?4:['15m','30m'].includes(tf)?3:2;
   if(Number(row.atr||0)/Math.max(Number(row.price||0),1e-12)*10000<effectiveCostBps*costRangeMultiple)return false;
   if(family==='cta'){
     const score=Number(row.ctaScore||0),strength=Number(row.ctaTrendStrength||0);
@@ -318,7 +319,7 @@ function eligible(row,side,costBps,family='trend'){
     return true;
   }
   if(row.regime!=='trend'||sign*Number(row.trend||0)<=0)return false;
-  if(['15m','30m'].includes(String(row.timeframe||''))){
+  if(['5m','15m','30m'].includes(String(row.timeframe||''))){
     if(!Number.isFinite(Number(row.higherTimeframeTrend)))return false;
     if(sign*Number(row.higherTimeframeTrend)<=0)return false;
   }
@@ -383,6 +384,13 @@ function examples(rows,symbol,costBps,planOptions={}){
   return out;
 }
 const PLAN_PROFILES=[
+  // Scalping candidates intentionally use small targets and short holding
+  // windows. They are research-only until broker-native data and OOS gates pass.
+  {name:'scalp-5m-range-0.6r',timeframes:['5m'],strategyFamily:'range',entryBufferAtr:.02,stopAtr:.65,targetR:.6,entryExpiryBars:2,holdBars:8},
+  {name:'scalp-5m-range-0.8r',timeframes:['5m'],strategyFamily:'range',entryBufferAtr:.03,stopAtr:.70,targetR:.8,entryExpiryBars:2,holdBars:12},
+  {name:'scalp-5m-trend-0.8r',timeframes:['5m'],strategyFamily:'trend',entryBufferAtr:.03,stopAtr:.70,targetR:.8,entryExpiryBars:2,holdBars:12},
+  {name:'scalp-5m-trend-1r',timeframes:['5m'],strategyFamily:'trend',entryBufferAtr:.04,stopAtr:.80,targetR:1.0,entryExpiryBars:3,holdBars:18},
+  {name:'scalp-5m-trend-1.2r',timeframes:['5m'],strategyFamily:'trend',entryBufferAtr:.05,stopAtr:.90,targetR:1.2,entryExpiryBars:3,holdBars:24},
   // Intraday profiles are intentionally timeframe-specific so entry expiry and
   // maximum holding time stay inside the same trading day in normal conditions.
   {name:'intraday-15m-range-0.8r',timeframes:['15m'],strategyFamily:'range',entryBufferAtr:.04,stopAtr:.9,targetR:.8,entryExpiryBars:4,holdBars:16},
