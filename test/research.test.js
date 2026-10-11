@@ -109,3 +109,34 @@ test('intraday setup eligibility requires more ATR room and aligned higher timef
   assert.equal(r.setupModel.eligible({...liquid,higherTimeframeTrend:.8},'LONG',6,'trend'),true);
   assert.equal(r.setupModel.eligible({...liquid,higherTimeframeTrend:-.8},'LONG',6,'trend'),false);
 });
+
+
+test('v41 scalping uses dedicated 5m probability, horizon and short plans',()=>{
+  const old=process.env.SCALP_MIN_PROBABILITY;
+  process.env.SCALP_MIN_PROBABILITY='0.65';
+  assert.equal(r.ms('5m'),300000);
+  assert.equal(r.isScalp('5m'),true);
+  assert.equal(r.horizonBars('5m'),6);
+  assert.equal(r.strategyThreshold('5m'),.65);
+  assert.equal(r.higherTimeframeFor('5m'),'15m');
+  const plans=r.planProfilesFor('5m');
+  assert.ok(plans.length>=5);
+  assert.ok(plans.every(p=>p.timeframes.includes('5m')));
+  assert.ok(plans.every(p=>(p.entryExpiryBars+p.holdBars)*r.ms('5m')<=135*60000));
+  if(old===undefined)delete process.env.SCALP_MIN_PROBABILITY;else process.env.SCALP_MIN_PROBABILITY=old;
+});
+
+test('5m scalping requires observed spread, liquid session and higher-timeframe alignment',()=>{
+  const base={symbol:'EURUSD',timeframe:'5m',price:1,atr:.004,trend:1,higherTimeframeTrend:.8,technicalBias:1,regime:'trend',sessionHour:13,priceAction:{bias:.5},context:{},costObserved:true};
+  assert.equal(r.setupModel.eligible(base,'LONG',6,'trend'),true);
+  assert.equal(r.setupModel.eligible({...base,costObserved:false},'LONG',6,'trend'),false);
+  assert.equal(r.setupModel.eligible({...base,sessionHour:2},'LONG',6,'trend'),false);
+  assert.equal(r.setupModel.eligible({...base,higherTimeframeTrend:-.8},'LONG',6,'trend'),false);
+});
+
+test('broker-observed spread overrides estimated spread in research costs',()=>{
+  const c=r.costs('EURUSD',Date.parse('2026-10-09T13:00:00Z'),{regime:'trend'},{observedSpreadBps:1.25});
+  assert.equal(c.observed,true);
+  assert.equal(c.spread,1.25);
+  assert.equal(c.model,'mt5-observed-spread+estimated-slippage');
+});

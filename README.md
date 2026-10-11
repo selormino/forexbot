@@ -115,6 +115,26 @@ The current model version includes price-action features in every training row a
 Run `npm test` locally. GitHub CI also runs syntax checks and price-action unit tests on pushes and pull requests.
 
 
+## v41 scalping research and edge status
+
+ForexBot now has a separate **5-minute scalping research family**. It is designed to create more short-duration opportunities, but it is deliberately **shadow/research-only by default**. A high win rate is not treated as proof of a good strategy: approval still requires positive net expectancy after spread, slippage and commission, a positive 95% lower confidence bound, acceptable profit factor, drawdown stability and an untouched chronological holdout.
+
+The default scalp universe is `EURUSD, GBPUSD, USDJPY, XAUUSD`. Candidate plans use roughly 0.6R–1.2R targets, short entry windows and approximately 40-minute to 2-hour maximum holding windows. Trend candidates require 15m directional alignment; range candidates use reversal evidence. Five-minute candidates are restricted to configured liquid sessions and must have at least 4x as much ATR range as modeled round-trip trading cost.
+
+Unlike slower research, **5m scalping cannot validate from estimated spreads alone**. The Windows XM MT5 bridge exposes authenticated closed candles through `GET /rates`, including the historical MT5 bar spread. When `MT5_MARKET_DATA_ENABLED=true`, Railway can use those broker-native candles for the configured symbols/timeframes. Scalping requires at least `SCALP_MIN_OBSERVED_COST_COVERAGE` (default 95%), `SCALP_MIN_HISTORY_DAYS` (default 30 days), and `SCALP_MIN_OOS_SELECTIONS` (default 100) before a model may be approved.
+
+`SCALP_DEMO_DISPATCH=false` is the default. While it remains false, 5m ideas are recorded and shadow-settled but cannot be manually or automatically sent to XM. After forward/demo evidence becomes convincing, demo dispatch can be explicitly enabled without enabling live money.
+
+The Signals page now calls `GET /api/system/edge-status` and presents a plain-language overall verdict:
+- **NOT_VALIDATED** — no current research series has passed the full OOS gates;
+- **VALIDATING** — at least one model has passed research gates, but forward evidence is still insufficient;
+- **VALIDATED** — approved research plus enough positive forward evidence after costs;
+- market-data health is shown separately as **HEALTHY** or **DEGRADED**.
+
+The status includes approved series count, approved forward settled sample, win rate, average R, 95% lower expectancy, profit factor, drawdown, filtered-shadow results and recent ingestion/quota failures. This is the preferred answer to “are the predictions actually good?” rather than looking only at individual probability percentages.
+
+Market-data polling is also close-aware: 1H, 4H and 1D providers are no longer called every 15 minutes when no new closed candle can exist, reducing unnecessary Twelve Data credit consumption.
+
 ## Intraday 15m/30m strategy
 
 Research v40 adds dedicated **15-minute and 30-minute** models so ForexBot can identify opportunities that are intended to resolve within the same trading day rather than waiting mainly on 4H/1D setups.
@@ -189,7 +209,7 @@ The main view is split into **Trade Now**, **Watching**, and **Near Qualificatio
 ## Signal monitoring and accuracy
 The signal engine records one decision per closed candle for each supported market and monitored timeframe. The directional model first proposes LONG/SHORT only when `DIRECTIONAL_MIN_PROBABILITY` is met. A second model then estimates `P(success | confirmation entry triggers)` for the actual entry/SL/TP structure. `SIGNAL_MIN_PROBABILITY` is the minimum setup-success probability. No-entry setups expire and are not counted as losses.
 
-The dedicated `/signals.html` page shows the current 1H/4H/1D board, price-action context, filters, historical signals, settled wins/losses, observed accuracy, expectancy, profit factor and drawdown. Broker-validation readiness requires a minimum settled sample plus positive monitored average R, a positive 95% lower expectancy bound, and profit factor above 1; win rate remains diagnostic.
+The dedicated `/signals.html` page shows the enabled 5m/15m/30m/1H/4H/1D board, price-action context, filters, historical signals, settled wins/losses, observed accuracy, expectancy, profit factor and drawdown. Broker-validation readiness requires a minimum settled sample plus positive monitored average R, a positive 95% lower expectancy bound, and profit factor above 1; win rate remains diagnostic.
 
 
 ## Broker connectivity

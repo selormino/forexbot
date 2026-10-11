@@ -81,6 +81,7 @@ function addColumn(table, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(x => x.name);
   if (!columns.includes(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
 }
+addColumn('candles', 'spread_bps REAL');
 addColumn('observations', "timeframe TEXT NOT NULL DEFAULT '1h'");
 addColumn('observations', 'horizon INTEGER NOT NULL DEFAULT 4');
 addColumn('observations', "feature_version TEXT NOT NULL DEFAULT 'technical-v1'");

@@ -1,4 +1,5 @@
 import os, math, json, re
+from datetime import datetime, timezone
 from fastapi import FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -18,7 +19,7 @@ try:
 except Exception:
     SYMBOL_MAP={}
 
-app=FastAPI(title="ForexBot MT5 Bridge",version="1.2.0")
+app=FastAPI(title="ForexBot MT5 Bridge",version="1.3.0")
 
 class Order(BaseModel):
     clientOrderId:str
@@ -168,6 +169,86 @@ def prepare(order:Order,adjust_entry:bool=False):
     if check is None or check.retcode!=0:
         raise HTTPException(400,f"MT5 order_check failed: {check or mt5.last_error()}")
     return account,broker_symbol,tick,volume,risk_cash,request,check,{"adjusted":adjusted,"originalEntry":original_entry,"entry":entry,"stop":stop,"target":target,"safetyGap":safety_gap,"spread":spread,"spreadStopRatio":spread_stop_ratio,"spreadTargetRatio":spread_target_ratio,"brokerMinDistance":broker_min}
+
+
+TIMEFRAMES={
+    "1m":mt5.TIMEFRAME_M1,
+    "5m":mt5.TIMEFRAME_M5,
+    "15m":mt5.TIMEFRAME_M15,
+    "30m":mt5.TIMEFRAME_M30,
+    "1h":mt5.TIMEFRAME_H1,
+    "4h":mt5.TIMEFRAME_H4,
+    "1d":mt5.TIMEFRAME_D1,
+}
+TIMEFRAME_SECONDS={"1m":60,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400}
+
+@app.get("/rates")
+def rates(
+    symbol:str,
+    timeframe:str=Query(default="5m"),
+    count:int=Query(default=1500,ge=1,le=5000),
+    from_ts:int|None=Query(default=None),
+    to_ts:int|None=Query(default=None),
+    authorization:str|None=Header(default=None)
+):
+    auth(authorization)
+    ensure_mt5()
+    tf=TIMEFRAMES.get(timeframe)
+    if tf is None:
+        raise HTTPException(400,"Unsupported timeframe")
+    broker_symbol=resolve_symbol(symbol.upper())
+    info=mt5.symbol_info(broker_symbol)
+    if info is None:
+        raise HTTPException(400,"Symbol metadata unavailable")
+    point=float(info.point or (10 ** (-int(info.digits))))
+
+    rows=None
+    if from_ts is not None:
+        start=datetime.fromtimestamp(max(0,int(from_ts))/1000.0,tz=timezone.utc)
+        end=datetime.fromtimestamp((int(to_ts) if to_ts is not None else int(datetime.now(tz=timezone.utc).timestamp()*1000))/1000.0,tz=timezone.utc)
+        rows=mt5.copy_rates_range(broker_symbol,tf,start,end)
+    elif to_ts is not None:
+        end=datetime.fromtimestamp(int(to_ts)/1000.0,tz=timezone.utc)
+        rows=mt5.copy_rates_from(broker_symbol,tf,end,count+2)
+    else:
+        rows=mt5.copy_rates_from_pos(broker_symbol,tf,0,count+2)
+
+    if rows is None:
+        raise HTTPException(503,f"MT5 copy_rates failed: {mt5.last_error()}")
+
+    now_ms=int(datetime.now(tz=timezone.utc).timestamp()*1000)
+    step_ms=TIMEFRAME_SECONDS[timeframe]*1000
+    out=[]
+    for row in rows:
+        ts=int(row["time"])*1000
+        if ts+step_ms>now_ms:
+            continue
+        close=float(row["close"])
+        spread_points=float(row["spread"] or 0)
+        spread_bps=(spread_points*point/max(close,1e-12))*10000.0
+        out.append({
+            "time":ts,
+            "open":float(row["open"]),
+            "high":float(row["high"]),
+            "low":float(row["low"]),
+            "close":close,
+            "volume":float(row["tick_volume"] or 0),
+            "realVolume":float(row["real_volume"] or 0),
+            "spreadPoints":spread_points,
+            "spreadBps":spread_bps,
+            "provider":"mt5"
+        })
+    out=sorted(out,key=lambda x:x["time"])
+    if from_ts is None and len(out)>count:
+        out=out[-count:]
+    return {
+        "symbol":symbol.upper(),
+        "brokerSymbol":broker_symbol,
+        "timeframe":timeframe,
+        "point":point,
+        "count":len(out),
+        "rates":out
+    }
 
 @app.get("/health")
 def health(authorization:str|None=Header(default=None)):

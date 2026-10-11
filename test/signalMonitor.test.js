@@ -108,3 +108,19 @@ test('15m intraday setup uses intraday lifecycle timing',()=>{
   assert.equal(row.status,'PENDING_ENTRY');
   assert.equal(row.due_at,source+(1+4+24)*900000);
 });
+
+
+test('5m scalp setup uses short lifecycle timing',()=>{
+  const source=30_000_000;
+  const row=monitor.record({
+    symbol:'EURUSD',timeframe:'5m',sourceCandleTs:source,
+    candidateDirection:'LONG',direction:'WAIT',leanDirection:'LONG',
+    probability:.69,setupProbability:.69,directionalProbability:.63,directionalMinProbability:.55,
+    minProbability:.65,price:1.1,modelId:20,modelVersion:'scalp-test',horizonBars:6,
+    costs:{total:4,observed:true},filters:['Model has not passed out-of-sample validation gates'],priceAction:{bias:.3},analysis:{strategyMode:'scalp'},
+    tradePlan:{entry:1.101,stop:1.097,target:1.1042,tp1:1.1026,stopPips:40,targetPips:32,unitLabel:'pips',entryExpiryBars:2,holdBars:12}
+  });
+  assert.equal(row.qualified,1);
+  assert.equal(row.status,'PENDING_ENTRY');
+  assert.equal(row.due_at,source+(1+2+12)*300000);
+});
