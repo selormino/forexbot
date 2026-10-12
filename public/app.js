@@ -24,6 +24,29 @@ function renderSignal(s){
 }
 function renderNews(a){$('news').innerHTML=(a||[]).slice(0,5).map(n=>`<div class="article"><b>${esc(n.headline)}</b><small>${esc(n.source||'')} · ${n.time?new Date(n.time).toLocaleString():''}</small></div>`).join('')||'<p class="muted">No recent news.</p>'}
 function renderCalendar(a){$('calendar').innerHTML=(a||[]).slice(0,6).map(e=>`<div class="event"><b>${esc(e.currency||e.country||'')}</b><span>${esc(e.event)}<br><small>${e.time?new Date(e.time).toLocaleString():''}</small></span><span class="pill neutral">${esc(e.impact||'')}</span></div>`).join('')||'<p class="muted">No upcoming events.</p>'}
-async function loadHealth(){try{const [r,h,p]=await Promise.all([get('/api/research/status'),get('/api/history/status'),get('/api/providers')]);const symbol=$('symbol').value,tf=$('timeframe').value,m=r.models.find(x=>x.symbol===symbol&&x.timeframe===tf);$('researchHealth').textContent=m?`Model: ${m.approved?'validated':'research only'} · ${m.samples||0} samples · fundamental coverage ${((m.fundamentalCoverage||0)*100).toFixed(1)}%`:'Model is awaiting training for this market/timeframe.';$('dataSources').textContent=`Stored candles: ${h.totals?.candles||0} · Market: ${String(p.market||'').toUpperCase()} · News: ${String(p.news||'').toUpperCase()}`;}catch(e){$('researchHealth').textContent='Research status unavailable.'}}
-window.loadSignal=async()=>{const symbol=$('symbol').value,tf=$('timeframe').value;$('hero').innerHTML='<div class="card">Loading analysis…</div>';try{const [s,e,n]=await Promise.all([get('/api/signal?symbol='+symbol+'&timeframe='+tf),get('/api/calendar'),get('/api/news?symbol='+symbol)]);renderSignal(s);renderCalendar(e);renderNews(n);loadHealth();}catch(e){$('hero').innerHTML='<div class="card">'+esc(e.message)+'</div>'}};
+async function loadHealth(){
+ try{
+  const [r,h,p,edge]=await Promise.all([get('/api/research/status'),get('/api/history/status'),get('/api/providers'),get('/api/system/edge-status')]);
+  const symbol=$('symbol').value,tf=$('timeframe').value,m=r.models.find(x=>x.symbol===symbol&&x.timeframe===tf);
+  const modelText=m?`${m.approved?'validated':'research only'} · ${m.samples||0} samples`:'awaiting training';
+  $('researchHealth').textContent=`Prediction quality: ${edge.verdict||'UNKNOWN'} · ${symbol} ${tf.toUpperCase()} model: ${modelText} · approved series ${edge.approvedSeries||0}/${edge.totalSeries||0}`;
+  $('dataSources').textContent=`Data health: ${edge.dataHealth||'UNKNOWN'} · Stored candles: ${h.totals?.candles||0} · Market: ${p.mt5MarketDataEnabled?'MT5 + '+String(p.market||'').toUpperCase():String(p.market||'').toUpperCase()} · News: ${String(p.news||'').toUpperCase()}`;
+ }catch(e){$('researchHealth').textContent='Research status unavailable.'}
+}
+window.loadSignal=async()=>{
+ const symbol=$('symbol').value,tf=$('timeframe').value;
+ $('hero').innerHTML='<div class="card">Loading analysis…</div>';
+ const [signalResult,calendarResult,newsResult]=await Promise.allSettled([
+  get('/api/signal?symbol='+symbol+'&timeframe='+tf),
+  get('/api/calendar'),
+  get('/api/news?symbol='+symbol)
+ ]);
+ if(signalResult.status==='fulfilled')renderSignal(signalResult.value);
+ else $('hero').innerHTML='<div class="card">Signal analysis unavailable: '+esc(signalResult.reason?.message||'request failed')+'</div>';
+ if(calendarResult.status==='fulfilled')renderCalendar(calendarResult.value);
+ else $('calendar').innerHTML='<div class="notice">Economic calendar is temporarily unavailable. Strict trade qualification remains protected and will not treat missing calendar data as safe.</div>';
+ if(newsResult.status==='fulfilled')renderNews(newsResult.value);
+ else $('news').innerHTML='<div class="notice">News feed is temporarily unavailable. The core market analysis can still load while this source recovers.</div>';
+ loadHealth();
+};
 $('symbol').addEventListener('change',loadSignal);$('timeframe').addEventListener('change',loadSignal);loadSignal();
