@@ -84,3 +84,13 @@ test('MT5 rates endpoint has multi-method history fallback and bridge version di
   assert.match(bridge,/sourceMethod/);
   assert.match(bridge,/attempts/);
 });
+
+
+test('MT5 latest rates request starts from the first closed bar and uses broker time',()=>{
+  const bridge=read('main.py');
+  assert.match(bridge,/BRIDGE_VERSION="1\.3\.2"/);
+  assert.match(bridge,/copy_rates_from_pos\(broker_symbol,tf,1,count\+2\)/);
+  assert.match(bridge,/source_method!="from-pos-closed"/);
+  assert.match(bridge,/broker_now_ms/);
+  assert.match(bridge,/rawCount/);
+});
