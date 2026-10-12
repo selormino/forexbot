@@ -19,7 +19,7 @@ try:
 except Exception:
     SYMBOL_MAP={}
 
-BRIDGE_VERSION="1.3.1"
+BRIDGE_VERSION="1.3.2"
 app=FastAPI(title="ForexBot MT5 Bridge",version=BRIDGE_VERSION)
 
 class Order(BaseModel):
@@ -225,10 +225,12 @@ def rates(
         # MT5 terminals differ in which history call succeeds first after startup.
         # Try position, date-based and range-based access before treating history
         # as unavailable.
-        value=mt5.copy_rates_from_pos(broker_symbol,tf,0,count+2)
-        attempts.append({"method":"from-pos","count":0 if value is None else len(value),"error":mt5.last_error()})
+        # Position 0 is the still-forming bar. Start at 1 so the normal
+        # latest-bars path requests closed candles directly.
+        value=mt5.copy_rates_from_pos(broker_symbol,tf,1,count+2)
+        attempts.append({"method":"from-pos-closed","count":0 if value is None else len(value),"error":mt5.last_error()})
         if nonempty(value):
-            return value,"from-pos"
+            return value,"from-pos-closed"
 
         now=datetime.now(tz=timezone.utc)
         value=mt5.copy_rates_from(broker_symbol,tf,now,count+2)
@@ -275,12 +277,22 @@ def rates(
             }
         )
 
-    now_ms=int(datetime.now(tz=timezone.utc).timestamp()*1000)
+    tick=mt5.symbol_info_tick(broker_symbol)
+    broker_now_ms=(
+        int(getattr(tick,"time_msc",0) or 0)
+        if tick is not None and int(getattr(tick,"time_msc",0) or 0)>0
+        else int(getattr(tick,"time",0) or 0)*1000
+        if tick is not None and int(getattr(tick,"time",0) or 0)>0
+        else int(datetime.now(tz=timezone.utc).timestamp()*1000)
+    )
     step_ms=TIMEFRAME_SECONDS[timeframe]*1000
     out=[]
     for row in rows:
         ts=int(row["time"])*1000
-        if ts+step_ms>now_ms:
+        # Explicit historical queries may include the active bar. Use broker
+        # tick time rather than the Windows host clock to decide whether a bar
+        # has closed. The default from-pos path already starts at position 1.
+        if source_method!="from-pos-closed" and ts+step_ms>broker_now_ms:
             continue
         close=float(row["close"])
         spread_points=float(row["spread"] or 0)
@@ -306,8 +318,10 @@ def rates(
         "timeframe":timeframe,
         "point":point,
         "count":len(out),
+        "rawCount":len(rows),
         "sourceMethod":source_method,
         "bridgeVersion":BRIDGE_VERSION,
+        "brokerNowMs":broker_now_ms,
         "rates":out
     }
 

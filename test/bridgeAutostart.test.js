@@ -71,16 +71,26 @@ test('MT5 bridge exposes authenticated closed-bar rates for scalp research',()=>
   assert.match(bridge,/copy_rates_/);
   assert.match(bridge,/auth\(authorization\)/);
   assert.match(bridge,/spreadBps/);
-  assert.match(bridge,/ts\+step_ms>now_ms/);
+  assert.match(bridge,/ts\+step_ms>broker_now_ms/);
 });
 
 
 test('MT5 rates endpoint has multi-method history fallback and bridge version diagnostics',()=>{
   const bridge=read('main.py');
-  assert.match(bridge,/BRIDGE_VERSION="1\.3\.1"/);
+  assert.match(bridge,/BRIDGE_VERSION="1\.3\.2"/);
   assert.match(bridge,/copy_rates_from_pos/);
   assert.match(bridge,/copy_rates_from\(/);
   assert.match(bridge,/copy_rates_range/);
   assert.match(bridge,/sourceMethod/);
   assert.match(bridge,/attempts/);
+});
+
+
+test('MT5 latest rates request starts from the first closed bar and uses broker time',()=>{
+  const bridge=read('main.py');
+  assert.match(bridge,/BRIDGE_VERSION="1\.3\.2"/);
+  assert.match(bridge,/copy_rates_from_pos\(broker_symbol,tf,1,count\+2\)/);
+  assert.match(bridge,/source_method!="from-pos-closed"/);
+  assert.match(bridge,/broker_now_ms/);
+  assert.match(bridge,/rawCount/);
 });
