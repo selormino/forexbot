@@ -1,4 +1,4 @@
-import os, math, json, re
+import os, math, json, re, time
 from datetime import datetime, timezone
 from fastapi import FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -202,19 +202,38 @@ def rates(
         raise HTTPException(400,"Symbol metadata unavailable")
     point=float(info.point or (10 ** (-int(info.digits))))
 
-    rows=None
-    if from_ts is not None:
-        start=datetime.fromtimestamp(max(0,int(from_ts))/1000.0,tz=timezone.utc)
-        end=datetime.fromtimestamp((int(to_ts) if to_ts is not None else int(datetime.now(tz=timezone.utc).timestamp()*1000))/1000.0,tz=timezone.utc)
-        rows=mt5.copy_rates_range(broker_symbol,tf,start,end)
-    elif to_ts is not None:
-        end=datetime.fromtimestamp(int(to_ts)/1000.0,tz=timezone.utc)
-        rows=mt5.copy_rates_from(broker_symbol,tf,end,count+2)
-    else:
-        rows=mt5.copy_rates_from_pos(broker_symbol,tf,0,count+2)
+    def fetch_rows():
+        if from_ts is not None:
+            start=datetime.fromtimestamp(max(0,int(from_ts))/1000.0,tz=timezone.utc)
+            end=datetime.fromtimestamp((int(to_ts) if to_ts is not None else int(datetime.now(tz=timezone.utc).timestamp()*1000))/1000.0,tz=timezone.utc)
+            return mt5.copy_rates_range(broker_symbol,tf,start,end)
+        if to_ts is not None:
+            end=datetime.fromtimestamp(int(to_ts)/1000.0,tz=timezone.utc)
+            return mt5.copy_rates_from(broker_symbol,tf,end,count+2)
+        return mt5.copy_rates_from_pos(broker_symbol,tf,0,count+2)
 
-    if rows is None:
-        raise HTTPException(503,f"MT5 copy_rates failed: {mt5.last_error()}")
+    rows=fetch_rows()
+
+    # A freshly-started MT5 terminal can know the symbol but not yet have the
+    # requested timeframe cached locally. Selecting the symbol and touching the
+    # live tick forces the terminal to begin history synchronization. Retry a few
+    # times before reporting the feed unavailable instead of returning count=0.
+    if rows is None or len(rows)==0:
+        mt5.symbol_select(broker_symbol,True)
+        for _ in range(4):
+            mt5.symbol_info_tick(broker_symbol)
+            time.sleep(1.0)
+            rows=fetch_rows()
+            if rows is not None and len(rows)>0:
+                break
+
+    if rows is None or len(rows)==0:
+        raise HTTPException(
+            503,
+            f"MT5 returned no {timeframe} history for {broker_symbol}. "
+            f"Open the {broker_symbol} {timeframe} chart in MT5 once and allow history to load. "
+            f"last_error={mt5.last_error()}"
+        )
 
     now_ms=int(datetime.now(tz=timezone.utc).timestamp()*1000)
     step_ms=TIMEFRAME_SECONDS[timeframe]*1000
