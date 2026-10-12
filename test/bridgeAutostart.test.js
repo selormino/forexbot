@@ -73,3 +73,14 @@ test('MT5 bridge exposes authenticated closed-bar rates for scalp research',()=>
   assert.match(bridge,/spreadBps/);
   assert.match(bridge,/ts\+step_ms>now_ms/);
 });
+
+
+test('MT5 rates endpoint has multi-method history fallback and bridge version diagnostics',()=>{
+  const bridge=read('main.py');
+  assert.match(bridge,/BRIDGE_VERSION="1\.3\.1"/);
+  assert.match(bridge,/copy_rates_from_pos/);
+  assert.match(bridge,/copy_rates_from\(/);
+  assert.match(bridge,/copy_rates_range/);
+  assert.match(bridge,/sourceMethod/);
+  assert.match(bridge,/attempts/);
+});

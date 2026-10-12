@@ -19,7 +19,8 @@ try:
 except Exception:
     SYMBOL_MAP={}
 
-app=FastAPI(title="ForexBot MT5 Bridge",version="1.3.0")
+BRIDGE_VERSION="1.3.1"
+app=FastAPI(title="ForexBot MT5 Bridge",version=BRIDGE_VERSION)
 
 class Order(BaseModel):
     clientOrderId:str
@@ -202,37 +203,76 @@ def rates(
         raise HTTPException(400,"Symbol metadata unavailable")
     point=float(info.point or (10 ** (-int(info.digits))))
 
+    attempts=[]
+
+    def nonempty(value):
+        return value is not None and len(value)>0
+
     def fetch_rows():
+        # Respect explicit paging/range requests first.
         if from_ts is not None:
             start=datetime.fromtimestamp(max(0,int(from_ts))/1000.0,tz=timezone.utc)
             end=datetime.fromtimestamp((int(to_ts) if to_ts is not None else int(datetime.now(tz=timezone.utc).timestamp()*1000))/1000.0,tz=timezone.utc)
-            return mt5.copy_rates_range(broker_symbol,tf,start,end)
+            value=mt5.copy_rates_range(broker_symbol,tf,start,end)
+            attempts.append({"method":"range-explicit","count":0 if value is None else len(value),"error":mt5.last_error()})
+            return value,"range-explicit"
         if to_ts is not None:
             end=datetime.fromtimestamp(int(to_ts)/1000.0,tz=timezone.utc)
-            return mt5.copy_rates_from(broker_symbol,tf,end,count+2)
-        return mt5.copy_rates_from_pos(broker_symbol,tf,0,count+2)
+            value=mt5.copy_rates_from(broker_symbol,tf,end,count+2)
+            attempts.append({"method":"from-explicit","count":0 if value is None else len(value),"error":mt5.last_error()})
+            return value,"from-explicit"
 
-    rows=fetch_rows()
+        # MT5 terminals differ in which history call succeeds first after startup.
+        # Try position, date-based and range-based access before treating history
+        # as unavailable.
+        value=mt5.copy_rates_from_pos(broker_symbol,tf,0,count+2)
+        attempts.append({"method":"from-pos","count":0 if value is None else len(value),"error":mt5.last_error()})
+        if nonempty(value):
+            return value,"from-pos"
+
+        now=datetime.now(tz=timezone.utc)
+        value=mt5.copy_rates_from(broker_symbol,tf,now,count+2)
+        attempts.append({"method":"from-now","count":0 if value is None else len(value),"error":mt5.last_error()})
+        if nonempty(value):
+            return value,"from-now"
+
+        # Range fallback gives MT5 a concrete history window. Use a generous
+        # multiplier so weekend gaps do not prevent us from collecting count bars.
+        lookback_seconds=max(TIMEFRAME_SECONDS[timeframe]*(count+50)*4,7*86400)
+        start=datetime.fromtimestamp(max(0,int(now.timestamp())-lookback_seconds),tz=timezone.utc)
+        value=mt5.copy_rates_range(broker_symbol,tf,start,now)
+        attempts.append({"method":"range-fallback","count":0 if value is None else len(value),"error":mt5.last_error()})
+        return value,"range-fallback"
+
+    rows,source_method=fetch_rows()
 
     # A freshly-started MT5 terminal can know the symbol but not yet have the
     # requested timeframe cached locally. Selecting the symbol and touching the
-    # live tick forces the terminal to begin history synchronization. Retry a few
-    # times before reporting the feed unavailable instead of returning count=0.
-    if rows is None or len(rows)==0:
-        mt5.symbol_select(broker_symbol,True)
-        for _ in range(4):
+    # live tick forces the terminal to begin history synchronization. Retry all
+    # access methods before reporting the feed unavailable.
+    if not nonempty(rows):
+        selected=mt5.symbol_select(broker_symbol,True)
+        for _ in range(5):
             mt5.symbol_info_tick(broker_symbol)
             time.sleep(1.0)
-            rows=fetch_rows()
-            if rows is not None and len(rows)>0:
+            rows,source_method=fetch_rows()
+            if nonempty(rows):
                 break
 
-    if rows is None or len(rows)==0:
+    if not nonempty(rows):
+        tick=mt5.symbol_info_tick(broker_symbol)
         raise HTTPException(
             503,
-            f"MT5 returned no {timeframe} history for {broker_symbol}. "
-            f"Open the {broker_symbol} {timeframe} chart in MT5 once and allow history to load. "
-            f"last_error={mt5.last_error()}"
+            {
+                "message":f"MT5 returned no {timeframe} history for {broker_symbol}.",
+                "bridgeVersion":BRIDGE_VERSION,
+                "symbolVisible":bool(getattr(info,"visible",False)),
+                "symbolSelected":bool(selected) if 'selected' in locals() else bool(getattr(info,"visible",False)),
+                "tickAvailable":tick is not None,
+                "lastError":mt5.last_error(),
+                "attempts":attempts[-9:],
+                "nextStep":f"Keep {broker_symbol} {timeframe} open in MT5 and confirm Tools > Options > Charts > Max bars in chart is not set extremely low."
+            }
         )
 
     now_ms=int(datetime.now(tz=timezone.utc).timestamp()*1000)
@@ -266,6 +306,8 @@ def rates(
         "timeframe":timeframe,
         "point":point,
         "count":len(out),
+        "sourceMethod":source_method,
+        "bridgeVersion":BRIDGE_VERSION,
         "rates":out
     }
 
@@ -274,7 +316,7 @@ def health(authorization:str|None=Header(default=None)):
     auth(authorization)
     info=ensure_mt5()
     terminal=mt5.terminal_info()
-    return {"ok":True,"mode":MODE,"accountConnected":True,"server":info.server,"currency":info.currency,"equity":info.equity,"balance":info.balance,"login":info.login,"tradeAllowed":info.trade_allowed,"tradeApiDisabled":getattr(terminal,"tradeapi_disabled",None)}
+    return {"ok":True,"bridgeVersion":BRIDGE_VERSION,"mode":MODE,"accountConnected":True,"server":info.server,"currency":info.currency,"equity":info.equity,"balance":info.balance,"login":info.login,"tradeAllowed":info.trade_allowed,"tradeApiDisabled":getattr(terminal,"tradeapi_disabled",None)}
 
 @app.get("/symbols")
 def symbols(q:str=Query(default=""),authorization:str|None=Header(default=None)):
